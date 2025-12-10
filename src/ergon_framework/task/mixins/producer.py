@@ -61,7 +61,7 @@ class ProducerMixin(ABC):
         # -----------------------
         # 3) SUCCESS HANDLER
         # -----------------------
-        success_success, success_result = self._handle_success(transaction, prepare_result, policy.success)
+        success_success, success_result = self._handle_prepare_success(transaction, prepare_result, policy.success)
         if not success_success:
             if isinstance(success_result, exceptions.TransactionException):
                 success_result = success_result
@@ -69,7 +69,7 @@ class ProducerMixin(ABC):
                 success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.TIMEOUT)
             else:
                 success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.SYSTEM)
-            return self._handle_exception(transaction, success_result, policy.exception)
+            return self._handle_prepare_exception(transaction, success_result, policy.exception)
 
         return True, success_result
 
