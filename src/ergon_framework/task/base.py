@@ -187,7 +187,7 @@ class TaskExecMetadata(BaseModel):
     execution_id: str
     execution_start_time: str
     pid: int
-    worker_id: int
+    worker_id: Optional[int]
     host_name: str = Field(default_factory=lambda: TaskExecMetadata._get_host_name())
     host_ip: str = Field(default_factory=lambda: TaskExecMetadata._get_host_ip())
 
