@@ -98,6 +98,7 @@ class ProducerLoopTimeoutException(Exception):
             "type": self.__class__.__name__,
         }
 
+
 class ProducerLoopException(Exception):
     """
     Exception raised when a producer loop fails.
@@ -119,6 +120,7 @@ class ProducerLoopException(Exception):
             "category": self.category.value,
             "type": self.__class__.__name__,
         }
+
 
 class TransactionException(Exception):
     """

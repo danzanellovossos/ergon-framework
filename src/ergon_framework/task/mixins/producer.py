@@ -61,7 +61,9 @@ class ProducerMixin(ABC):
         # -----------------------
         # 3) SUCCESS HANDLER
         # -----------------------
-        success_success, success_result = self._handle_prepare_success(transaction, prepare_result, policy.success, policy.exception)
+        success_success, success_result = self._handle_prepare_success(
+            transaction, prepare_result, policy.success, policy.exception
+        )
         if not success_success:
             if isinstance(success_result, exceptions.TransactionException):
                 success_result = success_result
@@ -175,7 +177,7 @@ class ProducerMixin(ABC):
             trace_name=f"{self.__class__.__name__}.produce_transactions",
             trace_attrs={"count": len(transactions)},
         )
-        
+
         if not success:
             if isinstance(result, exceptions.TransactionException):
                 result = result
