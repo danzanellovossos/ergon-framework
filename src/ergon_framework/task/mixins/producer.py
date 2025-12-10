@@ -61,7 +61,7 @@ class ProducerMixin(ABC):
         # -----------------------
         # 3) SUCCESS HANDLER
         # -----------------------
-        success_success, success_result = self._handle_success(transaction, prepare_result, policy.success)
+        success_success, success_result = self._handle_prepare_success(transaction, prepare_result, policy.success, policy.exception)
         if not success_success:
             if isinstance(success_result, exceptions.TransactionException):
                 success_result = success_result
@@ -69,7 +69,7 @@ class ProducerMixin(ABC):
                 success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.TIMEOUT)
             else:
                 success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.SYSTEM)
-            return self._handle_exception(transaction, success_result, policy.exception)
+            return self._handle_prepare_exception(transaction, success_result, policy.exception)
 
         return True, success_result
 
@@ -77,6 +77,7 @@ class ProducerMixin(ABC):
     # PREPARE HANDLER
     # -------------------------------------------------------------------
     def _handle_prepare(self, transaction: connector.Transaction, policy: policies.PreparePolicy):
+        logger.debug(f"[Producer] _handle_prepare called for transaction {transaction.id}")
         return helpers.run_fn(
             fn=lambda: self.prepare_transaction(transaction),
             retry=policy.retry,
@@ -168,19 +169,22 @@ class ProducerMixin(ABC):
             logger.info(f"[Produce] Finished. Processed={processed} in {elapsed_time:.2f} seconds")
             return count
 
-        try:
-            return helpers.run_fn(
-                fn=_produce,
-                timeout=policy.loop.timeout,
-                trace_name=f"{self.__class__.__name__}.produce_transactions",
-                trace_attrs={"count": len(transactions)},
-            )
-        except futures.TimeoutError as e:
-            logger.error(f"[Produce] Timeout: {e}")
-            raise exceptions.ProducerLoopTimeoutException(str(e))
-        except BaseException as e:  # pylint: disable=broad-exception-caught
-            logger.error(f"[Produce] Error: {e}")
-            raise exceptions.TransactionException(str(e), exceptions.ExceptionType.SYSTEM)
+        success, result = helpers.run_fn(
+            fn=lambda: _produce(),
+            retry=policies.RetryPolicy(timeout=policy.loop.timeout),
+            trace_name=f"{self.__class__.__name__}.produce_transactions",
+            trace_attrs={"count": len(transactions)},
+        )
+        
+        if not success:
+            if isinstance(result, exceptions.TransactionException):
+                result = result
+            elif isinstance(result, futures.TimeoutError):
+                result = exceptions.ProducerLoopTimeoutException(str(result))
+            else:
+                result = exceptions.ProducerLoopException(str(result))
+            raise result
+        return result
 
 
 class ProducerTask(ProducerMixin, base.BaseTask):

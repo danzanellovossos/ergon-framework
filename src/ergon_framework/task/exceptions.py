@@ -98,6 +98,27 @@ class ProducerLoopTimeoutException(Exception):
             "type": self.__class__.__name__,
         }
 
+class ProducerLoopException(Exception):
+    """
+    Exception raised when a producer loop fails.
+    """
+
+    message: str = "A producer loop failed."
+    category: ExceptionType = ExceptionType.SYSTEM
+
+    def __init__(self, message: str | None = None):
+        self.message = message or self.message
+        super().__init__(self.message)
+
+    def __str__(self):
+        return self.message
+
+    def to_dict(self):
+        return {
+            "message": self.message,
+            "category": self.category.value,
+            "type": self.__class__.__name__,
+        }
 
 class TransactionException(Exception):
     """
