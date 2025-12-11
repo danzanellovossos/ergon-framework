@@ -10,4 +10,6 @@ __all__ = [
     "ExcelService",
     "ExcelFetchConfig",
     "ExcelRow",
+    "ConnectorConfig",
+    "Connector",
 ]
