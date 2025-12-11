@@ -69,7 +69,7 @@ class ExceptionPolicy(BaseModel):
 
 class EmptyQueuePolicy(BaseModel):
     backoff: float = Field(default=0.0, ge=0.0, description="The backoff in seconds to wait before retrying.")
-    backoff_multiplier: float = Field(default=0.0, ge=1.0, description="The backoff multiplier to the next attempt.")
+    backoff_multiplier: float = Field(default=1.0, ge=0.0, description="The backoff multiplier to the next attempt.")
     backoff_cap: float = Field(default=0.0, ge=0.0, description="The maximum backoff in seconds.")
     interval: float = Field(default=0.0, ge=0.0, description="The interval in seconds to wait between attempts.")
 

@@ -5,6 +5,8 @@ from abc import ABC, abstractmethod
 from concurrent import futures
 from typing import Any, List
 
+from opentelemetry import context as otel_context
+
 from ... import connector, telemetry
 from .. import base, exceptions, policies
 from . import helpers, producer, utils
@@ -135,6 +137,7 @@ class ConsumerMixin(ABC):
             start_time = time.perf_counter()
             processed = 0
             empty_count = 0
+            batch_number = 0
 
             conn = self._resolve_connector(policy.fetch.connector_name)
             executor = futures.ThreadPoolExecutor(max_workers=policy.loop.concurrency.value)
@@ -148,6 +151,8 @@ class ConsumerMixin(ABC):
                 )
 
             while True:
+                batch_number += 1
+
                 # -------------------------
                 # FETCH
                 # -------------------------
@@ -176,17 +181,35 @@ class ConsumerMixin(ABC):
                 empty_count = 0
 
                 # ============================================================
-                #  RUN CONCURRENTLY WITH REFILL
+                #  RUN CONCURRENTLY WITH REFILL (with batch-level span)
                 # ============================================================
-                count = helpers.run_concurrently_with_refill(
-                    data=transactions,
-                    it=iter((tr, policy) for tr in transactions),
-                    submit_fn=submit_start_processing,
-                    concurrency=policy.loop.concurrency.value,
-                    limit=policy.loop.limit,
-                    count=processed,
-                    timeout=policy.loop.transaction_timeout,
-                )
+                # For streaming mode, start each batch as a fresh root span (new trace)
+                # This prevents "root span not received" issues in long-running consumers
+                if policy.loop.streaming:
+                    # Create a fresh empty context with no active span
+                    # This forces the tracer to generate a new trace ID for each batch
+                    batch_context = otel_context.Context()
+                else:
+                    batch_context = None  # Use current context
+
+                with tracer.start_as_current_span(
+                    f"{self.__class__.__name__}.process_batch",
+                    context=batch_context,
+                    attributes={
+                        "batch_number": batch_number,
+                        "batch_size": len(transactions),
+                        "streaming": policy.loop.streaming,
+                    },
+                ):
+                    count = helpers.run_concurrently_with_refill(
+                        data=transactions,
+                        it=iter((tr, policy) for tr in transactions),
+                        submit_fn=submit_start_processing,
+                        concurrency=policy.loop.concurrency.value,
+                        limit=policy.loop.limit,
+                        count=processed,
+                        timeout=policy.loop.transaction_timeout,
+                    )
 
                 processed += count
 
@@ -196,23 +219,36 @@ class ConsumerMixin(ABC):
             executor.shutdown()
             elapsed_time = time.perf_counter() - start_time
             logger.info(f"[Consume] Finished. Processed={processed} in {elapsed_time:.2f} seconds")
+            return processed
 
-        success, result = helpers.run_fn(
-            fn=lambda: _consume(),
-            retry=policies.RetryPolicy(timeout=policy.loop.timeout),
-            trace_name=f"{self.__class__.__name__}.consume_transactions",
-            trace_attrs={},
-        )
+        # For streaming mode, run without wrapping span (batches have their own spans)
+        # For non-streaming mode, wrap entire consume in a span
+        if policy.loop.streaming:
+            try:
+                return _consume()
+            except futures.TimeoutError as e:
+                raise exceptions.ConsumerLoopTimeoutException(str(e))
+            except exceptions.TransactionException:
+                raise
+            except BaseException as e:
+                raise exceptions.ConsumerLoopException(str(e))
+        else:
+            success, result = helpers.run_fn(
+                fn=lambda: _consume(),
+                retry=policies.RetryPolicy(timeout=policy.loop.timeout),
+                trace_name=f"{self.__class__.__name__}.consume_transactions",
+                trace_attrs={},
+            )
 
-        if not success:
-            if isinstance(result, exceptions.TransactionException):
-                result = result
-            elif isinstance(result, futures.TimeoutError):
-                result = exceptions.ConsumerLoopTimeoutException(str(result))
-            else:
-                result = exceptions.ConsumerLoopException(str(result))
-            raise result
-        return result
+            if not success:
+                if isinstance(result, exceptions.TransactionException):
+                    result = result
+                elif isinstance(result, futures.TimeoutError):
+                    result = exceptions.ConsumerLoopTimeoutException(str(result))
+                else:
+                    result = exceptions.ConsumerLoopException(str(result))
+                raise result
+            return result
 
 
 class ConsumerTask(ConsumerMixin, base.BaseTask):
@@ -342,6 +378,7 @@ class AsyncConsumerMixin(ABC):
             start_time = time.perf_counter()
             processed = 0
             empty_count = 0
+            batch_number = 0
 
             async def submit_start_processing(tr, pol):
                 return await helpers.run_fn_async(
@@ -352,6 +389,8 @@ class AsyncConsumerMixin(ABC):
                 )
 
             while True:
+                batch_number += 1
+
                 # ============================================================
                 #  FETCH
                 # ============================================================
@@ -382,17 +421,35 @@ class AsyncConsumerMixin(ABC):
                 empty_count = 0
 
                 # ============================================================
-                #  RUN CONCURRENTLY WITH REFILL
+                #  RUN CONCURRENTLY WITH REFILL (with batch-level span)
                 # ============================================================
-                count = await helpers.run_concurrently_with_refill_async(
-                    data=transactions,
-                    it=iter((tr, policy) for tr in transactions),
-                    submit_fn=submit_start_processing,
-                    concurrency=policy.loop.concurrency.value,
-                    limit=policy.loop.limit,
-                    count=processed,
-                    timeout=policy.loop.transaction_timeout,
-                )
+                # For streaming mode, start each batch as a fresh root span (new trace)
+                # This prevents "root span not received" issues in long-running consumers
+                if policy.loop.streaming:
+                    # Create a fresh empty context with no active span
+                    # This forces the tracer to generate a new trace ID for each batch
+                    batch_context = otel_context.Context()
+                else:
+                    batch_context = None  # Use current context
+
+                with tracer.start_as_current_span(
+                    f"{self.__class__.__name__}.process_batch",
+                    context=batch_context,
+                    attributes={
+                        "batch_number": batch_number,
+                        "batch_size": len(transactions),
+                        "streaming": policy.loop.streaming,
+                    },
+                ):
+                    count = await helpers.run_concurrently_with_refill_async(
+                        data=transactions,
+                        it=iter((tr, policy) for tr in transactions),
+                        submit_fn=submit_start_processing,
+                        concurrency=policy.loop.concurrency.value,
+                        limit=policy.loop.limit,
+                        count=processed,
+                        timeout=policy.loop.transaction_timeout,
+                    )
 
                 processed += count
 
@@ -403,19 +460,33 @@ class AsyncConsumerMixin(ABC):
             logger.info(f"[Consume] Finished. Processed={processed} in {elapsed_time:.2f} seconds")
             return processed
 
-        try:
-            return await helpers.run_fn_async(
-                fn=_consume,
-                retry=policies.RetryPolicy(timeout=policy.loop.timeout),
-                trace_name=f"{self.__class__.__name__}.consume_transactions",
-                trace_attrs={},
-            )
-        except asyncio.TimeoutError as e:
-            logger.error(f"[Consume] Timeout: {e}")
-            raise exceptions.ConsumerLoopTimeoutException(str(e))
-        except BaseException as e:
-            logger.error(f"[Consume] Error: {e}")
-            raise exceptions.TransactionException(str(e), exceptions.ExceptionType.SYSTEM)
+        # For streaming mode, run without wrapping span (batches have their own spans)
+        # For non-streaming mode, wrap entire consume in a span
+        if policy.loop.streaming:
+            try:
+                return await _consume()
+            except asyncio.TimeoutError as e:
+                logger.error(f"[Consume] Timeout: {e}")
+                raise exceptions.ConsumerLoopTimeoutException(str(e))
+            except exceptions.TransactionException:
+                raise
+            except BaseException as e:
+                logger.error(f"[Consume] Error: {e}")
+                raise exceptions.TransactionException(str(e), exceptions.ExceptionType.SYSTEM)
+        else:
+            try:
+                return await helpers.run_fn_async(
+                    fn=_consume,
+                    retry=policies.RetryPolicy(timeout=policy.loop.timeout),
+                    trace_name=f"{self.__class__.__name__}.consume_transactions",
+                    trace_attrs={},
+                )
+            except asyncio.TimeoutError as e:
+                logger.error(f"[Consume] Timeout: {e}")
+                raise exceptions.ConsumerLoopTimeoutException(str(e))
+            except BaseException as e:
+                logger.error(f"[Consume] Error: {e}")
+                raise exceptions.TransactionException(str(e), exceptions.ExceptionType.SYSTEM)
 
 
 class AsyncConsumerTask(AsyncConsumerMixin, base.BaseAsyncTask):
