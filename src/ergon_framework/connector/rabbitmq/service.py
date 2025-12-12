@@ -156,18 +156,6 @@ class RabbitMQService:
 
     # ---------- Publicação ----------
 
-    def create_message(
-        self,
-        message: RabbitmqProducerMessage
-    ) -> None:
-        """
-        Publica uma mensagem na fila (ou routing_key) informada.
-        """
-        logger.info(f"Criando mensagem.")
-        pub = functools.partial(self.publish, message=message)
-        self._connection.add_callback_threadsafe(pub)
-        logger.info(f"Mensagem criada")
-
     def publish(self, message: RabbitmqProducerMessage) -> None:
         logger.info("Publicando mensagem")
 
