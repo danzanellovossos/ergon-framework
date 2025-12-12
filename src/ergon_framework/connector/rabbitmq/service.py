@@ -1,3 +1,4 @@
+import functools
 import logging
 import time
 import json
@@ -42,7 +43,7 @@ class RabbitMQService:
         self._channel.queue_declare(queue=self.client.queue_name, durable=True)
 
         # Controle de quantas mensagens o consumidor recebe sem dar ack
-        # self._channel.basic_qos(prefetch_count=self.client.prefetch_count)
+        self._channel.basic_qos(prefetch_count=self.client.prefetch_count)
 
     def close(self) -> None:
         """
@@ -129,34 +130,16 @@ class RabbitMQService:
             self._channel.basic_cancel(consumer_tag)
 
         return list(buffer)
-        # queue_items = []
-        # while len(queue_items) < batch_size:
-        #
-        #     method, properties, body = self._channel.basic_get(
-        #         queue=q,
-        #         auto_ack=auto_ack,
-        #     )
-        #
-        #     # Se não há mensagem disponível, encerra o generator
-        #     if method is None:
-        #         return queue_items
-        #
-        #     try:
-        #         payload = json.loads(body.decode("utf-8")) if body else None
-        #     except Exception:
-        #         # Se não for JSON válido, devolve como bytes mesmo
-        #         payload = body
-        #
-        #     message_dict = {
-        #         "data": payload,
-        #         "routing_key": method.routing_key,
-        #         "delivery_tag": method.delivery_tag,
-        #         "headers": getattr(properties, "headers", {}) or {},
-        #     }
-        #
-        #     queue_items.append(message_dict)
-        #
-        # return queue_items
+
+    def ack_msg(self, delivery_tag) -> int:
+
+        try:
+            self._channel.basic_ack(delivery_tag=delivery_tag)
+            logger.info(f"sucesso ao marcar como lida. tag {delivery_tag}")
+        except Exception as e:
+            logger.error("Falha ao ackar a mensagem")
+            logger.error(f"{str(e)}")
+            self._channel.basic_nack(delivery_tag, requeue=True)
 
 
     def confirm_message_received(self, delivery_tag: int) -> None:
@@ -167,39 +150,50 @@ class RabbitMQService:
                 raise ValueError("Delivery tag must be an integer.")
 
         logger.info(f"marcando mensagem como recebida. tag {delivery_tag}")
-        try:
-            self._channel.basic_ack(delivery_tag=delivery_tag)
-        except Exception as e:
-            logger.error(f"{str(e)}")
-            self._channel.basic_nack(delivery_tag, requeue=True)
+        ack = functools.partial(self.ack_msg, delivery_tag=delivery_tag)
+        self._connection.add_callback_threadsafe(ack)
 
 
     # ---------- Publicação ----------
 
-    def publish(
+    def create_message(
         self,
         message: RabbitmqProducerMessage
     ) -> None:
         """
         Publica uma mensagem na fila (ou routing_key) informada.
         """
-        # self._connect()
+        logger.info(f"Criando mensagem.")
+        pub = functools.partial(self.publish, message=message)
+        self._connection.add_callback_threadsafe(pub)
+        logger.info(f"Mensagem criada")
 
-        rk = message.payload.get("queue_name") or self.client.queue_name
+    def publish(self, message: RabbitmqProducerMessage) -> None:
+        logger.info("Publicando mensagem")
 
-        if not isinstance(message.payload.get("body"), (str, bytes)):
-            body = json.dumps(message.payload.get("body"))
+        if not (self._channel and self._channel.is_open):
+            logger.warning("Channel fechado; não foi possível publicar.")
+            return
 
-        if isinstance(message.payload.get("body"), str):
-            body = message.payload.get("body").encode("utf-8")
+        if self._channel.is_open:
+            rk = message.payload.get("queue_name") or self.client.queue_name
 
-        properties = pika.BasicProperties(
-            headers=headers_generator(id=message.id, source=message.payload.get("source"))
-        )
+            raw = message.payload.get("body")
+            if not isinstance(raw, (str, bytes)):
+                body = json.dumps(raw)
+            elif isinstance(raw, str):
+                body = raw.encode("utf-8")
+            else:
+                body = json.dumps(raw, ensure_ascii=False).encode("utf-8")
 
-        self._channel.basic_publish(
-            exchange="",
-            routing_key=rk,
-            body=body,
-            properties=properties,
-        )
+            properties = pika.BasicProperties(
+                headers=headers_generator(id=message.id, source=message.payload.get("source"))
+            )
+
+            self._channel.basic_publish(
+                exchange="",
+                routing_key=rk,
+                body=body,
+                properties=properties,
+            )
+            logger.info("Mensagem publicada com sucesso.")
