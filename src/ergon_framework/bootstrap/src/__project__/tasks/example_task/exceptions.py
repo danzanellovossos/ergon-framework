@@ -1,6 +1,5 @@
-from ergon_framework import ExceptionType, TransactionException
+# Uncomment below to use framework imports
+# ----------------------------------------
 
-
-class ExampleTaskException(TransactionException):
-    message: str
-    category: ExceptionType = ExceptionType.BUSINESS
+#from ergon_framework.task.exceptions import TransactionException
+#from .. import exceptions as shared
