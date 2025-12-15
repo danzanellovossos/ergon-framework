@@ -34,23 +34,23 @@ The key insight is that "atomic" does not mean "small." A transaction is whateve
 
 ### Transaction Structure
 
-Every Transaction in Ergon is a Pydantic model with three fields:
+Every Transaction in Ergon is an immutable data structure with three fields:
 
-```python
-class Transaction(BaseModel):
-    id: str                          # Unique identifier for tracing
-    payload: Any                     # The actual data content
-    metadata: Dict[str, Any] = {}    # Contextual information
-    model_config = ConfigDict(frozen=True)
+```
+Transaction {
+    id: string                   // Unique identifier for tracing
+    payload: any                 // The actual data content
+    metadata: map<string, any>   // Contextual information (optional)
+}
 ```
 
 - **`id`**: A unique identifier assigned when the transaction is created. This ID is used for distributed tracing, logging correlation, and debugging. Every log entry, metric, and span generated while processing this transaction will include this ID.
-- **`payload`**: The actual data. This is intentionally typed as `Any` because different connectors produce different data types. A RabbitMQ connector might produce a dictionary, while a file connector might produce a string or bytes.
+- **`payload`**: The actual data. This is intentionally typed as `any` because different connectors produce different data types. A RabbitMQ connector might produce a dictionary, while a file connector might produce a string or bytes.
 - **`metadata`**: Additional context that does not belong in the payload itself. This might include routing keys, headers, timestamps, file paths, line numbers, or any other information that helps with processing or debugging.
 
 ### Immutability Guarantee
 
-The Transaction model is **frozen** (`frozen=True`). Once a transaction is created, it cannot be modified. This immutability provides several critical benefits:
+The Transaction structure is **immutable** (frozen). Once a transaction is created, it cannot be modified. This immutability provides several critical benefits:
 
 1. **Thread Safety**: Immutable objects can be safely shared across threads without locks.
 2. **Debugging**: You can always trust that the transaction you are looking at is exactly what was received.
@@ -78,7 +78,7 @@ In Ergon, a **Task** is where your business logic lives. But unlike traditional 
 They do NOT contain:
 
 - **I/O operations**: No HTTP calls, no database queries, no file reads.
-- **Retry logic**: No `while` loops with exponential backoff.
+- **Retry logic**: No loops with exponential backoff.
 - **Connection management**: No connection pools, no session handling.
 - **Protocol details**: No message acknowledgments, no commit offsets.
 
@@ -92,35 +92,39 @@ All of these concerns are handled by other layers (Connectors, Services, Policie
 
 Ergon provides two base classes for tasks:
 
-**`BaseTask`** (Synchronous):
+**BaseTask** (Synchronous):
 
-```python
-class BaseTask(ABC, metaclass=TaskMeta):
-    def __init__(self, connectors, services, policies): ...
-  
-    @abstractmethod
-    def execute(self) -> Any:
-        """Main entry point for the task."""
-  
-    def exit(self):
-        """Cleanup hook called after execution."""
+```
+BaseTask {
+    connectors: map<string, Connector>
+    services: map<string, Service>
+    policies: list<Policy>
+
+    // Abstract method - must be implemented
+    execute() -> any
+
+    // Cleanup hook called after execution
+    exit()
+}
 ```
 
-**`BaseAsyncTask`** (Asynchronous):
+**BaseAsyncTask** (Asynchronous):
 
-```python
-class BaseAsyncTask(ABC, metaclass=TaskMeta):
-    def __init__(self, connectors, services, policies): ...
-  
-    @abstractmethod
-    async def execute(self) -> Any:
-        """Async entry point for the task."""
-  
-    async def exit(self):
-        """Async cleanup hook."""
+```
+BaseAsyncTask {
+    connectors: map<string, Connector>
+    services: map<string, Service>
+    policies: list<Policy>
+
+    // Abstract async method - must be implemented
+    async execute() -> any
+
+    // Async cleanup hook
+    async exit()
+}
 ```
 
-Both classes use the `TaskMeta` metaclass, which automatically injects dependencies (connectors, services, policies) as instance attributes. This means you can access them as `self.input_connector`, `self.openai_service`, etc.
+Both classes automatically receive their dependencies (connectors, services, policies) as instance attributes. This means you can access them as `self.input_connector`, `self.openai_service`, etc.
 
 ### Mixins: Adding Behavior
 
@@ -195,18 +199,17 @@ The connector is the boundary where raw protocol data becomes typed, traceable, 
 
 **Connector Interface**:
 
-```python
-class Connector(ABC):
-    @abstractmethod
-    def fetch_transactions(self, batch_size, **kwargs) -> List[Transaction]:
-        """Fetch and wrap raw data into Transactions."""
-  
-    @abstractmethod
-    def dispatch_transactions(self, transactions: List[Transaction], **kwargs) -> Any:
-        """Unwrap Transactions and send via the service."""
-  
-    def get_transactions_count(self, **kwargs) -> int:
-        """Optional: Get pending transaction count."""
+```
+Connector {
+    // Fetch and wrap raw data into Transactions
+    fetch_transactions(batch_size: int, ...) -> list<Transaction>
+
+    // Unwrap Transactions and send via the service
+    dispatch_transactions(transactions: list<Transaction>, ...) -> any
+
+    // Optional: Get pending transaction count
+    get_transactions_count(...) -> int
+}
 ```
 
 **AsyncConnector** provides the same interface with `async` methods.
@@ -220,18 +223,18 @@ class Connector(ABC):
 
 Both connectors and services are configured declaratively:
 
-```python
-ConnectorConfig(
-    connector=MyConnector,
-    args=(),
-    kwargs={"host": "localhost", "port": 5672}
-)
+```
+ConnectorConfig {
+    connector: ConnectorClass
+    args: tuple
+    kwargs: map
+}
 
-ServiceConfig(
-    service=MyService,
-    args=(),
-    kwargs={"api_key": "..."}
-)
+ServiceConfig {
+    service: ServiceClass
+    args: tuple
+    kwargs: map
+}
 ```
 
 The runner instantiates these at startup and injects them into the task.
@@ -255,9 +258,9 @@ The **Runner** is responsible for the entire lifecycle of task execution:
 The runner also handles **scaling**:
 
 - **Single process mode** (`max_workers=1`): Runs directly, useful for debugging.
-- **Multi-process mode**: Uses `ProcessPoolExecutor` to spawn isolated workers.
+- **Multi-process mode**: Uses process pool to spawn isolated workers.
 
-For async tasks, the runner uses `asyncio.run()` and manages the event loop.
+For async tasks, the runner manages the event loop.
 
 ### Policies: Fine-Grained Control
 
@@ -265,35 +268,50 @@ Policies are configuration objects that control execution behavior without code 
 
 #### ConsumerPolicy
 
-Controls the consumption loop. Policies are created as instances and configured by setting properties directly:
+Controls the consumption loop:
 
-```python
-from ergon_framework.task import policies
+```
+ConsumerPolicy {
+    name: string
 
-# Create policy instance
-CONSUMER_POLICY = policies.ConsumerPolicy()
-CONSUMER_POLICY.name = "consumer"
+    loop {
+        concurrency {
+            value: int          // Parallel transaction processing
+            min: int            // Minimum concurrency
+            max: int            // Maximum concurrency
+        }
+        batch {
+            size: int           // Transactions per fetch
+            min_size: int
+            max_size: int
+        }
+        empty_queue {
+            backoff: float              // Initial backoff on empty queue
+            backoff_multiplier: float   // Exponential factor
+            backoff_cap: float          // Maximum backoff
+        }
+        timeout: int            // Max loop duration (seconds)
+        limit: int              // Max transactions to process
+        streaming: bool         // Continuous polling mode
+    }
 
-# Configure loop behavior
-CONSUMER_POLICY.loop.concurrency.value = 1
-CONSUMER_POLICY.loop.batch.size = 1
-CONSUMER_POLICY.loop.limit = 1
-CONSUMER_POLICY.loop.streaming = False
+    fetch {
+        retry: RetryPolicy
+        connector: string       // Connector name to fetch from
+    }
 
-# Configure fetch phase (e.g., pass extra params to connector)
-CONSUMER_POLICY.fetch.extra.setdefault("phase_id", settings.PHASE_ID)
+    process {
+        retry: RetryPolicy
+    }
 
-# Configure process retry behavior
-CONSUMER_POLICY.process.retry.max_attempts = 3
-CONSUMER_POLICY.process.retry.backoff = 1
-CONSUMER_POLICY.process.retry.backoff_multiplier = 2
-CONSUMER_POLICY.process.retry.backoff_cap = 10
+    success {
+        retry: RetryPolicy
+    }
 
-# Configure exception handler retry behavior
-CONSUMER_POLICY.exception.retry.max_attempts = 3
-CONSUMER_POLICY.exception.retry.backoff = 1
-CONSUMER_POLICY.exception.retry.backoff_multiplier = 2
-CONSUMER_POLICY.exception.retry.backoff_cap = 10
+    exception {
+        retry: RetryPolicy
+    }
+}
 ```
 
 Each phase (fetch, process, success, exception) has independent retry configuration. This allows you to, for example, retry business logic 3 times but only retry the exception handler once.
@@ -302,53 +320,47 @@ Each phase (fetch, process, success, exception) has independent retry configurat
 
 Similar structure for production:
 
-```python
-from ergon_framework.task import policies
-
-# Create policy instance
-PRODUCER_POLICY = policies.ProducerPolicy()
-PRODUCER_POLICY.name = "producer"
-
-# Configure loop behavior
-PRODUCER_POLICY.loop.concurrency.value = 10
-PRODUCER_POLICY.loop.batch.size = 100
-PRODUCER_POLICY.loop.timeout = 1800
-
-# Configure prepare retry behavior
-PRODUCER_POLICY.prepare.retry.max_attempts = 3
-PRODUCER_POLICY.prepare.retry.backoff = 1
-PRODUCER_POLICY.prepare.retry.backoff_multiplier = 2
-PRODUCER_POLICY.prepare.retry.backoff_cap = 10
-
-# Configure exception handler retry behavior
-PRODUCER_POLICY.exception.retry.max_attempts = 2
 ```
+ProducerPolicy {
+    name: string
 
-#### Passing Policies to TaskConfig
+    loop {
+        concurrency {
+            value: int
+        }
+        batch {
+            size: int
+        }
+        timeout: int
+    }
 
-Policies are passed to the task configuration and automatically injected into the task instance:
+    prepare {
+        retry: RetryPolicy
+    }
 
-```python
-TASK_CONFIG = TaskConfig(
-    task=MyTask,
-    name="my-task",
-    connectors={"input": settings.INPUT_CONNECTOR},
-    services={"openai": settings.OPENAI_SERVICE},
-    policies=[CONSUMER_POLICY],
-    logging=settings.LOGGING,
-    tracing=settings.TRACING,
-)
+    success {
+        retry: RetryPolicy
+    }
+
+    exception {
+        retry: RetryPolicy
+    }
+}
 ```
 
 #### RetryPolicy Fields
 
-The `RetryPolicy` is the building block for all retry behavior. Each step policy (fetch, process, success, exception, prepare) contains a `retry` field with these options:
+The `RetryPolicy` is the building block for all retry behavior:
 
-- `max_attempts`: Hard limit on retries (default: 1)
-- `timeout`: Time limit per attempt in seconds (default: None)
-- `backoff`: Initial delay in seconds after first failure (default: 0)
-- `backoff_multiplier`: Exponential factor for subsequent retries (default: 0)
-- `backoff_cap`: Maximum delay in seconds (default: 0)
+```
+RetryPolicy {
+    max_attempts: int           // Hard limit on retries (default: 1)
+    timeout: int                // Time limit per attempt in seconds (default: none)
+    backoff: float              // Initial delay in seconds after first failure (default: 0)
+    backoff_multiplier: float   // Exponential factor for subsequent retries (default: 0)
+    backoff_cap: float          // Maximum delay in seconds (default: 0)
+}
+```
 
 ### Telemetry: Observability by Default
 
@@ -356,7 +368,7 @@ Ergon integrates OpenTelemetry natively. When you run a task, you get:
 
 #### Logging
 
-- Structured JSON logging (via `python-json-logger`)
+- Structured JSON logging
 - Automatic injection of `trace_id` and `span_id` into every log record
 - Multiple handler support: Console, File, Rotating File, OTLP (gRPC export)
 
@@ -369,31 +381,35 @@ Ergon integrates OpenTelemetry natively. When you run a task, you get:
 
 #### Metrics
 
-- Push-based metrics via `PeriodicExportingMetricReader`
+- Push-based metrics via periodic metric readers
 - Automatic resource attributes (task name, host, PID, execution ID)
 - Export to Prometheus, OTLP, or console
 
 #### Configuration
 
-```python
-TaskConfig(
-    name="my_task",
-    task=MyTask,
-    connectors={...},
-    logging=LoggingConfig(
-        level="INFO",
-        handlers=[
-            ConsoleLogHandler(),
-            OTLPLogHandler(processors=[...])
-        ]
-    ),
-    tracing=TracingConfig(
-        processors=[SpanProcessor(processor=BatchSpanProcessor, exporters=[OTLPSpanExporter()])]
-    ),
-    metrics=MetricsConfig(
-        readers=[MetricReader(reader=PeriodicExportingMetricReader, exporters=[OTLPMetricExporter()])]
-    )
-)
+Telemetry is configured declaratively via the task configuration:
+
+```
+TaskConfig {
+    name: string
+    task: TaskClass
+    connectors: map<string, ConnectorConfig>
+    services: map<string, ServiceConfig>
+    policies: list<Policy>
+    
+    logging: LoggingConfig {
+        level: string
+        handlers: list<LogHandler>
+    }
+    
+    tracing: TracingConfig {
+        processors: list<SpanProcessor>
+    }
+    
+    metrics: MetricsConfig {
+        readers: list<MetricReader>
+    }
+}
 ```
 
 ---
@@ -411,14 +427,14 @@ Best for:
 Mechanism:
 
 - The consumer loop runs in the main thread
-- Each transaction is submitted to a `ThreadPoolExecutor`
-- Concurrency is controlled by `ConcurrencyPolicy.value`
+- Each transaction is submitted to a thread pool
+- Concurrency is controlled by policy configuration
 
 Benefits:
 
 - High isolation between transactions
 - Easy debugging (stack traces are straightforward)
-- Compatible with any Python library
+- Compatible with any library
 
 ### Asynchronous Execution
 
@@ -432,13 +448,13 @@ Mechanism:
 
 - The consumer loop runs as a coroutine
 - Each transaction is an async task
-- Concurrency is controlled by `asyncio.Semaphore`
+- Concurrency is controlled by semaphore
 
 Benefits:
 
 - Extremely low overhead per transaction
 - Can handle massive concurrency on a single core
-- Natural fit for modern async libraries (httpx, aiohttp, asyncpg)
+- Natural fit for modern async libraries
 
 ---
 
@@ -466,3 +482,7 @@ Ergon is not just a framework—it is an architectural discipline. By enforcing 
 - **Scalable**: Built-in support for sync/async execution, single/multi-process scaling.
 
 The Transaction is the heart of this architecture. Everything else exists to serve it.
+
+---
+
+> **Note**: This document describes the Ergon Framework specification. For SDK-specific implementation details, syntax, and examples, refer to the documentation for your chosen SDK (e.g., [Python SDK](../sdks/python/)).

@@ -1,22 +1,20 @@
 # Ergon Framework
 
 <p align="left">
-  <img src="assets/logo.png" alt="Ergon Framework Logo" width="400">
+  <img src="assets/logo.svg" alt="Ergon Framework Logo" height="120">
 </p>
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Code Style: Ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 
-**A transaction-first, observability-native execution engine for building high-throughput automation pipelines in Python.**
+**A transaction-first, observability-native execution framework for building high-throughput automation pipelines.**
 
 ---
 
 ## Overview
 
-Ergon is a framework designed to solve the "maturity gap" in Python background processing. While tools like Celery are great for simple job queues and raw `asyncio` scripts are flexible but unstructured, Ergon provides a **rigorous architectural foundation** for mission-critical workloads.
+Ergon is a framework designed to solve the "maturity gap" in background processing. While simple job queues are great for basic workloads and raw async scripts are flexible but unstructured, Ergon provides a **rigorous architectural foundation** for mission-critical workloads.
 
-The framework enforces a strict **layered architecture** where business logic (`Tasks`) is completely isolated from transport mechanics (`Connectors` & `Services`). This ensures your automation code remains deterministic, testable, and portable—whether you're consuming from RabbitMQ, reading from S3, or streaming from Redis.
+The framework enforces a strict **layered architecture** where business logic (`Tasks`) is completely isolated from transport mechanics (`Connectors` & `Services`). This ensures your automation code remains deterministic, testable, and portable—whether you're consuming from message queues, reading from object storage, or streaming from databases.
 
 ---
 
@@ -39,18 +37,15 @@ Ergon follows a **Transaction-First** philosophy. The system is organized into c
 
 Everything revolves around the **Transaction**—an immutable, atomic unit of work:
 
-```python
-from ergon_framework.connector import Transaction
-
-# Transactions are created by Connectors when fetching data
-tx = Transaction(
-    id="tx-001",                           # Unique identifier for tracing
-    payload={"order_id": 123, "amount": 99.99},  # The actual data
-    metadata={"source": "rabbitmq", "queue": "orders"}  # Contextual info
-)
+```
+Transaction {
+    id: string           // Unique identifier for tracing
+    payload: any         // The actual data content
+    metadata: map        // Contextual information (optional)
+}
 ```
 
-Transactions are **frozen** (immutable) once created. This guarantees:
+Transactions are **immutable** once created. This guarantees:
 
 - **Thread safety**: Share across workers without locks
 - **Auditability**: What you received is what you process
@@ -72,127 +67,6 @@ Transactions are **frozen** (immutable) once created. This guarantees:
 
 ---
 
-## Installation
-
-```bash
-pip install ergon-framework
-```
-
-Or with `uv`:
-
-```bash
-uv add ergon-framework
-```
-
----
-
-## Quick Start
-
-### 1. Define a Consumer Task
-
-Create a task by inheriting from `ConsumerTask` and implementing `process_transaction`:
-
-```python
-from typing import Any
-from ergon_framework.task.mixins import ConsumerTask
-from ergon_framework.connector import Transaction
-
-class OrderProcessor(ConsumerTask):
-    """Consumes order transactions and processes them."""
-
-    def process_transaction(self, transaction: Transaction) -> Any:
-        # Pure business logic—no I/O, no retries, no protocol details
-        order = transaction.payload
-        total = order["quantity"] * order["unit_price"]
-        return {"order_id": order["id"], "total": total, "status": "processed"}
-
-    def handle_process_success(self, transaction: Transaction, result: Any):
-        # Called after successful processing
-        self.output_connector.dispatch_transactions([
-            Transaction(id=f"out-{transaction.id}", payload=result, metadata={})
-        ])
-
-    def handle_process_exception(self, transaction: Transaction, exc: Exception):
-        # Called when processing fails (after all retries exhausted)
-        self.dlq_connector.dispatch_transactions([transaction])
-```
-
-### 2. Create a Connector
-
-Connectors bridge external systems to the transaction interface:
-
-```python
-from typing import List
-from ergon_framework.connector import Connector, Transaction
-import uuid
-
-class RabbitMQConnector(Connector):
-    def __init__(self, queue_name: str, connection_url: str):
-        self.queue_name = queue_name
-        # Initialize your RabbitMQ client here
-        self.client = create_rabbitmq_client(connection_url)
-
-    def fetch_transactions(self, batch_size: int, **kwargs) -> List[Transaction]:
-        messages = self.client.consume(self.queue_name, max_messages=batch_size)
-        return [
-            Transaction(
-                id=str(uuid.uuid4()),
-                payload=msg.body,
-                metadata={"delivery_tag": msg.delivery_tag, "routing_key": msg.routing_key}
-            )
-            for msg in messages
-        ]
-
-    def dispatch_transactions(self, transactions: List[Transaction], **kwargs):
-        for tx in transactions:
-            self.client.publish(self.queue_name, tx.payload)
-```
-
-### 3. Configure and Run
-
-Use `TaskConfig` to wire everything together:
-
-```python
-from ergon_framework.task import TaskConfig, runner, policies
-from ergon_framework.connector import ConnectorConfig
-
-# Configure the consumer policy
-consumer_policy = policies.ConsumerPolicy()
-consumer_policy.name = "consumer"
-consumer_policy.loop.concurrency.value = 5      # Process 5 transactions in parallel
-consumer_policy.loop.batch.size = 10            # Fetch 10 at a time
-consumer_policy.loop.streaming = True           # Keep polling for new messages
-consumer_policy.process.retry.max_attempts = 3  # Retry failed processing 3 times
-consumer_policy.process.retry.backoff = 1.0     # Start with 1s backoff
-consumer_policy.process.retry.backoff_multiplier = 2.0  # Double each retry
-
-# Create the task configuration
-config = TaskConfig(
-    name="order-processor",
-    task=OrderProcessor,
-    max_workers=1,
-    connectors={
-        "input": ConnectorConfig(
-            connector=RabbitMQConnector,
-            kwargs={"queue_name": "orders", "connection_url": "amqp://localhost"}
-        ),
-        "output": ConnectorConfig(
-            connector=RabbitMQConnector,
-            kwargs={"queue_name": "processed-orders", "connection_url": "amqp://localhost"}
-        ),
-    },
-    policies=[consumer_policy],
-)
-
-# Run the task
-if __name__ == "__main__":
-    runner.run(config)
-```
-
-The framework handles the loop, retry logic, telemetry, and graceful shutdown automatically.
-
----
-
 ## Core Concepts
 
 ### Tasks & Mixins
@@ -204,18 +78,14 @@ Tasks are **thin** orchestration units containing only business logic. Behavior 
 | `ConsumerMixin` | Inbound transaction processing | `process_transaction()`, `handle_process_success()`, `handle_process_exception()` |
 | `ProducerMixin` | Outbound transaction dispatch  | `prepare_transaction()`, `handle_prepare_success()`, `handle_prepare_exception()` |
 
-**Ready-to-use task classes:**
+**Task types:**
 
-```python
-from ergon_framework.task.mixins import (
-    ConsumerTask,      # Sync consumer
-    ProducerTask,      # Sync producer
-    HybridTask,        # Sync consumer + producer
-    AsyncConsumerTask, # Async consumer
-    AsyncProducerTask, # Async producer
-    AsyncHybridTask,   # Async consumer + producer
-)
-```
+- `ConsumerTask` — Synchronous consumer
+- `ProducerTask` — Synchronous producer
+- `HybridTask` — Synchronous consumer + producer
+- `AsyncConsumerTask` — Asynchronous consumer
+- `AsyncProducerTask` — Asynchronous producer
+- `AsyncHybridTask` — Asynchronous consumer + producer
 
 ### Connectors & Services
 
@@ -236,84 +106,41 @@ External System  ←→  Service (protocol)  ←→  Connector (transactions)  �
 
 **When to use which:**
 
-- **Service only**: Enrichment APIs (OpenAI, geocoding, database lookups)—inject directly into tasks
+- **Service only**: Enrichment APIs (LLMs, geocoding, database lookups)—inject directly into tasks
 - **Connector + Service**: Sources/sinks of your pipeline (queues, files, streams)
 
 ### Policies
 
 Policies provide fine-grained control over execution without code changes:
 
-```python
-from ergon_framework.task import policies
+**ConsumerPolicy** controls:
 
-# Consumer policy with full configuration
-policy = policies.ConsumerPolicy()
-policy.name = "my-consumer"
+- Loop behavior (concurrency, batch size, streaming mode, timeouts, limits)
+- Empty queue behavior (backoff, backoff multiplier, backoff cap)
+- Per-step retry configuration (fetch, process, success, exception)
 
-# Loop behavior
-policy.loop.concurrency.value = 10      # Parallel transaction processing
-policy.loop.batch.size = 50             # Transactions per fetch
-policy.loop.streaming = True            # Continuous polling mode
-policy.loop.timeout = 3600              # Max loop duration (seconds)
-policy.loop.limit = 1000                # Max transactions to process
+**ProducerPolicy** controls:
 
-# Empty queue behavior (for streaming mode)
-policy.loop.empty_queue.backoff = 1.0
-policy.loop.empty_queue.backoff_multiplier = 2.0
-policy.loop.empty_queue.backoff_cap = 30.0
+- Loop behavior (concurrency, batch size, timeout)
+- Per-step retry configuration (prepare, success, exception)
 
-# Per-step retry configuration
-policy.fetch.retry.max_attempts = 5
-policy.fetch.retry.timeout = 30
+**RetryPolicy** fields:
 
-policy.process.retry.max_attempts = 3
-policy.process.retry.backoff = 1.0
-policy.process.retry.backoff_multiplier = 2.0
-policy.process.retry.backoff_cap = 60.0
-
-policy.success.retry.max_attempts = 2
-policy.exception.retry.max_attempts = 2
-```
+- `max_attempts`: Maximum number of retries
+- `timeout`: Timeout per attempt
+- `backoff`: Initial backoff delay
+- `backoff_multiplier`: Exponential factor for subsequent retries
+- `backoff_cap`: Maximum backoff delay
 
 ---
 
 ## Dependency Injection
 
-Tasks receive all dependencies automatically via the `TaskMeta` metaclass:
+Tasks receive all dependencies automatically:
 
-```python
-class EnrichmentTask(ConsumerTask):
-    def process_transaction(self, transaction: Transaction) -> Any:
-        # Access connectors as self.{name}_connector
-        count = self.input_connector.get_transactions_count()
-      
-        # Access services as self.{name}_service
-        enriched = self.openai_service.complete(transaction.payload["text"])
-      
-        # Access policies as self.{name}_policy
-        timeout = self.consumer_policy.loop.timeout
-      
-        return {"enriched": enriched, "pending": count}
-```
-
-Configure services in `TaskConfig`:
-
-```python
-from ergon_framework.connector import ServiceConfig
-
-config = TaskConfig(
-    name="enrichment-task",
-    task=EnrichmentTask,
-    connectors={"input": input_connector_config},
-    services={
-        "openai": ServiceConfig(
-            service=OpenAIService,
-            kwargs={"api_key": "sk-...", "model": "gpt-4"}
-        )
-    },
-    policies=[consumer_policy],
-)
-```
+- **Connectors**: Access as `self.{name}_connector` (e.g., `self.input_connector`)
+- **Services**: Access as `self.{name}_service` (e.g., `self.openai_service`)
+- **Policies**: Access as `self.{name}_policy` (e.g., `self.consumer_policy`)
 
 ---
 
@@ -323,7 +150,7 @@ Ergon integrates **OpenTelemetry** natively. Every task execution automatically 
 
 ### Logging
 
-- Structured JSON logging via `python-json-logger`
+- Structured JSON logging
 - Automatic `trace_id` and `span_id` injection
 - Multiple handlers: Console, File, RotatingFile, OTLP
 
@@ -335,42 +162,9 @@ Ergon integrates **OpenTelemetry** natively. Every task execution automatically 
 
 ### Metrics
 
-- Push-based via `PeriodicExportingMetricReader`
+- Push-based via periodic metric readers
 - Automatic resource attributes (task name, host, PID, execution ID)
 - Export to Prometheus, OTLP, or console
-
-```python
-from ergon_framework.telemetry import logging, tracing, metrics
-
-config = TaskConfig(
-    name="observed-task",
-    task=MyTask,
-    connectors={...},
-    logging=logging.LoggingConfig(
-        level="INFO",
-        handlers=[
-            logging.ConsoleLogHandler(),
-            logging.OTLPLogHandler(endpoint="http://collector:4317"),
-        ]
-    ),
-    tracing=tracing.TracingConfig(
-        processors=[
-            tracing.SpanProcessor(
-                processor=tracing.BatchSpanProcessor,
-                exporters=[tracing.OTLPSpanExporter(endpoint="http://collector:4317")]
-            )
-        ]
-    ),
-    metrics=metrics.MetricsConfig(
-        readers=[
-            metrics.MetricReader(
-                reader=metrics.PeriodicExportingMetricReader,
-                exporters=[metrics.OTLPMetricExporter(endpoint="http://collector:4317")]
-            )
-        ]
-    ),
-)
-```
 
 ---
 
@@ -380,34 +174,15 @@ config = TaskConfig(
 
 Best for CPU-bound processing or legacy libraries:
 
-```python
-from ergon_framework.task.mixins import ConsumerTask
-
-class SyncProcessor(ConsumerTask):
-    def process_transaction(self, transaction):
-        # Runs in ThreadPoolExecutor
-        return heavy_computation(transaction.payload)
-```
-
-- Concurrency controlled by `policy.loop.concurrency.value`
+- Concurrency controlled by thread pool size
 - Each transaction processed in its own thread
-- Multi-process scaling via `max_workers > 1`
+- Multi-process scaling via worker count configuration
 
 ### Asynchronous Execution
 
 Best for I/O-bound workloads with high concurrency:
 
-```python
-from ergon_framework.task.mixins import AsyncConsumerTask
-
-class AsyncProcessor(AsyncConsumerTask):
-    async def process_transaction(self, transaction):
-        # Runs in asyncio event loop
-        result = await self.http_client.post(transaction.payload)
-        return result
-```
-
-- Concurrency controlled by `asyncio.Semaphore`
+- Concurrency controlled by semaphore
 - Thousands of concurrent operations with minimal overhead
 - Perfect for API calls, database queries, network I/O
 
@@ -417,64 +192,37 @@ class AsyncProcessor(AsyncConsumerTask):
 
 | Axis                | Mechanism                    | Configuration                              |
 | ------------------- | ---------------------------- | ------------------------------------------ |
-| **Process**   | `ProcessPoolExecutor`      | `TaskConfig.max_workers`                 |
-| **Thread**    | `ThreadPoolExecutor`       | `policy.loop.concurrency.value`          |
-| **Async**     | `asyncio.Semaphore`        | `policy.loop.concurrency.value`          |
+| **Process**   | Process pool                 | Worker count in task configuration         |
+| **Thread**    | Thread pool                  | Concurrency value in policy                |
+| **Async**     | Semaphore                    | Concurrency value in policy                |
 | **Connector** | External system partitioning | Service-specific (consumer groups, shards) |
-
-```python
-# Multi-process scaling (sync tasks only)
-config = TaskConfig(
-    name="scaled-task",
-    task=MyTask,
-    max_workers=4,  # Spawn 4 isolated worker processes
-    connectors={...},
-)
-```
 
 ---
 
-## Project Structure
+## SDKs
 
-After scaffolding with `ergon init`:
+Ergon is a language-agnostic framework specification. Official SDK implementations:
 
-```
-my-project/
-├── main.py                  # Application entry point
-├── _observability/          # Telemetry infrastructure configs
-├── connectors/              # Custom connectors and services
-│   └── {connector_name}/    # One submodule per connector
-│       ├── connector.py     # Transaction interface
-│       └── service.py       # Protocol mechanics
-└── tasks/                   # Task definitions and shared modules
-    ├── settings.py          # Global configs (connectors, services, telemetry)
-    ├── constants.py         # Global constants and enums
-    ├── schemas.py           # Shared Pydantic models
-    ├── exceptions.py        # Shared exception classes
-    ├── helpers.py           # Shared utility functions
-    └── {task_name}/         # Per-task submodule
-        ├── task.py          # Task implementation
-        ├── config.py        # TaskConfig definition
-        ├── schemas.py       # Task-specific models
-        ├── exceptions.py    # Task-specific exceptions
-        └── helpers.py       # Task-specific utilities
-```
+| Language         | Status       | Documentation           |
+| ---------------- | ------------ | ----------------------- |
+| **Python** | ✅ Available | [Python SDK](sdks/python/) |
 
-📖 **[Full Project Structure Guide](docs/project-structure.md)** — Detailed documentation on organizing connectors, tasks, and shared modules.
+### Installing an SDK
+
+See the respective SDK documentation for installation and usage instructions.
 
 ---
 
 ## Documentation
 
-Deep dive into the core modules:
+Deep dive into the core framework concepts:
 
 - **[Architecture Guide](docs/architecture.md)** — Full system specification and design philosophy
-- **[Project Structure](docs/project-structure.md)** — How to organize connectors, tasks, and shared modules
 - **[Transaction Abstraction](docs/modules/1.transaction.md)** — Understanding atomicity rules
 - **[Task Module](docs/modules/2.task.md)** — Mixins, lifecycles, and execution modes
 - **[Connector Module](docs/modules/3.connector.md)** — Building integration boundaries
 - **[Service Module](docs/modules/4.service.md)** — Protocol engineering and reliability
-- **[Telemetry Module](docs/modules/5.telemetry.md)** — Configuring OTel logs, metrics, and traces
+- **[Telemetry Module](docs/modules/5.telemetry.md)** — Configuring logs, metrics, and traces
 
 ---
 
