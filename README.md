@@ -440,27 +440,27 @@ After scaffolding with `ergon init`:
 
 ```
 my-project/
-├── connectors/
-│   └── __init__.py
-├── tasks/
-│   ├── __init__.py
-│   ├── settings.py
-│   └── my_task/
-│       ├── __init__.py
-│       ├── config.py        # TaskConfig definition
-│       ├── task.py          # Task implementation
-│       ├── schemas.py       # Pydantic models
-│       ├── helper.py        # Task-specific utilities
-│       └── exceptions.py    # Custom exceptions
-├── _observability/
-│   ├── docker-compose.telemetry.yml
-│   ├── grafana.yaml
-│   ├── loki.yaml
-│   ├── otel-collector-config.yaml
-│   ├── prometheus.yaml
-│   └── tempo.yaml
-└── main.py
+├── main.py                  # Application entry point
+├── _observability/          # Telemetry infrastructure configs
+├── connectors/              # Custom connectors and services
+│   └── {connector_name}/    # One submodule per connector
+│       ├── connector.py     # Transaction interface
+│       └── service.py       # Protocol mechanics
+└── tasks/                   # Task definitions and shared modules
+    ├── settings.py          # Global configs (connectors, services, telemetry)
+    ├── constants.py         # Global constants and enums
+    ├── schemas.py           # Shared Pydantic models
+    ├── exceptions.py        # Shared exception classes
+    ├── helpers.py           # Shared utility functions
+    └── {task_name}/         # Per-task submodule
+        ├── task.py          # Task implementation
+        ├── config.py        # TaskConfig definition
+        ├── schemas.py       # Task-specific models
+        ├── exceptions.py    # Task-specific exceptions
+        └── helpers.py       # Task-specific utilities
 ```
+
+📖 **[Full Project Structure Guide](docs/project-structure.md)** — Detailed documentation on organizing connectors, tasks, and shared modules.
 
 ---
 
@@ -468,12 +468,13 @@ my-project/
 
 Deep dive into the core modules:
 
+- **[Architecture Guide](docs/architecture.md)** — Full system specification and design philosophy
+- **[Project Structure](docs/project-structure.md)** — How to organize connectors, tasks, and shared modules
 - **[Transaction Abstraction](docs/modules/1.transaction.md)** — Understanding atomicity rules
 - **[Task Module](docs/modules/2.task.md)** — Mixins, lifecycles, and execution modes
 - **[Connector Module](docs/modules/3.connector.md)** — Building integration boundaries
 - **[Service Module](docs/modules/4.service.md)** — Protocol engineering and reliability
 - **[Telemetry Module](docs/modules/5.telemetry.md)** — Configuring OTel logs, metrics, and traces
-- **[Architecture Guide](docs/architecture.md)** — Full system specification
 
 ---
 

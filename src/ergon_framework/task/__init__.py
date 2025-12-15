@@ -9,6 +9,8 @@ from .mixins import (
     ProducerTask,
 )
 
+from . import policies
+
 __all__ = [
     "task_manager",
     "ConsumerTask",
@@ -18,4 +20,5 @@ __all__ = [
     "AsyncProducerTask",
     "AsyncHybridTask",
     "TaskConfig",
+    "policies",
 ]

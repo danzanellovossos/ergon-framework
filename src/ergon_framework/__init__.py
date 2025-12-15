@@ -1,4 +1,4 @@
-from .connector import Transaction
+from .connector import Transaction, TransactionException
 from .connector.connector import Connector, ConnectorConfig, ServiceConfig
 from .task import (
     AsyncConsumerTask,
@@ -9,6 +9,7 @@ from .task import (
     ProducerTask,
     TaskConfig,
     task_manager,
+    policies,
 )
 from .telemetry import (
     logging,
@@ -38,6 +39,7 @@ __all__ = [
     "MetricsConfig",
     "TracingConfig",
     "TaskConfig",
+    "policies",
 ]
 
 __version__ = "0.1.0"
