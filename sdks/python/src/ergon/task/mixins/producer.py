@@ -57,7 +57,6 @@ class ProducerMixin(ABC):
                 if isinstance(prepare_result, exceptions.TransactionException):
                     prepare_result = prepare_result
                 elif isinstance(prepare_result, futures.TimeoutError):
-<<<<<<< HEAD
                     prepare_result = exceptions.TransactionException(
                         str(prepare_result), exceptions.ExceptionType.TIMEOUT
                     )
@@ -65,11 +64,6 @@ class ProducerMixin(ABC):
                     prepare_result = exceptions.TransactionException(
                         str(prepare_result), exceptions.ExceptionType.SYSTEM
                     )
-=======
-                    prepare_result = exceptions.TransactionException(str(prepare_result), exceptions.ExceptionType.TIMEOUT)
-                else:
-                    prepare_result = exceptions.TransactionException(str(prepare_result), exceptions.ExceptionType.SYSTEM)
->>>>>>> c092c1f (feat/metrics)
                 return self._handle_prepare_exception(transaction, prepare_result, policy.exception)
 
             # -----------------------
@@ -83,7 +77,6 @@ class ProducerMixin(ABC):
                 if isinstance(success_result, exceptions.TransactionException):
                     success_result = success_result
                 elif isinstance(success_result, futures.TimeoutError):
-<<<<<<< HEAD
                     success_result = exceptions.TransactionException(
                         str(success_result), exceptions.ExceptionType.TIMEOUT
                     )
@@ -91,11 +84,6 @@ class ProducerMixin(ABC):
                     success_result = exceptions.TransactionException(
                         str(success_result), exceptions.ExceptionType.SYSTEM
                     )
-=======
-                    success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.TIMEOUT)
-                else:
-                    success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.SYSTEM)
->>>>>>> c092c1f (feat/metrics)
                 return self._handle_prepare_exception(transaction, success_result, policy.exception)
 
             return True, success_result
@@ -219,11 +207,7 @@ class ProducerMixin(ABC):
                     batch_number=batch_number,
                     batch_size=len(batch),
                 )
-<<<<<<< HEAD
                 _, count = helpers.run_concurrently(
-=======
-                count = helpers.run_concurrently_with_refill(
->>>>>>> c092c1f (feat/metrics)
                     data=batch,
                     callback=lambda tr: (tr, policy),
                     submit_fn=submit_start_producing,
@@ -469,13 +453,9 @@ class AsyncProducerMixin(ABC):
                     except asyncio.TimeoutError as te:
                         last_exc = exceptions.TransactionException(str(te), exceptions.ExceptionType.TIMEOUT)
                     except BaseException as e:
-<<<<<<< HEAD
                         last_exc = exceptions.TransactionException(
                             str(e), exceptions.ExceptionType.SYSTEM, transaction.id
                         )
-=======
-                        last_exc = exceptions.TransactionException(str(e), exceptions.ExceptionType.SYSTEM, transaction.id)
->>>>>>> c092c1f (feat/metrics)
 
                     if attempt == policy.retry.max_attempts - 1:
                         outcome = "error"
