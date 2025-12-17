@@ -1,7 +1,6 @@
-# Ergon Framework
 
 <p align="left">
-  <img src="assets/logo.svg" alt="Ergon Framework Logo" height="120">
+  <img src="assets/logo.png" alt="Ergon Framework Logo" height="200">
 </p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -223,6 +222,15 @@ Deep dive into the core framework concepts:
 - **[Connector Module](docs/modules/3.connector.md)** — Building integration boundaries
 - **[Service Module](docs/modules/4.service.md)** — Protocol engineering and reliability
 - **[Telemetry Module](docs/modules/5.telemetry.md)** — Configuring logs, metrics, and traces
+
+---
+
+## Documentation & Website
+
+- `docs/` contains the canonical framework documentation (Markdown).
+- `website/` contains generated HTML files derived from `docs/`.
+- Website files are committed to the repository and **must not be edited manually**.
+- All changes must be made in `docs/`, then regenerated.
 
 ---
 
