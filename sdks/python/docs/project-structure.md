@@ -1,4 +1,4 @@
-# Project Structure Guide
+# Project Structure Guide (Python SDK)
 
 So you've decided to build with Ergon—great choice. But where do you put things? How do you keep a growing codebase from turning into spaghetti? This guide walks you through the recommended project layout that keeps your code clean, testable, and scalable.
 
@@ -8,7 +8,7 @@ The structure isn't arbitrary. Every directory and file has a clear purpose, and
 
 ## The Big Picture
 
-An Ergon project has three main areas:
+An Ergon Python project has three main areas:
 
 ```
 my_project/
@@ -51,14 +51,17 @@ That's it. The CLI discovers your registered tasks and runs them. You never touc
 
 ### When Do You Need a Custom Connector?
 
-Most of the time, you don't. For standard transports like Kafka, RabbitMQ, or PostgreSQL, just install a plugin:
+Most of the time, you don't. Ergon ships with **Excel** and **RabbitMQ** connectors built-in—ready to use out of the box.
+
+For other transports, you have two options:
 
 ```bash
+# Install additional connector plugins
 pip install ergon-kafka
-pip install ergon-rabbitmq
+pip install ergon-postgres
 ```
 
-But sometimes you need to talk to something unique—a proprietary internal API, a weird legacy system, or a third-party service with no existing plugin. That's when you build a custom connector.
+Or build a custom connector directly in your project without publishing. This is perfect for proprietary internal APIs, weird legacy systems, or third-party services with no existing plugin.
 
 ### The Connector Folder Structure
 
@@ -82,13 +85,14 @@ connectors/
 | `schemas.py` | Pydantic models for validating requests and responses. Keeps your data clean. |
 | `exceptions.py` | Custom exception classes like `RateLimitExceeded` or `AuthenticationFailed`. Helps the framework route errors correctly. |
 
-### Plugin or Custom?
+### Built-in, Plugin, or Custom?
 
 | Situation | What to Do |
 |-----------|------------|
-| Kafka, RabbitMQ, S3, PostgreSQL | Install the plugin. Don't reinvent the wheel. |
-| Internal company API | Build a custom connector. |
-| Third-party API with no plugin | Build a custom connector. |
+| Excel files, RabbitMQ | Use the built-in connectors. They come with Ergon. |
+| Kafka, S3, PostgreSQL, etc. | Install a plugin via pip/uv. |
+| Internal company API | Build a custom connector directly in your project. |
+| Third-party API with no plugin | Build a custom connector directly in your project. |
 | Existing plugin doesn't quite fit | Fork it or build custom. |
 
 ---
@@ -135,10 +139,10 @@ import os
 from ergon_framework.connector import ConnectorConfig, ServiceConfig
 from ergon_framework.telemetry import logging, tracing
 
-# Connector configurations
-KAFKA_CONNECTOR = ConnectorConfig(
-    connector=KafkaConnector,
-    kwargs={"bootstrap_servers": os.getenv("KAFKA_BROKERS")}
+# Connector configurations (RabbitMQ is built-in)
+RABBITMQ_CONNECTOR = ConnectorConfig(
+    connector=RabbitMQConnector,
+    kwargs={"host": os.getenv("RABBITMQ_HOST"), "queue": "orders"}
 )
 
 # Service configurations (for enrichment, APIs, etc.)
@@ -152,7 +156,7 @@ LOGGING = logging.LoggingConfig(level="INFO", handlers=[...])
 TRACING = tracing.TracingConfig(processors=[...])
 ```
 
-**Why this matters:** Your tasks never touch environment variables directly. They just reference `settings.KAFKA_CONNECTOR`. When you need to swap Kafka for RabbitMQ, you change one file—not twenty.
+**Why this matters:** Your tasks never touch environment variables directly. They just reference `settings.RABBITMQ_CONNECTOR`. When you need to swap RabbitMQ for Kafka (or Excel, or a custom connector), you change one file—not twenty.
 
 ---
 
@@ -334,7 +338,7 @@ CONSUMER_POLICY.process.retry.backoff_multiplier = 2  # Double each retry
 TASK_CONFIG = TaskConfig(
     task=OrderProcessorTask,
     name="order-processor",
-    connectors={"input": settings.KAFKA_CONNECTOR},
+    connectors={"input": settings.RABBITMQ_CONNECTOR},
     services={"crm": settings.CRM_SERVICE},
     policies=[CONSUMER_POLICY],
     logging=settings.LOGGING,
@@ -447,13 +451,13 @@ my_order_pipeline/
 │
 └── tasks/
     ├── __init__.py
-    ├── settings.py                   # KAFKA_CONNECTOR, ACME_CONNECTOR, CRM_SERVICE
+    ├── settings.py                   # RABBITMQ_CONNECTOR, EXCEL_CONNECTOR, CRM_SERVICE
     ├── constants.py                  # OrderStatus, BATCH_SIZE
     ├── schemas.py                    # BasePayload, UserPayload
     ├── exceptions.py                 # ValidationError
     ├── helpers.py                    # generate_idempotency_key
     │
-    ├── order_ingestion/              # Consumes raw orders from Kafka
+    ├── order_ingestion/              # Consumes raw orders from RabbitMQ
     │   ├── __init__.py
     │   ├── task.py                   # AsyncConsumerTask
     │   ├── config.py
@@ -499,8 +503,14 @@ my_order_pipeline/
 
 ### Using a Plugin Connector
 
-1. Install: `pip install ergon-kafka`
+1. Install: `pip install ergon-kafka` (or use uv)
 2. Import and configure in `tasks/settings.py`
+3. Reference in your task's `config.py`
+
+### Using Built-in Connectors
+
+1. Import directly: `from ergon_framework.connector import RabbitMQConnector, ExcelConnector`
+2. Configure in `tasks/settings.py`
 3. Reference in your task's `config.py`
 
 ---
@@ -517,3 +527,4 @@ my_order_pipeline/
 | **Scalability** | Adding a new task is just copying the pattern |
 
 The structure might feel rigid at first, but that's the point. When your project grows from 3 tasks to 30, you'll be glad everything has a home.
+

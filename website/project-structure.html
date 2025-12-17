@@ -1,0 +1,280 @@
+<!--
+AUTO-GENERATED FILE
+Source: sdks/python/docs/project-structure.md
+DO NOT EDIT MANUALLY
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Project Structure — Ergon Framework</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-dark: #0a0e14;
+            --bg-card: #111820;
+            --accent-cyan: #39bae6;
+            --accent-orange: #ff8f40;
+            --accent-green: #7fd962;
+            --accent-magenta: #f07178;
+            --accent-yellow: #ffb454;
+            --accent-purple: #d2a6ff;
+            --text-primary: #e6e6e6;
+            --text-secondary: #6e7a8a;
+            --text-muted: #3d4752;
+            --border: #1f2833;
+            --glow-green: rgba(127, 217, 98, 0.15);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+        body { font-family: 'Outfit', -apple-system, sans-serif; background: var(--bg-dark); color: var(--text-primary); line-height: 1.7; }
+
+        .bg-pattern {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: -1;
+            background-image: 
+                radial-gradient(circle at 60% 40%, var(--glow-green) 0%, transparent 50%),
+                linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+            background-size: 100% 100%, 60px 60px, 60px 60px;
+        }
+
+        nav { position: fixed; top: 0; left: 0; right: 0; background: rgba(10, 14, 20, 0.9); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); z-index: 1000; padding: 1rem 2rem; }
+        .nav-inner { max-width: 1200px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; }
+        .nav-logo { display: flex; align-items: center; text-decoration: none; }
+        .nav-logo img { height: 32px; width: auto; }
+        .nav-links { display: flex; gap: 2rem; list-style: none; }
+        .nav-links a { color: var(--text-secondary); text-decoration: none; font-size: 0.95rem; transition: color 0.3s; }
+        .nav-links a:hover, .nav-links a.active { color: var(--accent-cyan); }
+
+        .page-hero { padding: 8rem 2rem 4rem; text-align: center; position: relative; }
+        .page-hero::before { content: ''; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 500px; height: 500px; background: radial-gradient(circle, var(--glow-green) 0%, transparent 70%); opacity: 0.4; }
+
+        .hero-icon { width: 80px; height: 80px; background: linear-gradient(135deg, var(--accent-green), var(--accent-cyan)); border-radius: 20px; display: flex; align-items: center; justify-content: center; font-size: 2.5rem; margin: 0 auto 1.5rem; position: relative; z-index: 1; }
+        .page-hero h1 { font-size: clamp(2.5rem, 6vw, 4rem); font-weight: 800; letter-spacing: -0.03em; margin-bottom: 1rem; position: relative; z-index: 1; }
+        .page-hero p { font-size: 1.25rem; color: var(--text-secondary); max-width: 700px; margin: 0 auto; position: relative; z-index: 1; }
+
+        .content { max-width: 900px; margin: 0 auto; padding: 2rem; }
+        .content h2 { font-size: 1.75rem; font-weight: 700; margin: 3rem 0 1.5rem; color: var(--accent-green); }
+        .content h3 { font-size: 1.25rem; font-weight: 600; margin: 2rem 0 1rem; }
+        .content p { margin-bottom: 1.25rem; color: var(--text-secondary); }
+        .content ul { margin-bottom: 1.5rem; padding-left: 1.5rem; color: var(--text-secondary); }
+        .content li { margin-bottom: 0.5rem; }
+        .content strong { color: var(--text-primary); }
+        .content code { background: var(--bg-card); padding: 0.2rem 0.4rem; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 0.9em; color: var(--accent-cyan); }
+
+        pre.code-block { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; line-height: 1.6; overflow-x: auto; margin: 1.5rem 0; white-space: pre; }
+        .code-block .comment { color: var(--text-muted); }
+        .code-block .folder { color: var(--accent-orange); }
+        .code-block .file { color: var(--accent-cyan); }
+
+        .file-table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; background: var(--bg-card); border-radius: 12px; overflow: hidden; border: 1px solid var(--border); }
+        .file-table th, .file-table td { padding: 1rem 1.25rem; text-align: left; }
+        .file-table th { background: var(--bg-dark); font-weight: 600; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); }
+        .file-table td { border-top: 1px solid var(--border); font-size: 0.95rem; }
+        .file-table td:first-child { font-family: 'JetBrains Mono', monospace; color: var(--accent-cyan); font-size: 0.9rem; }
+
+        .quick-ref { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin: 2rem 0; }
+        .quick-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; }
+        .quick-card h4 { font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem; color: var(--accent-green); }
+        .quick-card ol { padding-left: 1.25rem; font-size: 0.9rem; }
+        .quick-card li { margin-bottom: 0.5rem; }
+
+        footer { text-align: center; padding: 3rem 2rem; border-top: 1px solid var(--border); margin-top: 4rem; }
+        .footer-links { display: flex; gap: 2rem; justify-content: center; flex-wrap: wrap; }
+        .footer-links a { color: var(--text-secondary); text-decoration: none; font-size: 0.9rem; }
+        .footer-links a:hover { color: var(--accent-cyan); }
+
+        @media (max-width: 768px) { .nav-links { display: none; } .file-table { display: block; overflow-x: auto; } }
+    </style>
+</head>
+<body>
+    <div class="bg-pattern"></div>
+
+    <nav>
+        <div class="nav-inner">
+            <a href="index.html" class="nav-logo"><img src="logo.png" alt="Ergon Framework"></a>
+            <ul class="nav-links">
+                <li><a href="architecture.html">Architecture</a></li>
+                <li><a href="transaction.html">Transaction</a></li>
+                <li><a href="task.html">Tasks</a></li>
+                <li><a href="connector.html">Connectors</a></li>
+                <li><a href="service.html">Services</a></li>
+                <li><a href="telemetry.html">Telemetry</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <section class="page-hero">
+        <div class="hero-icon">📁</div>
+        <h1>Project Structure</h1>
+        <p>A consistent, scalable layout for organizing your Ergon projects. Every directory and file has a clear purpose.</p>
+    </section>
+
+    <div class="content">
+        <h2>The Big Picture</h2>
+        <p>An Ergon project has three main areas:</p>
+
+<pre class="code-block"><span class="folder">my_project/</span>
+├── <span class="file">main.py</span>                    <span class="comment"># Single entry point</span>
+├── <span class="folder">_observability/</span>            <span class="comment"># Telemetry configs (Grafana, Prometheus)</span>
+├── <span class="folder">connectors/</span>                <span class="comment"># Custom connectors when plugins don't cut it</span>
+│   └── <span class="folder">{connector_name}/</span>      <span class="comment"># One folder per connector</span>
+│       ├── <span class="file">connector.py</span>       <span class="comment"># Transaction interface</span>
+│       └── <span class="file">service.py</span>         <span class="comment"># Protocol mechanics</span>
+└── <span class="folder">tasks/</span>                     <span class="comment"># Where the magic happens</span>
+    ├── <span class="file">settings.py</span>            <span class="comment"># All connectors, services, telemetry</span>
+    ├── <span class="file">constants.py</span>           <span class="comment"># Enums, magic values</span>
+    ├── <span class="file">schemas.py</span>             <span class="comment"># Shared data models</span>
+    ├── <span class="file">exceptions.py</span>          <span class="comment"># Shared exception classes</span>
+    ├── <span class="file">helpers.py</span>             <span class="comment"># Shared utility functions</span>
+    └── <span class="folder">{task_name}/</span>           <span class="comment"># One folder per task</span>
+        ├── <span class="file">task.py</span>            <span class="comment"># Task implementation</span>
+        ├── <span class="file">config.py</span>          <span class="comment"># TaskConfig definition</span>
+        ├── <span class="file">schemas.py</span>         <span class="comment"># Task-specific models</span>
+        ├── <span class="file">exceptions.py</span>      <span class="comment"># Task-specific exceptions</span>
+        └── <span class="file">helpers.py</span>         <span class="comment"># Task-specific utilities</span>
+</pre>
+
+        <h2>Shared Modules</h2>
+        <p>Files at the <code>tasks/</code> root are shared across all tasks:</p>
+
+        <table class="file-table">
+            <thead>
+                <tr>
+                    <th>File</th>
+                    <th>Purpose</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>settings.py</td>
+                    <td>Connector configs, service configs, telemetry configs. Single source of truth.</td>
+                </tr>
+                <tr>
+                    <td>constants.py</td>
+                    <td>Enums, thresholds, batch sizes. No magic values scattered in code.</td>
+                </tr>
+                <tr>
+                    <td>schemas.py</td>
+                    <td>Data models used by multiple tasks. DRY principle.</td>
+                </tr>
+                <tr>
+                    <td>exceptions.py</td>
+                    <td>Exception classes for consistent error categorization.</td>
+                </tr>
+                <tr>
+                    <td>helpers.py</td>
+                    <td>Pure utility functions. Testable in isolation.</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>Per-Task Modules</h2>
+        <p>Each task gets its own directory with the same file pattern:</p>
+
+        <table class="file-table">
+            <thead>
+                <tr>
+                    <th>File</th>
+                    <th>Purpose</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>task.py</td>
+                    <td>The task class. Pick ConsumerTask, ProducerTask, or HybridTask.</td>
+                </tr>
+                <tr>
+                    <td>config.py</td>
+                    <td>TaskConfig with connectors, services, policies. Register with task_manager.</td>
+                </tr>
+                <tr>
+                    <td>schemas.py</td>
+                    <td>Data models specific to this task. Import shared from parent.</td>
+                </tr>
+                <tr>
+                    <td>exceptions.py</td>
+                    <td>Task-specific exceptions. Extend shared when needed.</td>
+                </tr>
+                <tr>
+                    <td>helpers.py</td>
+                    <td>Task-specific utilities. Compose with shared helpers.</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <h2>Connectors</h2>
+        <p>Ergon ships with <strong>Excel</strong> and <strong>RabbitMQ</strong> connectors built-in. Additional connectors can be installed via your SDK's package manager or built directly in your project:</p>
+
+<pre class="code-block"><span class="folder">connectors/</span>
+└── <span class="folder">acme_api/</span>                  <span class="comment"># Custom connector for ACME Corp</span>
+    ├── <span class="file">__init__.py</span>
+    ├── <span class="file">connector.py</span>           <span class="comment"># fetch_transactions, dispatch_transactions</span>
+    ├── <span class="file">service.py</span>             <span class="comment"># HTTP calls, auth, retries</span>
+    ├── <span class="file">schemas.py</span>             <span class="comment"># Data models for API</span>
+    └── <span class="file">exceptions.py</span>          <span class="comment"># RateLimitError, AuthError</span>
+</pre>
+
+        <h2>Quick Reference</h2>
+
+        <div class="quick-ref">
+            <div class="quick-card">
+                <h4>Adding a New Task</h4>
+                <ol>
+                    <li>Create folder: <code>tasks/my_task/</code></li>
+                    <li>Create files: task.py, config.py, schemas.py, exceptions.py, helpers.py</li>
+                    <li>Pick your task class (AsyncConsumerTask, etc.)</li>
+                    <li>Wire up in config.py</li>
+                    <li>Register with <code>task_manager.register()</code></li>
+                </ol>
+            </div>
+            <div class="quick-card">
+                <h4>Adding a Custom Connector</h4>
+                <ol>
+                    <li>Create folder: <code>connectors/my_connector/</code></li>
+                    <li>Create service.py with protocol logic</li>
+                    <li>Create connector.py wrapping the service</li>
+                    <li>Add ConnectorConfig in settings.py</li>
+                    <li>Reference in task config</li>
+                </ol>
+            </div>
+            <div class="quick-card">
+                <h4>Using a Plugin</h4>
+                <ol>
+                    <li>Install: <code>pip install ergon-kafka</code></li>
+                    <li>Import in settings.py</li>
+                    <li>Configure with ConnectorConfig</li>
+                    <li>Reference in task config</li>
+                </ol>
+            </div>
+        </div>
+
+        <h2>Why This Structure Works</h2>
+        <ul>
+            <li><strong>Separation of Concerns:</strong> Tasks, connectors, and shared modules in separate directories</li>
+            <li><strong>DRY:</strong> Global modules prevent copy-paste across tasks</li>
+            <li><strong>Single Responsibility:</strong> Each file does one thing</li>
+            <li><strong>Testability:</strong> Pure functions in helpers, isolated business logic</li>
+            <li><strong>Discoverability:</strong> Consistent naming—you always know where to look</li>
+            <li><strong>Scalability:</strong> Adding a new task is just copying the pattern</li>
+        </ul>
+    </div>
+
+    <footer>
+        <div class="footer-links">
+            <a href="index.html">Home</a>
+            <a href="architecture.html">Architecture</a>
+            <a href="transaction.html">Transaction</a>
+            <a href="task.html">Tasks</a>
+            <a href="connector.html">Connectors</a>
+            <a href="service.html">Services</a>
+            <a href="telemetry.html">Telemetry</a>
+        </div>
+    </footer>
+</body>
+</html>
+
