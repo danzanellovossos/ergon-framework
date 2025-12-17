@@ -9,7 +9,7 @@ from more_itertools import chunked
 
 from ... import connector, telemetry
 from .. import base, exceptions, policies
-from . import helpers, utils
+from . import helpers, metrics as mixin_metrics, utils
 
 logger = logging.getLogger(__name__)
 tracer = telemetry.tracing.get_tracer(__name__)
@@ -40,52 +40,75 @@ class ProducerMixin(ABC):
         """
         PRODUCE → SUCCESS | EXCEPTION
         """
+        tx_start = time.perf_counter()
+        final_status = "success"
 
-        # -----------------------
-        # 1) PREPARE
-        # -----------------------
-        prepare_success, prepare_result = self._handle_prepare(transaction, policy.prepare)
+        try:
+            # -----------------------
+            # 1) PREPARE
+            # -----------------------
+            prepare_success, prepare_result = self._handle_prepare(transaction, policy.prepare)
 
-        # -----------------------
-        # 2) EXCEPTION HANDLER
-        # -----------------------
-        if not prepare_success:
-            if isinstance(prepare_result, exceptions.TransactionException):
-                prepare_result = prepare_result
-            elif isinstance(prepare_result, futures.TimeoutError):
-                prepare_result = exceptions.TransactionException(str(prepare_result), exceptions.ExceptionType.TIMEOUT)
-            else:
-                prepare_result = exceptions.TransactionException(str(prepare_result), exceptions.ExceptionType.SYSTEM)
-            return self._handle_prepare_exception(transaction, prepare_result, policy.exception)
+            # -----------------------
+            # 2) EXCEPTION HANDLER
+            # -----------------------
+            if not prepare_success:
+                final_status = "exception"
+                if isinstance(prepare_result, exceptions.TransactionException):
+                    prepare_result = prepare_result
+                elif isinstance(prepare_result, futures.TimeoutError):
+                    prepare_result = exceptions.TransactionException(str(prepare_result), exceptions.ExceptionType.TIMEOUT)
+                else:
+                    prepare_result = exceptions.TransactionException(str(prepare_result), exceptions.ExceptionType.SYSTEM)
+                return self._handle_prepare_exception(transaction, prepare_result, policy.exception)
 
-        # -----------------------
-        # 3) SUCCESS HANDLER
-        # -----------------------
-        success_success, success_result = self._handle_prepare_success(
-            transaction, prepare_result, policy.success, policy.exception
-        )
-        if not success_success:
-            if isinstance(success_result, exceptions.TransactionException):
-                success_result = success_result
-            elif isinstance(success_result, futures.TimeoutError):
-                success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.TIMEOUT)
-            else:
-                success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.SYSTEM)
-            return self._handle_prepare_exception(transaction, success_result, policy.exception)
+            # -----------------------
+            # 3) SUCCESS HANDLER
+            # -----------------------
+            success_success, success_result = self._handle_prepare_success(
+                transaction, prepare_result, policy.success, policy.exception
+            )
+            if not success_success:
+                final_status = "exception"
+                if isinstance(success_result, exceptions.TransactionException):
+                    success_result = success_result
+                elif isinstance(success_result, futures.TimeoutError):
+                    success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.TIMEOUT)
+                else:
+                    success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.SYSTEM)
+                return self._handle_prepare_exception(transaction, success_result, policy.exception)
 
-        return True, success_result
+            return True, success_result
+        finally:
+            # Record transaction-level metrics
+            tx_duration = time.perf_counter() - tx_start
+            mixin_metrics.record_producer_transaction(
+                task_name=getattr(self, "name", self.__class__.__name__),
+                transaction_id=transaction.id,
+                duration=tx_duration,
+                status=final_status,
+            )
 
     # -------------------------------------------------------------------
     # PREPARE HANDLER
     # -------------------------------------------------------------------
     def _handle_prepare(self, transaction: connector.Transaction, policy: policies.PreparePolicy):
         logger.debug(f"[Producer] _handle_prepare called for transaction {transaction.id}")
-        return helpers.run_fn(
+        stage_start = time.perf_counter()
+        success, result = helpers.run_fn(
             fn=lambda: self.prepare_transaction(transaction),
             retry=policy.retry,
             trace_name=f"{self.__class__.__name__}.prepare",
             trace_attrs={"transaction": transaction.id},
         )
+        # Record lifecycle metrics
+        mixin_metrics.record_producer_lifecycle(
+            task_name=getattr(self, "name", self.__class__.__name__),
+            stage="prepare",
+            duration=time.perf_counter() - stage_start,
+            outcome="ok" if success else "error",
+        )
+        return success, result
 
     # -------------------------------------------------------------------
     # SUCCESS HANDLER
@@ -97,12 +120,21 @@ class ProducerMixin(ABC):
         policy: policies.SuccessPolicy,
         exception_policy: policies.ExceptionPolicy,
     ):
-        return helpers.run_fn(
+        stage_start = time.perf_counter()
+        success, handler_result = helpers.run_fn(
             fn=lambda: self.handle_prepare_success(transaction, result),
             retry=policy.retry,
             trace_name=f"{self.__class__.__name__}.handle_prepare_success",
             trace_attrs={"transaction": transaction.id},
         )
+        # Record lifecycle metrics
+        mixin_metrics.record_producer_lifecycle(
+            task_name=getattr(self, "name", self.__class__.__name__),
+            stage="success",
+            duration=time.perf_counter() - stage_start,
+            outcome="ok" if success else "error",
+        )
+        return success, handler_result
 
     # -------------------------------------------------------------------
     # EXCEPTION HANDLER
@@ -113,12 +145,21 @@ class ProducerMixin(ABC):
         exc: exceptions.TransactionException,
         policy: policies.ExceptionPolicy,
     ):
-        return helpers.run_fn(
+        stage_start = time.perf_counter()
+        success, result = helpers.run_fn(
             fn=lambda: self.handle_prepare_exception(transaction, exc),
             retry=policy.retry,
             trace_name=f"{self.__class__.__name__}.handle_prepare_exception",
             trace_attrs={"transaction": transaction.id},
         )
+        # Record lifecycle metrics
+        mixin_metrics.record_producer_lifecycle(
+            task_name=getattr(self, "name", self.__class__.__name__),
+            stage="exception",
+            duration=time.perf_counter() - stage_start,
+            outcome="ok" if success else "error",
+        )
+        return success, result
 
     # -------------------------------------------------------------------
     # PUBLIC API — PRODUCE MANY
@@ -151,7 +192,13 @@ class ProducerMixin(ABC):
             #  PRODUCE LOOP
             # ============================================================
             batches = list(chunked(transactions, policy.loop.batch.size))
-            for batch in batches:
+            for batch_number, batch in enumerate(batches, 1):
+                # Record batch metric
+                mixin_metrics.record_producer_batch(
+                    task_name=getattr(self, "name", self.__class__.__name__),
+                    batch_number=batch_number,
+                    batch_size=len(batch),
+                )
                 count = helpers.run_concurrently_with_refill(
                     data=batch,
                     it=iter((tr, policy) for tr in batch),
@@ -227,73 +274,100 @@ class AsyncProducerMixin(ABC):
         PRODUCE → SUCCESS | EXCEPTION
         Mirrors sync version exactly.
         """
+        tx_start = time.perf_counter()
+        final_status = "success"
 
-        with tracer.start_as_current_span(
-            f"{self.__class__.__name__}.start_producing",
-            attributes={"transaction": transaction.id},
-        ):
-            # ---- PRODUCE ----
+        try:
             with tracer.start_as_current_span(
-                f"{self.__class__.__name__}.prepare",
-                attributes={
-                    "transaction": transaction.id,
-                    **policy.prepare.retry.model_dump(),
-                },
+                f"{self.__class__.__name__}.start_producing",
+                attributes={"transaction": transaction.id},
             ):
-                result = await self._handle_prepare(transaction, policy.prepare)
-
-            # ---- SUCCESS OR EXCEPTION ----
-            if isinstance(result, exceptions.TransactionException):
+                # ---- PRODUCE ----
                 with tracer.start_as_current_span(
-                    f"{self.__class__.__name__}.handle_prepare_exception",
+                    f"{self.__class__.__name__}.prepare",
                     attributes={
                         "transaction": transaction.id,
-                        "exception": result.message,
-                        **policy.exception.retry.model_dump(),
+                        **policy.prepare.retry.model_dump(),
                     },
                 ):
-                    return await self._handle_prepare_exception(transaction, result, policy.exception)
+                    result = await self._handle_prepare(transaction, policy.prepare)
 
-            with tracer.start_as_current_span(
-                f"{self.__class__.__name__}.handle_prepare_success",
-                attributes={
-                    "transaction": transaction.id,
-                    "result": result,
-                    **policy.success.retry.model_dump(),
-                },
-            ):
-                return await self._handle_prepare_success(transaction, result, policy.success, policy.exception)
+                # ---- SUCCESS OR EXCEPTION ----
+                if isinstance(result, exceptions.TransactionException):
+                    final_status = "exception"
+                    with tracer.start_as_current_span(
+                        f"{self.__class__.__name__}.handle_prepare_exception",
+                        attributes={
+                            "transaction": transaction.id,
+                            "exception": result.message,
+                            **policy.exception.retry.model_dump(),
+                        },
+                    ):
+                        return await self._handle_prepare_exception(transaction, result, policy.exception)
+
+                with tracer.start_as_current_span(
+                    f"{self.__class__.__name__}.handle_prepare_success",
+                    attributes={
+                        "transaction": transaction.id,
+                        "result": result,
+                        **policy.success.retry.model_dump(),
+                    },
+                ):
+                    return await self._handle_prepare_success(transaction, result, policy.success, policy.exception)
+        finally:
+            # Record transaction-level metrics
+            tx_duration = time.perf_counter() - tx_start
+            mixin_metrics.record_producer_transaction(
+                task_name=getattr(self, "name", self.__class__.__name__),
+                transaction_id=transaction.id,
+                duration=tx_duration,
+                status=final_status,
+            )
 
     # -------------------------------------------------------------------
     # PREPARE HANDLER
     # -------------------------------------------------------------------
 
     async def _handle_prepare(self, transaction: connector.Transaction, policy: policies.PreparePolicy):
+        stage_start = time.perf_counter()
+        outcome = "ok"
+
         async def fn():
             return await self.prepare_transaction(transaction)
 
-        for attempt in range(policy.retry.max_attempts):
-            with tracer.start_as_current_span(
-                f"{self.__class__.__name__}.prepare.attempt",
-                attributes={"attempt": attempt + 1},
-            ):
-                try:
-                    return await utils.run_with_timeout_async(fn, policy.retry.timeout)
-                except exceptions.TransactionException as te:
-                    if te.category != exceptions.ExceptionType.TIMEOUT:
-                        return te
-                    last_exc = te
-                except asyncio.TimeoutError as te:
-                    last_exc = exceptions.TransactionException(str(te), exceptions.ExceptionType.TIMEOUT)
-                except BaseException as e:
-                    last_exc = exceptions.TransactionException(str(e), exceptions.ExceptionType.SYSTEM)
+        try:
+            for attempt in range(policy.retry.max_attempts):
+                with tracer.start_as_current_span(
+                    f"{self.__class__.__name__}.prepare.attempt",
+                    attributes={"attempt": attempt + 1},
+                ):
+                    try:
+                        return await utils.run_with_timeout_async(fn, policy.retry.timeout)
+                    except exceptions.TransactionException as te:
+                        if te.category != exceptions.ExceptionType.TIMEOUT:
+                            outcome = "error"
+                            return te
+                        last_exc = te
+                    except asyncio.TimeoutError as te:
+                        last_exc = exceptions.TransactionException(str(te), exceptions.ExceptionType.TIMEOUT)
+                    except BaseException as e:
+                        last_exc = exceptions.TransactionException(str(e), exceptions.ExceptionType.SYSTEM)
 
-                if attempt == policy.retry.max_attempts - 1:
-                    return last_exc
+                    if attempt == policy.retry.max_attempts - 1:
+                        outcome = "error"
+                        return last_exc
 
-                await utils.backoff_async(
-                    policy.retry.backoff, policy.retry.backoff_multiplier, policy.retry.backoff_cap, attempt
-                )
+                    await utils.backoff_async(
+                        policy.retry.backoff, policy.retry.backoff_multiplier, policy.retry.backoff_cap, attempt
+                    )
+        finally:
+            # Record lifecycle metrics
+            mixin_metrics.record_producer_lifecycle(
+                task_name=getattr(self, "name", self.__class__.__name__),
+                stage="prepare",
+                duration=time.perf_counter() - stage_start,
+                outcome=outcome,
+            )
 
     # -------------------------------------------------------------------
     # SUCCESS HANDLER
@@ -306,27 +380,40 @@ class AsyncProducerMixin(ABC):
         policy: policies.SuccessPolicy,
         exception_policy: policies.ExceptionPolicy,
     ):
+        stage_start = time.perf_counter()
+        outcome = "ok"
+
         async def fn():
             return await self.handle_prepare_success(transaction, result)
 
-        for attempt in range(policy.retry.max_attempts):
-            with tracer.start_as_current_span(
-                f"{self.__class__.__name__}.handle_prepare_success.attempt",
-                attributes={"attempt": attempt + 1},
-            ):
-                try:
-                    return await utils.run_with_timeout_async(fn, policy.retry.timeout)
-                except asyncio.TimeoutError as te:
-                    last_exc = exceptions.TransactionException(str(te), exceptions.ExceptionType.TIMEOUT)
-                except BaseException as e:
-                    last_exc = exceptions.TransactionException(str(e), exceptions.ExceptionType.SYSTEM)
+        try:
+            for attempt in range(policy.retry.max_attempts):
+                with tracer.start_as_current_span(
+                    f"{self.__class__.__name__}.handle_prepare_success.attempt",
+                    attributes={"attempt": attempt + 1},
+                ):
+                    try:
+                        return await utils.run_with_timeout_async(fn, policy.retry.timeout)
+                    except asyncio.TimeoutError as te:
+                        last_exc = exceptions.TransactionException(str(te), exceptions.ExceptionType.TIMEOUT)
+                    except BaseException as e:
+                        last_exc = exceptions.TransactionException(str(e), exceptions.ExceptionType.SYSTEM)
 
-                if attempt == policy.retry.max_attempts - 1:
-                    return await self._handle_prepare_exception(transaction, last_exc, exception_policy)
+                    if attempt == policy.retry.max_attempts - 1:
+                        outcome = "error"
+                        return await self._handle_prepare_exception(transaction, last_exc, exception_policy)
 
-                await utils.backoff_async(
-                    policy.retry.backoff, policy.retry.backoff_multiplier, policy.retry.backoff_cap, attempt
-                )
+                    await utils.backoff_async(
+                        policy.retry.backoff, policy.retry.backoff_multiplier, policy.retry.backoff_cap, attempt
+                    )
+        finally:
+            # Record lifecycle metrics
+            mixin_metrics.record_producer_lifecycle(
+                task_name=getattr(self, "name", self.__class__.__name__),
+                stage="success",
+                duration=time.perf_counter() - stage_start,
+                outcome=outcome,
+            )
 
     # -------------------------------------------------------------------
     # EXCEPTION HANDLER
@@ -338,32 +425,45 @@ class AsyncProducerMixin(ABC):
         exc: exceptions.TransactionException,
         policy: policies.ExceptionPolicy,
     ):
+        stage_start = time.perf_counter()
+        outcome = "ok"
+
         async def fn():
             return await self.handle_prepare_exception(transaction, exc)
 
-        for attempt in range(policy.retry.max_attempts):
-            with tracer.start_as_current_span(
-                f"{self.__class__.__name__}.handle_prepare_exception.attempt",
-                attributes={"attempt": attempt + 1},
-            ):
-                try:
-                    return await utils.run_with_timeout_async(
-                        fn=fn,
-                        timeout=policy.retry.timeout,
+        try:
+            for attempt in range(policy.retry.max_attempts):
+                with tracer.start_as_current_span(
+                    f"{self.__class__.__name__}.handle_prepare_exception.attempt",
+                    attributes={"attempt": attempt + 1},
+                ):
+                    try:
+                        return await utils.run_with_timeout_async(
+                            fn=fn,
+                            timeout=policy.retry.timeout,
+                        )
+                    except asyncio.TimeoutError as te:
+                        last_exc = exceptions.TransactionException(str(te), exceptions.ExceptionType.TIMEOUT)
+                    except BaseException as e:
+                        last_exc = exceptions.TransactionException(str(e), exceptions.ExceptionType.SYSTEM, transaction.id)
+
+                    if attempt == policy.retry.max_attempts - 1:
+                        outcome = "error"
+                        return last_exc
+
+                    await utils.backoff_async(
+                        policy.retry.backoff, policy.retry.backoff_multiplier, policy.retry.backoff_cap, attempt
                     )
-                except asyncio.TimeoutError as te:
-                    last_exc = exceptions.TransactionException(str(te), exceptions.ExceptionType.TIMEOUT)
-                except BaseException as e:
-                    last_exc = exceptions.TransactionException(str(e), exceptions.ExceptionType.SYSTEM, transaction.id)
 
-                if attempt == policy.retry.max_attempts - 1:
-                    return last_exc
-
-                await utils.backoff_async(
-                    policy.retry.backoff, policy.retry.backoff_multiplier, policy.retry.backoff_cap, attempt
-                )
-
-        return last_exc
+            return last_exc
+        finally:
+            # Record lifecycle metrics
+            mixin_metrics.record_producer_lifecycle(
+                task_name=getattr(self, "name", self.__class__.__name__),
+                stage="exception",
+                duration=time.perf_counter() - stage_start,
+                outcome=outcome,
+            )
 
     # -------------------------------------------------------------------
     # PUBLIC API — PRODUCE MANY (ASYNC)
@@ -394,7 +494,13 @@ class AsyncProducerMixin(ABC):
             # ============================================================
 
             batches = list(chunked(transactions, policy.loop.batch.size))
-            for batch in batches:
+            for batch_number, batch in enumerate(batches, 1):
+                # Record batch metric
+                mixin_metrics.record_producer_batch(
+                    task_name=getattr(self, "name", self.__class__.__name__),
+                    batch_number=batch_number,
+                    batch_size=len(batch),
+                )
                 it = iter((tr, policy) for tr in batch)
                 active = set()
 

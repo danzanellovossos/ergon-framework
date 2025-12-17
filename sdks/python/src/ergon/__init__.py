@@ -1,5 +1,7 @@
-from .connector import Transaction, TransactionException
+from .connector import Transaction
 from .connector.connector import Connector, ConnectorConfig, ServiceConfig
+
+
 from .task import (
     AsyncConsumerTask,
     AsyncHybridTask,
@@ -11,14 +13,25 @@ from .task import (
     task_manager,
     policies,
 )
+
+from .task import (
+    TaskConfig,
+    task_manager,
+    policies,
+    ProducerTask,
+    ConsumerTask,
+    HybridTask,
+    AsyncProducerTask,
+    AsyncConsumerTask,
+    AsyncHybridTask,
+    exceptions
+)
+
 from .telemetry import (
     logging,
     metrics,
     tracing,
 )
-from .telemetry.logging import LoggingConfig
-from .telemetry.metrics import MetricsConfig
-from .telemetry.tracing import TracingConfig
 
 __all__ = [
     "Connector",
@@ -35,11 +48,9 @@ __all__ = [
     "logging",
     "tracing",
     "metrics",
-    "LoggingConfig",
-    "MetricsConfig",
-    "TracingConfig",
     "TaskConfig",
     "policies",
+    "exceptions",
 ]
 
 __version__ = "0.1.0"

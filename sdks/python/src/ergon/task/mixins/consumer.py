@@ -9,7 +9,7 @@ from opentelemetry import context as otel_context
 
 from ... import connector, telemetry
 from .. import base, exceptions, policies
-from . import helpers, producer, utils
+from . import helpers, metrics as mixin_metrics, producer, utils
 
 logger = logging.getLogger(__name__)
 tracer = telemetry.tracing.get_tracer(__name__)
@@ -34,87 +34,140 @@ class ConsumerMixin(ABC):
         """
         PROCESS → SUCCESS or EXCEPTION
         """
+        tx_start = time.perf_counter()
+        final_status = "success"
 
-        # -----------------------
-        # 1) PROCESS STEP
-        # -----------------------
-        process_ok, process_result = self._handle_process(transaction, policy.process.retry)
+        try:
+            # -----------------------
+            # 1) PROCESS STEP
+            # -----------------------
+            process_ok, process_result = self._handle_process(transaction, policy.process.retry)
 
-        # -----------------------
-        # 2) EXCEPTION HANDLER
-        # -----------------------
-        if not process_ok:
-            if isinstance(process_result, exceptions.TransactionException):
-                process_result = process_result
-            elif isinstance(process_result, futures.TimeoutError):
-                process_result = exceptions.TransactionException(str(process_result), exceptions.ExceptionType.TIMEOUT)
-            else:
-                process_result = exceptions.TransactionException(str(process_result), exceptions.ExceptionType.SYSTEM)
-            return self._handle_exception(transaction, process_result, policy.exception.retry)
+            # -----------------------
+            # 2) EXCEPTION HANDLER
+            # -----------------------
+            if not process_ok:
+                final_status = "exception"
+                if isinstance(process_result, exceptions.TransactionException):
+                    process_result = process_result
+                elif isinstance(process_result, futures.TimeoutError):
+                    process_result = exceptions.TransactionException(str(process_result), exceptions.ExceptionType.TIMEOUT)
+                else:
+                    process_result = exceptions.TransactionException(str(process_result), exceptions.ExceptionType.SYSTEM)
+                return self._handle_exception(transaction, process_result, policy.exception.retry)
 
-        # -----------------------
-        # 2) SUCCESS HANDLER
-        # -----------------------
-        success_ok, success_result = self._handle_success(transaction, process_result, policy.success.retry)
+            # -----------------------
+            # 3) SUCCESS HANDLER
+            # -----------------------
+            success_ok, success_result = self._handle_success(transaction, process_result, policy.success.retry)
 
-        if not success_ok:
-            if isinstance(success_result, exceptions.TransactionException):
-                success_result = success_result
-            elif isinstance(success_result, futures.TimeoutError):
-                success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.TIMEOUT)
-            else:
-                success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.SYSTEM)
-            return self._handle_exception(transaction, success_result, policy.exception.retry)
+            if not success_ok:
+                final_status = "exception"
+                if isinstance(success_result, exceptions.TransactionException):
+                    success_result = success_result
+                elif isinstance(success_result, futures.TimeoutError):
+                    success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.TIMEOUT)
+                else:
+                    success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.SYSTEM)
+                return self._handle_exception(transaction, success_result, policy.exception.retry)
 
-        return True, success_result
+            return True, success_result
+        finally:
+            # Record transaction-level metrics
+            tx_duration = time.perf_counter() - tx_start
+            mixin_metrics.record_consumer_transaction(
+                task_name=getattr(self, "name", self.__class__.__name__),
+                transaction_id=transaction.id,
+                duration=tx_duration,
+                status=final_status,
+            )
 
     # =====================================================================
     # PROCESS HANDLER
     # =====================================================================
     def _handle_process(self, transaction, retry: policies.RetryPolicy):
         logger.info(f"Transaction {transaction.id} processing started")
-        return helpers.run_fn(
+        stage_start = time.perf_counter()
+        success, result = helpers.run_fn(
             fn=lambda: self.process_transaction(transaction),
             retry=retry,
             trace_name=f"{self.__class__.__name__}.process",
             trace_attrs={"transaction_id": transaction.id},
         )
+        # Record lifecycle metrics
+        mixin_metrics.record_consumer_lifecycle(
+            task_name=getattr(self, "name", self.__class__.__name__),
+            stage="process",
+            duration=time.perf_counter() - stage_start,
+            outcome="ok" if success else "error",
+        )
+        return success, result
 
     # =====================================================================
     # SUCCESS HANDLER
     # =====================================================================
     def _handle_success(self, transaction, result, retry: policies.RetryPolicy):
         logger.info(f"Transaction {transaction.id} processed successfully")
-        return helpers.run_fn(
+        stage_start = time.perf_counter()
+        success, handler_result = helpers.run_fn(
             fn=lambda: self.handle_process_success(transaction, result),
             retry=retry,
             trace_name=f"{self.__class__.__name__}.handle_process_success",
             trace_attrs={"transaction_id": transaction.id},
         )
+        # Record lifecycle metrics
+        mixin_metrics.record_consumer_lifecycle(
+            task_name=getattr(self, "name", self.__class__.__name__),
+            stage="success",
+            duration=time.perf_counter() - stage_start,
+            outcome="ok" if success else "error",
+        )
+        return success, handler_result
 
     # =====================================================================
     # EXCEPTION HANDLER
     # =====================================================================
     def _handle_exception(self, transaction, exc, retry: policies.RetryPolicy):
         logger.error(f"Transaction {transaction.id} processed with exception: {exc}")
-        return helpers.run_fn(
+        stage_start = time.perf_counter()
+        success, result = helpers.run_fn(
             fn=lambda: self.handle_process_exception(transaction, exc),
             retry=retry,
             trace_name=f"{self.__class__.__name__}.handle_process_exception",
             trace_attrs={"transaction_id": transaction.id},
         )
+        # Record lifecycle metrics
+        mixin_metrics.record_consumer_lifecycle(
+            task_name=getattr(self, "name", self.__class__.__name__),
+            stage="exception",
+            duration=time.perf_counter() - stage_start,
+            outcome="ok" if success else "error",
+        )
+        return success, result
 
     # =====================================================================
     # FETCH HANDLER
     # =====================================================================
     def _handle_fetch(self, conn, policy: policies.FetchPolicy, batch_size: int):
         logger.info(f"Fetching transactions with batch size {batch_size}", extra=policy.extra)
-        return helpers.run_fn(
+        fetch_start = time.perf_counter()
+        success, result = helpers.run_fn(
             fn=lambda: conn.fetch_transactions(batch_size, **policy.extra),
             retry=policy.retry,
             trace_name=f"{self.__class__.__name__}.fetch_transactions",
             trace_attrs={"batch_size": batch_size},
         )
+        # Record fetch metrics
+        fetched_count = len(result) if success and result else 0
+        mixin_metrics.record_consumer_fetch(
+            task_name=getattr(self, "name", self.__class__.__name__),
+            connector_name=conn.__class__.__name__,
+            batch_size=batch_size,
+            fetched_count=fetched_count,
+            duration=time.perf_counter() - fetch_start,
+            success=success,
+        )
+        return success, result
 
     # =====================================================================
     # CONNECTOR RESOLUTION
@@ -169,6 +222,11 @@ class ConsumerMixin(ABC):
                 if not transactions:
                     if not policy.loop.streaming:
                         break
+                    # Record empty queue wait metric
+                    mixin_metrics.record_consumer_empty_queue_wait(
+                        task_name=getattr(self, "name", self.__class__.__name__),
+                        wait_count=empty_count,
+                    )
                     utils.backoff(
                         policy.loop.empty_queue.backoff,
                         policy.loop.empty_queue.backoff_multiplier,
@@ -179,6 +237,14 @@ class ConsumerMixin(ABC):
                     continue
 
                 empty_count = 0
+
+                # Record batch metric
+                mixin_metrics.record_consumer_batch(
+                    task_name=getattr(self, "name", self.__class__.__name__),
+                    batch_number=batch_number,
+                    batch_size=len(transactions),
+                    streaming=policy.loop.streaming,
+                )
 
                 # ============================================================
                 #  RUN CONCURRENTLY WITH REFILL (with batch-level span)
@@ -294,78 +360,132 @@ class AsyncConsumerMixin(ABC):
         self, conn, policy: policies.FetchPolicy, batch_size: int
     ) -> tuple[bool, List[connector.Transaction]]:
         logger.info(f"Fetching transactions with batch size {batch_size}", extra=policy.extra)
-        return await helpers.run_fn_async(
+        fetch_start = time.perf_counter()
+        success, result = await helpers.run_fn_async(
             fn=lambda: conn.fetch_transactions_async(batch_size, **policy.extra),
             retry=policy.retry,
             trace_name=f"{self.__class__.__name__}.fetch_transactions",
             trace_attrs={"batch_size": batch_size},
         )
+        # Record fetch metrics
+        fetched_count = len(result) if success and result else 0
+        mixin_metrics.record_consumer_fetch(
+            task_name=getattr(self, "name", self.__class__.__name__),
+            connector_name=conn.__class__.__name__,
+            batch_size=batch_size,
+            fetched_count=fetched_count,
+            duration=time.perf_counter() - fetch_start,
+            success=success,
+        )
+        return success, result
 
     # =====================================================================
     #   PROCESS OR ROUTE INTO SUCCESS / EXCEPTION
     # =====================================================================
     async def _start_processing(self, transaction, policy: policies.ConsumerPolicy):
-        process_ok, process_result = await self._handle_process(transaction, policy.process.retry)
+        tx_start = time.perf_counter()
+        final_status = "success"
 
-        if not process_ok:
-            if isinstance(process_result, exceptions.TransactionException):
-                process_result = process_result
-            elif isinstance(process_result, futures.TimeoutError):
-                process_result = exceptions.TransactionException(str(process_result), exceptions.ExceptionType.TIMEOUT)
-            else:
-                process_result = exceptions.TransactionException(str(process_result), exceptions.ExceptionType.SYSTEM)
-            return await self._handle_exception(transaction, process_result, policy.exception.retry)
+        try:
+            process_ok, process_result = await self._handle_process(transaction, policy.process.retry)
 
-        success_ok, success_result = await self._handle_success(
-            transaction, process_result, policy.success.retry, policy.exception.retry
-        )
+            if not process_ok:
+                final_status = "exception"
+                if isinstance(process_result, exceptions.TransactionException):
+                    process_result = process_result
+                elif isinstance(process_result, futures.TimeoutError):
+                    process_result = exceptions.TransactionException(str(process_result), exceptions.ExceptionType.TIMEOUT)
+                else:
+                    process_result = exceptions.TransactionException(str(process_result), exceptions.ExceptionType.SYSTEM)
+                return await self._handle_exception(transaction, process_result, policy.exception.retry)
 
-        if not success_ok:
-            if isinstance(success_result, exceptions.TransactionException):
-                success_result = success_result
-            elif isinstance(success_result, futures.TimeoutError):
-                success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.TIMEOUT)
-            else:
-                success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.SYSTEM)
-            return await self._handle_exception(transaction, success_result, policy.exception.retry)
+            success_ok, success_result = await self._handle_success(
+                transaction, process_result, policy.success.retry, policy.exception.retry
+            )
 
-        return True, success_result
+            if not success_ok:
+                final_status = "exception"
+                if isinstance(success_result, exceptions.TransactionException):
+                    success_result = success_result
+                elif isinstance(success_result, futures.TimeoutError):
+                    success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.TIMEOUT)
+                else:
+                    success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.SYSTEM)
+                return await self._handle_exception(transaction, success_result, policy.exception.retry)
+
+            return True, success_result
+        finally:
+            # Record transaction-level metrics
+            tx_duration = time.perf_counter() - tx_start
+            mixin_metrics.record_consumer_transaction(
+                task_name=getattr(self, "name", self.__class__.__name__),
+                transaction_id=transaction.id,
+                duration=tx_duration,
+                status=final_status,
+            )
 
     # =====================================================================
     #   PROCESS HANDLER WITH RETRIES
     # =====================================================================
     async def _handle_process(self, transaction, retry: policies.RetryPolicy):
         logger.info(f"Transaction {transaction.id} processing started")
-        return await helpers.run_fn_async(
+        stage_start = time.perf_counter()
+        success, result = await helpers.run_fn_async(
             fn=lambda: self.process_transaction(transaction),
             retry=retry,
             trace_name=f"{self.__class__.__name__}.handle_process",
             trace_attrs={"transaction_id": transaction.id},
         )
+        # Record lifecycle metrics
+        mixin_metrics.record_consumer_lifecycle(
+            task_name=getattr(self, "name", self.__class__.__name__),
+            stage="process",
+            duration=time.perf_counter() - stage_start,
+            outcome="ok" if success else "error",
+        )
+        return success, result
 
     # =====================================================================
     #   SUCCESS HANDLER
     # =====================================================================
     async def _handle_success(self, transaction, result, retry, exception_retry):
         logger.info(f"Transaction {transaction.id} processed successfully")
-        return await helpers.run_fn_async(
+        stage_start = time.perf_counter()
+        success, handler_result = await helpers.run_fn_async(
             fn=lambda: self.handle_transaction_success(transaction, result),
             retry=retry,
             trace_name=f"{self.__class__.__name__}.handle_success",
             trace_attrs={"transaction_id": transaction.id},
         )
+        # Record lifecycle metrics
+        mixin_metrics.record_consumer_lifecycle(
+            task_name=getattr(self, "name", self.__class__.__name__),
+            stage="success",
+            duration=time.perf_counter() - stage_start,
+            outcome="ok" if success else "error",
+        )
+        return success, handler_result
 
     # =====================================================================
     #   EXCEPTION HANDLER
     # =====================================================================
     async def _handle_exception(self, transaction, exc, retry: policies.RetryPolicy):
         logger.error(f"Transaction {transaction.id} processed with exception: {exc}")
-        return await helpers.run_fn_async(
+        stage_start = time.perf_counter()
+        success, result = await helpers.run_fn_async(
             fn=lambda: self.handle_transaction_exception(transaction, exc),
             retry=retry,
             trace_name=f"{self.__class__.__name__}.handle_exception",
             trace_attrs={"transaction_id": transaction.id},
         )
+        # Record lifecycle metrics
+        mixin_metrics.record_consumer_lifecycle(
+            task_name=getattr(self, "name", self.__class__.__name__),
+            stage="exception",
+            duration=time.perf_counter() - stage_start,
+            outcome="ok" if success else "error",
+        )
+        return success, result
 
     # =====================================================================
     #   ASYNC PUBLIC CONSUME LOOP (MIRRORS ASYNC PRODUCER)
@@ -409,6 +529,11 @@ class AsyncConsumerMixin(ABC):
                     if not policy.loop.streaming:
                         break
 
+                    # Record empty queue wait metric
+                    mixin_metrics.record_consumer_empty_queue_wait(
+                        task_name=getattr(self, "name", self.__class__.__name__),
+                        wait_count=empty_count,
+                    )
                     await utils.backoff_async(
                         backoff=policy.loop.empty_queue.backoff,
                         backoff_multiplier=policy.loop.empty_queue.backoff_multiplier,
@@ -419,6 +544,14 @@ class AsyncConsumerMixin(ABC):
                     continue
 
                 empty_count = 0
+
+                # Record batch metric
+                mixin_metrics.record_consumer_batch(
+                    task_name=getattr(self, "name", self.__class__.__name__),
+                    batch_number=batch_number,
+                    batch_size=len(transactions),
+                    streaming=policy.loop.streaming,
+                )
 
                 # ============================================================
                 #  RUN CONCURRENTLY WITH REFILL (with batch-level span)
