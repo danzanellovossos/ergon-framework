@@ -51,6 +51,7 @@ class ConsumerMixin(ABC):
                 if isinstance(process_result, exceptions.TransactionException):
                     process_result = process_result
                 elif isinstance(process_result, futures.TimeoutError):
+<<<<<<< HEAD
                     process_result = exceptions.TransactionException(
                         str(process_result), exceptions.ExceptionType.TIMEOUT
                     )
@@ -58,6 +59,11 @@ class ConsumerMixin(ABC):
                     process_result = exceptions.TransactionException(
                         str(process_result), exceptions.ExceptionType.SYSTEM
                     )
+=======
+                    process_result = exceptions.TransactionException(str(process_result), exceptions.ExceptionType.TIMEOUT)
+                else:
+                    process_result = exceptions.TransactionException(str(process_result), exceptions.ExceptionType.SYSTEM)
+>>>>>>> c092c1f (feat/metrics)
                 return self._handle_exception(transaction, process_result, policy.exception.retry)
 
             # -----------------------
@@ -70,6 +76,7 @@ class ConsumerMixin(ABC):
                 if isinstance(success_result, exceptions.TransactionException):
                     success_result = success_result
                 elif isinstance(success_result, futures.TimeoutError):
+<<<<<<< HEAD
                     success_result = exceptions.TransactionException(
                         str(success_result), exceptions.ExceptionType.TIMEOUT
                     )
@@ -77,6 +84,11 @@ class ConsumerMixin(ABC):
                     success_result = exceptions.TransactionException(
                         str(success_result), exceptions.ExceptionType.SYSTEM
                     )
+=======
+                    success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.TIMEOUT)
+                else:
+                    success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.SYSTEM)
+>>>>>>> c092c1f (feat/metrics)
                 return self._handle_exception(transaction, success_result, policy.exception.retry)
 
             return True, success_result
@@ -115,6 +127,10 @@ class ConsumerMixin(ABC):
     # SUCCESS HANDLER
     # =====================================================================
     def _handle_success(self, transaction, result, retry: policies.RetryPolicy):
+<<<<<<< HEAD
+=======
+        logger.info(f"Transaction {transaction.id} processed successfully")
+>>>>>>> c092c1f (feat/metrics)
         stage_start = time.perf_counter()
         success, handler_result = helpers.run_fn(
             fn=lambda: self.handle_process_success(transaction, result),
@@ -129,7 +145,10 @@ class ConsumerMixin(ABC):
             duration=time.perf_counter() - stage_start,
             outcome="ok" if success else "error",
         )
+<<<<<<< HEAD
         logger.info(f"Transaction {transaction.id} processed successfully")
+=======
+>>>>>>> c092c1f (feat/metrics)
         return success, handler_result
 
     # =====================================================================
@@ -398,6 +417,7 @@ class AsyncConsumerMixin(ABC):
                 if isinstance(process_result, exceptions.TransactionException):
                     process_result = process_result
                 elif isinstance(process_result, futures.TimeoutError):
+<<<<<<< HEAD
                     process_result = exceptions.TransactionException(
                         str(process_result), exceptions.ExceptionType.TIMEOUT
                     )
@@ -405,6 +425,11 @@ class AsyncConsumerMixin(ABC):
                     process_result = exceptions.TransactionException(
                         str(process_result), exceptions.ExceptionType.SYSTEM
                     )
+=======
+                    process_result = exceptions.TransactionException(str(process_result), exceptions.ExceptionType.TIMEOUT)
+                else:
+                    process_result = exceptions.TransactionException(str(process_result), exceptions.ExceptionType.SYSTEM)
+>>>>>>> c092c1f (feat/metrics)
                 return await self._handle_exception(transaction, process_result, policy.exception.retry)
 
             success_ok, success_result = await self._handle_success(
@@ -416,6 +441,7 @@ class AsyncConsumerMixin(ABC):
                 if isinstance(success_result, exceptions.TransactionException):
                     success_result = success_result
                 elif isinstance(success_result, futures.TimeoutError):
+<<<<<<< HEAD
                     success_result = exceptions.TransactionException(
                         str(success_result), exceptions.ExceptionType.TIMEOUT
                     )
@@ -423,6 +449,11 @@ class AsyncConsumerMixin(ABC):
                     success_result = exceptions.TransactionException(
                         str(success_result), exceptions.ExceptionType.SYSTEM
                     )
+=======
+                    success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.TIMEOUT)
+                else:
+                    success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.SYSTEM)
+>>>>>>> c092c1f (feat/metrics)
                 return await self._handle_exception(transaction, success_result, policy.exception.retry)
 
             return True, success_result
