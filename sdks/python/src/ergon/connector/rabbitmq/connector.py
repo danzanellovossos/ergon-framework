@@ -5,10 +5,15 @@ from ergon_framework import Connector, Transaction
 from src.connectors.rabbitmq_connector.service import RabbitMQService
 from .models import RabbitmqClient
 
+
 class RabbitMQConnector(Connector):
     service = RabbitMQService
 
-    def __init__(self, client: RabbitmqClient, default_queue: Optional[str] = None, auto_ack: bool = False,
+    def __init__(
+        self,
+        client: RabbitmqClient,
+        default_queue: Optional[str] = None,
+        auto_ack: bool = False,
     ) -> None:
         self.service = RabbitMQService(client)
 
@@ -31,14 +36,12 @@ class RabbitMQConnector(Connector):
         Busca até `batch_size` mensagens da fila indicada, transformando
         cada uma em um Transaction do ergon_framework.
         """
-        queue_items = self.service.consume(
-            queue_name=queue_name, auto_ack=auto_ack, batch_size=batch_size
-        )
+        queue_items = self.service.consume(queue_name=queue_name, auto_ack=auto_ack, batch_size=batch_size)
 
         if not queue_items:
             return []
 
-        return [Transaction(id=str(queue_item['delivery_tag']), payload=queue_item) for queue_item in queue_items]
+        return [Transaction(id=str(queue_item["delivery_tag"]), payload=queue_item) for queue_item in queue_items]
 
     def dispatch_transactions(
         self,

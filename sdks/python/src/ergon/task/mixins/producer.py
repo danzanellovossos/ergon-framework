@@ -57,9 +57,13 @@ class ProducerMixin(ABC):
                 if isinstance(prepare_result, exceptions.TransactionException):
                     prepare_result = prepare_result
                 elif isinstance(prepare_result, futures.TimeoutError):
-                    prepare_result = exceptions.TransactionException(str(prepare_result), exceptions.ExceptionType.TIMEOUT)
+                    prepare_result = exceptions.TransactionException(
+                        str(prepare_result), exceptions.ExceptionType.TIMEOUT
+                    )
                 else:
-                    prepare_result = exceptions.TransactionException(str(prepare_result), exceptions.ExceptionType.SYSTEM)
+                    prepare_result = exceptions.TransactionException(
+                        str(prepare_result), exceptions.ExceptionType.SYSTEM
+                    )
                 return self._handle_prepare_exception(transaction, prepare_result, policy.exception)
 
             # -----------------------
@@ -73,9 +77,13 @@ class ProducerMixin(ABC):
                 if isinstance(success_result, exceptions.TransactionException):
                     success_result = success_result
                 elif isinstance(success_result, futures.TimeoutError):
-                    success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.TIMEOUT)
+                    success_result = exceptions.TransactionException(
+                        str(success_result), exceptions.ExceptionType.TIMEOUT
+                    )
                 else:
-                    success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.SYSTEM)
+                    success_result = exceptions.TransactionException(
+                        str(success_result), exceptions.ExceptionType.SYSTEM
+                    )
                 return self._handle_prepare_exception(transaction, success_result, policy.exception)
 
             return True, success_result
@@ -445,7 +453,9 @@ class AsyncProducerMixin(ABC):
                     except asyncio.TimeoutError as te:
                         last_exc = exceptions.TransactionException(str(te), exceptions.ExceptionType.TIMEOUT)
                     except BaseException as e:
-                        last_exc = exceptions.TransactionException(str(e), exceptions.ExceptionType.SYSTEM, transaction.id)
+                        last_exc = exceptions.TransactionException(
+                            str(e), exceptions.ExceptionType.SYSTEM, transaction.id
+                        )
 
                     if attempt == policy.retry.max_attempts - 1:
                         outcome = "error"

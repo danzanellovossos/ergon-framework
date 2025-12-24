@@ -1,10 +1,4 @@
-from . import (
-    service,
-    connector,
-    task,
-    telemetry,
-    utils
-)
+from . import service, connector, task, telemetry, utils
 
 __all__ = [
     "service",

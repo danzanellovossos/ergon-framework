@@ -7,17 +7,18 @@ from typing import Optional, Dict, Any, List
 from .models import RabbitmqClient, RabbitmqProducerMessage, RabbitmqConsumerMessage
 from .helper import headers_generator
 from collections import deque
+
 logger = logging.getLogger(__name__)
 
+
 class RabbitMQService:
-
     def __init__(self, client: RabbitmqClient) -> None:
-
         self.client = client
 
         self._connection: Optional[pika.BlockingConnection] = None
         self._channel: Optional[pika.adapters.blocking_connection.BlockingChannel] = None
         self._connect()
+
     # ---------- Conexão / Canal ----------
 
     def _connect(self) -> None:
@@ -92,12 +93,14 @@ class RabbitMQService:
                         ch.basic_nack(method.delivery_tag, requeue=True)
                     return
 
-                buffer.append({
-                    "data": payload,
-                    "routing_key": method.routing_key,
-                    "delivery_tag": method.delivery_tag,
-                    "headers": getattr(properties, "headers", {}) or {},
-                })
+                buffer.append(
+                    {
+                        "data": payload,
+                        "routing_key": method.routing_key,
+                        "delivery_tag": method.delivery_tag,
+                        "headers": getattr(properties, "headers", {}) or {},
+                    }
+                )
 
                 if auto_ack:
                     ch.basic_ack(method.delivery_tag)
@@ -132,7 +135,6 @@ class RabbitMQService:
         return list(buffer)
 
     def ack_msg(self, delivery_tag) -> int:
-
         try:
             self._channel.basic_ack(delivery_tag=delivery_tag)
             logger.info(f"sucesso ao marcar como lida. tag {delivery_tag}")
@@ -140,7 +142,6 @@ class RabbitMQService:
             logger.error("Falha ao ackar a mensagem")
             logger.error(f"{str(e)}")
             self._channel.basic_nack(delivery_tag, requeue=True)
-
 
     def confirm_message_received(self, delivery_tag: int) -> None:
         if not isinstance(delivery_tag, int):
@@ -152,7 +153,6 @@ class RabbitMQService:
         logger.info(f"marcando mensagem como recebida. tag {delivery_tag}")
         ack = functools.partial(self.ack_msg, delivery_tag=delivery_tag)
         self._connection.add_callback_threadsafe(ack)
-
 
     # ---------- Publicação ----------
 

@@ -51,9 +51,13 @@ class ConsumerMixin(ABC):
                 if isinstance(process_result, exceptions.TransactionException):
                     process_result = process_result
                 elif isinstance(process_result, futures.TimeoutError):
-                    process_result = exceptions.TransactionException(str(process_result), exceptions.ExceptionType.TIMEOUT)
+                    process_result = exceptions.TransactionException(
+                        str(process_result), exceptions.ExceptionType.TIMEOUT
+                    )
                 else:
-                    process_result = exceptions.TransactionException(str(process_result), exceptions.ExceptionType.SYSTEM)
+                    process_result = exceptions.TransactionException(
+                        str(process_result), exceptions.ExceptionType.SYSTEM
+                    )
                 return self._handle_exception(transaction, process_result, policy.exception.retry)
 
             # -----------------------
@@ -66,9 +70,13 @@ class ConsumerMixin(ABC):
                 if isinstance(success_result, exceptions.TransactionException):
                     success_result = success_result
                 elif isinstance(success_result, futures.TimeoutError):
-                    success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.TIMEOUT)
+                    success_result = exceptions.TransactionException(
+                        str(success_result), exceptions.ExceptionType.TIMEOUT
+                    )
                 else:
-                    success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.SYSTEM)
+                    success_result = exceptions.TransactionException(
+                        str(success_result), exceptions.ExceptionType.SYSTEM
+                    )
                 return self._handle_exception(transaction, success_result, policy.exception.retry)
 
             return True, success_result
@@ -390,9 +398,13 @@ class AsyncConsumerMixin(ABC):
                 if isinstance(process_result, exceptions.TransactionException):
                     process_result = process_result
                 elif isinstance(process_result, futures.TimeoutError):
-                    process_result = exceptions.TransactionException(str(process_result), exceptions.ExceptionType.TIMEOUT)
+                    process_result = exceptions.TransactionException(
+                        str(process_result), exceptions.ExceptionType.TIMEOUT
+                    )
                 else:
-                    process_result = exceptions.TransactionException(str(process_result), exceptions.ExceptionType.SYSTEM)
+                    process_result = exceptions.TransactionException(
+                        str(process_result), exceptions.ExceptionType.SYSTEM
+                    )
                 return await self._handle_exception(transaction, process_result, policy.exception.retry)
 
             success_ok, success_result = await self._handle_success(
@@ -404,9 +416,13 @@ class AsyncConsumerMixin(ABC):
                 if isinstance(success_result, exceptions.TransactionException):
                     success_result = success_result
                 elif isinstance(success_result, futures.TimeoutError):
-                    success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.TIMEOUT)
+                    success_result = exceptions.TransactionException(
+                        str(success_result), exceptions.ExceptionType.TIMEOUT
+                    )
                 else:
-                    success_result = exceptions.TransactionException(str(success_result), exceptions.ExceptionType.SYSTEM)
+                    success_result = exceptions.TransactionException(
+                        str(success_result), exceptions.ExceptionType.SYSTEM
+                    )
                 return await self._handle_exception(transaction, success_result, policy.exception.retry)
 
             return True, success_result

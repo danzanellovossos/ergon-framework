@@ -152,15 +152,16 @@ def run_fn(
 ):
     """
     Executes a function with context + span + timeout + retries.
-    
+
     Can be used as:
     1. Normal function: run_fn(fn=my_func, retry=..., *args, **kwargs)
     2. Decorator: @run_fn(retry=...) or @run_fn
     """
-    
+
     # DECORATOR MODE: called without fn, returns decorator
-    
+
     if fn is None:
+
         def decorator(func: Callable) -> Callable:
             def wrapper(*wrapper_args, **wrapper_kwargs) -> Any:
                 result = run_fn(
@@ -178,15 +179,17 @@ def run_fn(
                     success, result = result.result()
                 else:
                     success, result = result
-                
+
                 if not success:
                     if isinstance(result, BaseException):
                         raise result
                     raise RuntimeError(f"Function {func.__name__} failed: {result}")
                 return result
+
             return wrapper
+
         return decorator
-    
+
     trace_name = trace_name or fn.__getattribute__("__qualname__")
 
     # FUNCTION MODE: fn provided, execute it
@@ -230,9 +233,14 @@ def run_fn(
 
 
 def run_concurrently(
-    data: Any, callback: Callable, submit_fn: Callable, concurrency: int, limit: int = None, count: int = 0, timeout: float = None
+    data: Any,
+    callback: Callable,
+    submit_fn: Callable,
+    concurrency: int,
+    limit: int = None,
+    count: int = 0,
+    timeout: float = None,
 ) -> int:
-
     active = set[futures.Future]()
     results = []
     submit_count = count
@@ -424,14 +432,15 @@ def run_fn_async(
 ):
     """
     Executes an async function with context + span + timeout + retries.
-    
+
     Can be used as:
     1. Normal function: run_fn_async(fn=my_func, retry=..., *args, **kwargs)
     2. Decorator: @run_fn_async(retry=...) or @run_fn_async
     """
-    
+
     # DECORATOR MODE: called without fn, returns decorator
     if fn is None:
+
         def decorator(func: Callable) -> Callable:
             async def wrapper(*wrapper_args, **wrapper_kwargs) -> Any:
                 success, result = await run_fn_async(
@@ -448,9 +457,11 @@ def run_fn_async(
                         raise result
                     raise RuntimeError(f"Function {func.__name__} failed: {result}")
                 return result
+
             return wrapper
+
         return decorator
-    
+
     # FUNCTION MODE: fn provided, execute it
     if ctx is None:
         ctx = context.get_current()
