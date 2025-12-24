@@ -396,16 +396,16 @@ TaskConfig {
     connectors: map<string, ConnectorConfig>
     services: map<string, ServiceConfig>
     policies: list<Policy>
-    
+  
     logging: LoggingConfig {
         level: string
         handlers: list<LogHandler>
     }
-    
+  
     tracing: TracingConfig {
         processors: list<SpanProcessor>
     }
-    
+  
     metrics: MetricsConfig {
         readers: list<MetricReader>
     }
@@ -486,3 +486,4 @@ The Transaction is the heart of this architecture. Everything else exists to ser
 ---
 
 > **Note**: This document describes the Ergon Framework specification. For SDK-specific implementation details, syntax, and examples, refer to the documentation for your chosen SDK (e.g., [Python SDK](../sdks/python/)).
+>

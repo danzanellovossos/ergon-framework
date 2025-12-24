@@ -225,15 +225,6 @@ Deep dive into the core framework concepts:
 
 ---
 
-## Documentation & Website
-
-- `docs/` contains the canonical framework documentation (Markdown).
-- `website/` contains generated HTML files derived from `docs/`.
-- Website files are committed to the repository and **must not be edited manually**.
-- All changes must be made in `docs/`, then regenerated.
-
----
-
 ## License
 
 This project is licensed under the [MIT License](LICENSE).

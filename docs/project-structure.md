@@ -14,8 +14,7 @@ The Ergon Framework is organized as a monorepo with clear separation between fra
 ergon-framework/
 ├── docs/           # Canonical framework documentation
 ├── sdks/           # SDK implementations per language
-├── assets/         # Shared visual assets
-└── website/        # Generated documentation website
+└── assets/         # Shared visual assets
 ```
 
 ### `docs/` — Framework Documentation
@@ -42,11 +41,7 @@ The `docs/` directory at the repository root does not describe SDK internals. SD
 
 ### `assets/` — Shared Visual Assets
 
-Diagrams, logos, and other visual assets used across documentation and the website.
-
-### `website/` — Documentation Website
-
-The generated documentation website, built from framework documentation. This is the public-facing documentation surface.
+Diagrams, logos, and other visual assets used across documentation.
 
 ---
 
