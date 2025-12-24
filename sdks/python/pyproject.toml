@@ -1,5 +1,5 @@
 [project]
-name = "ergon-framework"
+name = "ergon-framework-python"
 version = "0.1.0"
 description = "Ergon internal task-oriented project bootstrapper"
 readme = "README.md"

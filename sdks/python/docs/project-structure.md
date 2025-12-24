@@ -320,7 +320,7 @@ All of these are pre-configured with the right mixins. Just pick the one that fi
 This file defines how your task runs: which connectors, which services, what policies.
 
 ```python
-from ergon_framework.task import TaskConfig, task_manager, policies
+from ergon_framework.task import TaskConfig, manager, policies
 from .. import settings
 from .task import OrderProcessorTask
 
@@ -346,7 +346,7 @@ TASK_CONFIG = TaskConfig(
 )
 
 # Register it
-task_manager.register(TASK_CONFIG)
+manager.register(TASK_CONFIG)
 ```
 
 **Why this is separate from `task.py`:** Configuration changes shouldn't require touching business logic. Need to bump concurrency? Edit `config.py`. Business rules changed? Edit `task.py`. Clear boundaries.
@@ -492,7 +492,7 @@ my_order_pipeline/
 2. Create the files: `__init__.py`, `task.py`, `config.py`, `schemas.py`, `exceptions.py`, `helpers.py`
 3. Pick your task class (`AsyncConsumerTask`, `HybridTask`, etc.) and implement the required methods
 4. Wire it up in `config.py` with connectors, services, and policies
-5. Register with `task_manager.register(TASK_CONFIG)`
+5. Register with `manager.register(TASK_CONFIG)`
 
 ### Adding a Custom Connector
 
