@@ -159,6 +159,7 @@ def run_fn(
     """
     
     # DECORATOR MODE: called without fn, returns decorator
+    
     if fn is None:
         def decorator(func: Callable) -> Callable:
             def wrapper(*wrapper_args, **wrapper_kwargs) -> Any:
@@ -167,7 +168,7 @@ def run_fn(
                     retry=retry,
                     executor=executor,
                     ctx=ctx,
-                    trace_name=trace_name or f"{func.__module__}.{func.__name__}",
+                    trace_name=trace_name or func.__getattribute__("__qualname__"),
                     trace_attrs=trace_attrs,
                     *wrapper_args,
                     **wrapper_kwargs,
@@ -186,6 +187,8 @@ def run_fn(
             return wrapper
         return decorator
     
+    trace_name = trace_name or fn.__getattribute__("__qualname__")
+
     # FUNCTION MODE: fn provided, execute it
     if ctx is None:
         ctx = context.get_current()

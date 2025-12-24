@@ -134,5 +134,4 @@ class ProducerPolicy(BaseModel):
         default_factory=ExceptionPolicy, description="The exception policy for the producer."
     )
 
-
 ExecutionPolicy = Union[ConsumerPolicy, ProducerPolicy]
