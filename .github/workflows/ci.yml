@@ -23,10 +23,13 @@ jobs:
         run: pip install uv
 
       - name: Install dependencies
+        working-directory: sdks/python
         run: uv sync --dev
 
       - name: Ruff Lint (no autofix)
+        working-directory: sdks/python
         run: uv run ruff check .
 
       - name: Ruff Format Check (no autofix)
+        working-directory: sdks/python
         run: uv run ruff format --check .
