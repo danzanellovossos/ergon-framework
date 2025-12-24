@@ -3,7 +3,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from ergon_framework import task_manager
+from ergon_framework import manager
 
 
 # ---------------------------------------------------------------------
@@ -95,7 +95,7 @@ def ergon():
 
     # ---- LIST TASKS ----
     if args.command == "list":
-        tasks = task_manager.list_tasks()
+        tasks = manager.list_tasks()
         if not tasks:
             print("No tasks registered. Did you import your config files?")
         else:
@@ -107,7 +107,7 @@ def ergon():
     # ---- RUN TASK ----
     if args.command == "run":
         try:
-            task_manager.run(args.task_name)
+            manager.run(args.task_name)
         except Exception as exc:
             print(f"[ERROR] Failed to run task '{args.task_name}': {exc}")
             sys.exit(1)

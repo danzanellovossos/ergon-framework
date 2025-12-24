@@ -58,4 +58,4 @@ class TaskManager:
         return self._registry.get(name)
 
 
-task_manager = TaskManager()
+manager = TaskManager()

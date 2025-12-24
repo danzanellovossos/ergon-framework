@@ -5,7 +5,8 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field, model_validator
 
 from .. import telemetry
-from ..connector import Connector, ConnectorConfig, ServiceConfig
+from ..connector import Connector, ConnectorConfig
+from ..service import ServiceConfig
 
 
 class TaskConfig(BaseModel):
@@ -30,8 +31,8 @@ class TaskConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate(self) -> "TaskConfig":
-        if not self.connectors:
-            raise ValueError("Task must define at least one connector.")
+        if not self.connectors and not self.services:
+            raise ValueError("Task must define at least one connector or service.")
 
         if self.max_workers < 1:
             raise ValueError("max_workers must be at least 1.")

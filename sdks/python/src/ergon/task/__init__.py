@@ -1,24 +1,11 @@
 from .base import TaskConfig
-from .manager import task_manager
-from .mixins import (
-    AsyncConsumerTask,
-    AsyncHybridTask,
-    AsyncProducerTask,
-    ConsumerTask,
-    HybridTask,
-    ProducerTask,
-)
-
+from .manager import manager
 from . import policies
+from . import exceptions
 
 __all__ = [
-    "task_manager",
-    "ConsumerTask",
-    "ProducerTask",
-    "HybridTask",
-    "AsyncConsumerTask",
-    "AsyncProducerTask",
-    "AsyncHybridTask",
+    "manager",
     "TaskConfig",
     "policies",
+    "exceptions",
 ]

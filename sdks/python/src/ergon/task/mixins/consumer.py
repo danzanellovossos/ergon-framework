@@ -107,7 +107,6 @@ class ConsumerMixin(ABC):
     # SUCCESS HANDLER
     # =====================================================================
     def _handle_success(self, transaction, result, retry: policies.RetryPolicy):
-        logger.info(f"Transaction {transaction.id} processed successfully")
         stage_start = time.perf_counter()
         success, handler_result = helpers.run_fn(
             fn=lambda: self.handle_process_success(transaction, result),
@@ -122,6 +121,7 @@ class ConsumerMixin(ABC):
             duration=time.perf_counter() - stage_start,
             outcome="ok" if success else "error",
         )
+        logger.info(f"Transaction {transaction.id} processed successfully")
         return success, handler_result
 
     # =====================================================================

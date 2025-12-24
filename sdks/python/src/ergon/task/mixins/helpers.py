@@ -191,6 +191,51 @@ def run_fn(
     return _run(*args, **kwargs)
 
 
+# ============================================================
+#  RUN DECORATOR (SYNC)
+# ============================================================
+def run(
+    retry: Optional[policies.RetryPolicy] = None,
+    executor: Optional[futures.Executor] = None,
+    ctx: context.Context = None,
+    trace_name: Optional[str] = None,
+    trace_attrs: dict = {},
+):
+    """
+    Decorator version of run_fn for synchronous functions.
+    
+    Usage:
+        @run(retry=RetryPolicy(...), trace_name="my_function")
+        def my_function():
+            ...
+    """
+    def decorator(fn: Callable) -> Callable:
+        def wrapper(*args, **kwargs) -> Any:
+            result = run_fn(
+                fn=fn,
+                retry=retry,
+                executor=executor,
+                ctx=ctx,
+                trace_name=trace_name or f"{fn.__module__}.{fn.__name__}",
+                trace_attrs=trace_attrs,
+                *args,
+                **kwargs,
+            )
+            # If executor is provided, result is a Future
+            if executor:
+                success, result = result.result()
+            else:
+                success, result = result
+            
+            if not success:
+                if isinstance(result, BaseException):
+                    raise result
+                raise RuntimeError(f"Function {fn.__name__} failed: {result}")
+            return result
+        return wrapper
+    return decorator
+
+
 def run_concurrently_with_refill(
     data: Any, it: Iterator, submit_fn: Callable, concurrency: int, limit: int, count: int, timeout: int
 ) -> int:
@@ -419,6 +464,43 @@ def run_fn_async(
         )
 
     return _run(*args, **kwargs)
+
+
+# ============================================================
+#  RUN DECORATOR (ASYNC)
+# ============================================================
+def run_async(
+    retry: Optional[policies.RetryPolicy] = None,
+    ctx: context.Context = None,
+    trace_name: Optional[str] = None,
+    trace_attrs: dict = {},
+):
+    """
+    Decorator version of run_fn_async for asynchronous functions.
+    
+    Usage:
+        @run_async(retry=RetryPolicy(...), trace_name="my_function")
+        async def my_function():
+            ...
+    """
+    def decorator(fn: Callable) -> Callable:
+        async def wrapper(*args, **kwargs) -> Any:
+            success, result = await run_fn_async(
+                fn=fn,
+                retry=retry,
+                ctx=ctx,
+                trace_name=trace_name or f"{fn.__module__}.{fn.__name__}",
+                trace_attrs=trace_attrs,
+                *args,
+                **kwargs,
+            )
+            if not success:
+                if isinstance(result, BaseException):
+                    raise result
+                raise RuntimeError(f"Function {fn.__name__} failed: {result}")
+            return result
+        return wrapper
+    return decorator
 
 
 # ============================================================
