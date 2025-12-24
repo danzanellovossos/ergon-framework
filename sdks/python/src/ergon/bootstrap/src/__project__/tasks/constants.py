@@ -1,5 +1,6 @@
 from ergon.task.policies import RetryPolicy
 
+
 # ----------------------------------------
 # --- RETRY POLICY CONFIGURATION ---
 # ----------------------------------------
