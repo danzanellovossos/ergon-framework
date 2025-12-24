@@ -138,11 +138,11 @@ def run_with_retry_and_timeout(
 
 
 # ============================================================
-#  RUN FN (SYNC EXECUTION FACTORY)
+#  RUN FN (SYNC EXECUTION FACTORY) - Works as function AND decorator
 # ============================================================
 def run_fn(
     *args,
-    fn: Callable,
+    fn: Optional[Callable] = None,
     retry: Optional[policies.RetryPolicy] = None,
     executor: Optional[futures.Executor] = None,
     ctx: context.Context = None,
@@ -150,17 +150,52 @@ def run_fn(
     trace_attrs: dict = {},
     **kwargs,
 ):
-    """Creates callable that applies context + span + timeout + retries."""
-
+    """
+    Executes a function with context + span + timeout + retries.
+    
+    Can be used as:
+    1. Normal function: run_fn(fn=my_func, retry=..., *args, **kwargs)
+    2. Decorator: @run_fn(retry=...) or @run_fn
+    """
+    
+    # DECORATOR MODE: called without fn, returns decorator
+    if fn is None:
+        def decorator(func: Callable) -> Callable:
+            def wrapper(*wrapper_args, **wrapper_kwargs) -> Any:
+                result = run_fn(
+                    fn=func,
+                    retry=retry,
+                    executor=executor,
+                    ctx=ctx,
+                    trace_name=trace_name or f"{func.__module__}.{func.__name__}",
+                    trace_attrs=trace_attrs,
+                    *wrapper_args,
+                    **wrapper_kwargs,
+                )
+                # If executor is provided, result is a Future
+                if executor:
+                    success, result = result.result()
+                else:
+                    success, result = result
+                
+                if not success:
+                    if isinstance(result, BaseException):
+                        raise result
+                    raise RuntimeError(f"Function {func.__name__} failed: {result}")
+                return result
+            return wrapper
+        return decorator
+    
+    # FUNCTION MODE: fn provided, execute it
     if ctx is None:
         ctx = context.get_current()
 
-    def _run(*args, **kwargs) -> Tuple[bool, Any]:
+    def _run(*run_args, **run_kwargs) -> Tuple[bool, Any]:
         # NO RETRY / NO TIMEOUT
         if retry is None or (retry.max_attempts == 1 and retry.timeout is None):
             try:
                 return True, run_with_context(
-                    *args, fn=fn, ctx=ctx, trace_name=trace_name, trace_attrs=trace_attrs, **kwargs
+                    *run_args, fn=fn, ctx=ctx, trace_name=trace_name, trace_attrs=trace_attrs, **run_kwargs
                 )
             except BaseException as e:
                 return False, e
@@ -169,20 +204,20 @@ def run_fn(
         if retry.max_attempts == 1 and retry.timeout:
             try:
                 return True, run_with_timeout(
-                    *args,
+                    *run_args,
                     fn=fn,
                     ctx=ctx,
                     timeout=retry.timeout,
                     trace_name=trace_name,
                     trace_attrs=trace_attrs,
-                    **kwargs,
+                    **run_kwargs,
                 )
             except BaseException as e:
                 return False, e
 
         # FULL RETRY + TIMEOUT
         return run_with_retry_and_timeout(
-            *args, fn=fn, retry=retry, ctx=ctx, trace_name=trace_name, trace_attrs=trace_attrs, **kwargs
+            *run_args, fn=fn, retry=retry, ctx=ctx, trace_name=trace_name, trace_attrs=trace_attrs, **run_kwargs
         )
 
     if executor:
@@ -191,57 +226,14 @@ def run_fn(
     return _run(*args, **kwargs)
 
 
-# ============================================================
-#  RUN DECORATOR (SYNC)
-# ============================================================
-def run(
-    retry: Optional[policies.RetryPolicy] = None,
-    executor: Optional[futures.Executor] = None,
-    ctx: context.Context = None,
-    trace_name: Optional[str] = None,
-    trace_attrs: dict = {},
-):
-    """
-    Decorator version of run_fn for synchronous functions.
-    
-    Usage:
-        @run(retry=RetryPolicy(...), trace_name="my_function")
-        def my_function():
-            ...
-    """
-    def decorator(fn: Callable) -> Callable:
-        def wrapper(*args, **kwargs) -> Any:
-            result = run_fn(
-                fn=fn,
-                retry=retry,
-                executor=executor,
-                ctx=ctx,
-                trace_name=trace_name or f"{fn.__module__}.{fn.__name__}",
-                trace_attrs=trace_attrs,
-                *args,
-                **kwargs,
-            )
-            # If executor is provided, result is a Future
-            if executor:
-                success, result = result.result()
-            else:
-                success, result = result
-            
-            if not success:
-                if isinstance(result, BaseException):
-                    raise result
-                raise RuntimeError(f"Function {fn.__name__} failed: {result}")
-            return result
-        return wrapper
-    return decorator
-
-
-def run_concurrently_with_refill(
-    data: Any, it: Iterator, submit_fn: Callable, concurrency: int, limit: int, count: int, timeout: int
+def run_concurrently(
+    data: Any, callback: Callable, submit_fn: Callable, concurrency: int, limit: int = None, count: int = 0, timeout: float = None
 ) -> int:
-    active = set[futures.Future]()
-    submit_count = count
 
+    active = set[futures.Future]()
+    results = []
+    submit_count = count
+    it = iter(callback(x) for x in data)
     # ============================================================
     #  INITIAL FILL
     # ============================================================
@@ -267,7 +259,8 @@ def run_concurrently_with_refill(
 
         for fut in done:
             try:
-                fut.result(timeout=timeout)
+                result = fut.result(timeout=timeout)
+                results.append(result)
             except futures.TimeoutError:
                 logger.error("[Producer] Transaction lifecycle TIMEOUT")
             except Exception as e:
@@ -291,7 +284,7 @@ def run_concurrently_with_refill(
             except StopIteration:
                 break
 
-    return count
+    return results, count
 
 
 # ============================================================
@@ -415,28 +408,56 @@ async def run_with_retry_and_timeout_async(
 
 
 # ============================================================
-#  RUN FN (ASYNC EXECUTION FACTORY)
+#  RUN FN (ASYNC EXECUTION FACTORY) - Works as function AND decorator
 # ============================================================
 def run_fn_async(
     *args,
-    fn: Callable,
+    fn: Optional[Callable] = None,
     retry: Optional[policies.RetryPolicy] = None,
     ctx: context.Context = None,
     trace_name: Optional[str] = None,
     trace_attrs: dict = {},
     **kwargs,
 ):
-    """Async version of run_fn (no executor)."""
-
+    """
+    Executes an async function with context + span + timeout + retries.
+    
+    Can be used as:
+    1. Normal function: run_fn_async(fn=my_func, retry=..., *args, **kwargs)
+    2. Decorator: @run_fn_async(retry=...) or @run_fn_async
+    """
+    
+    # DECORATOR MODE: called without fn, returns decorator
+    if fn is None:
+        def decorator(func: Callable) -> Callable:
+            async def wrapper(*wrapper_args, **wrapper_kwargs) -> Any:
+                success, result = await run_fn_async(
+                    fn=func,
+                    retry=retry,
+                    ctx=ctx,
+                    trace_name=trace_name or f"{func.__module__}.{func.__name__}",
+                    trace_attrs=trace_attrs,
+                    *wrapper_args,
+                    **wrapper_kwargs,
+                )
+                if not success:
+                    if isinstance(result, BaseException):
+                        raise result
+                    raise RuntimeError(f"Function {func.__name__} failed: {result}")
+                return result
+            return wrapper
+        return decorator
+    
+    # FUNCTION MODE: fn provided, execute it
     if ctx is None:
         ctx = context.get_current()
 
-    async def _run(*args, **kwargs) -> Tuple[bool, Any]:
+    async def _run(*run_args, **run_kwargs) -> Tuple[bool, Any]:
         # NO RETRY / NO TIMEOUT
         if retry is None or (retry.max_attempts == 1 and retry.timeout is None):
             try:
                 res = await run_with_context_async(
-                    *args, fn=fn, ctx=ctx, trace_name=trace_name, trace_attrs=trace_attrs, **kwargs
+                    *run_args, fn=fn, ctx=ctx, trace_name=trace_name, trace_attrs=trace_attrs, **run_kwargs
                 )
                 return True, res
             except Exception as e:
@@ -446,13 +467,13 @@ def run_fn_async(
         if retry.max_attempts == 1:
             try:
                 res = await run_with_timeout_async(
-                    *args,
+                    *run_args,
                     fn=fn,
                     ctx=ctx,
                     timeout=retry.timeout,
                     trace_name=trace_name,
                     trace_attrs=trace_attrs,
-                    **kwargs,
+                    **run_kwargs,
                 )
                 return True, res
             except Exception as e:
@@ -460,47 +481,10 @@ def run_fn_async(
 
         # FULL RETRY
         return await run_with_retry_and_timeout_async(
-            *args, fn=fn, retry=retry, ctx=ctx, trace_name=trace_name, trace_attrs=trace_attrs, **kwargs
+            *run_args, fn=fn, retry=retry, ctx=ctx, trace_name=trace_name, trace_attrs=trace_attrs, **run_kwargs
         )
 
     return _run(*args, **kwargs)
-
-
-# ============================================================
-#  RUN DECORATOR (ASYNC)
-# ============================================================
-def run_async(
-    retry: Optional[policies.RetryPolicy] = None,
-    ctx: context.Context = None,
-    trace_name: Optional[str] = None,
-    trace_attrs: dict = {},
-):
-    """
-    Decorator version of run_fn_async for asynchronous functions.
-    
-    Usage:
-        @run_async(retry=RetryPolicy(...), trace_name="my_function")
-        async def my_function():
-            ...
-    """
-    def decorator(fn: Callable) -> Callable:
-        async def wrapper(*args, **kwargs) -> Any:
-            success, result = await run_fn_async(
-                fn=fn,
-                retry=retry,
-                ctx=ctx,
-                trace_name=trace_name or f"{fn.__module__}.{fn.__name__}",
-                trace_attrs=trace_attrs,
-                *args,
-                **kwargs,
-            )
-            if not success:
-                if isinstance(result, BaseException):
-                    raise result
-                raise RuntimeError(f"Function {fn.__name__} failed: {result}")
-            return result
-        return wrapper
-    return decorator
 
 
 # ============================================================

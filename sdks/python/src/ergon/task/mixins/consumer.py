@@ -249,11 +249,7 @@ class ConsumerMixin(ABC):
                 # ============================================================
                 #  RUN CONCURRENTLY WITH REFILL (with batch-level span)
                 # ============================================================
-                # For streaming mode, start each batch as a fresh root span (new trace)
-                # This prevents "root span not received" issues in long-running consumers
                 if policy.loop.streaming:
-                    # Create a fresh empty context with no active span
-                    # This forces the tracer to generate a new trace ID for each batch
                     batch_context = otel_context.Context()
                 else:
                     batch_context = None  # Use current context
@@ -267,9 +263,9 @@ class ConsumerMixin(ABC):
                         "streaming": policy.loop.streaming,
                     },
                 ):
-                    count = helpers.run_concurrently_with_refill(
+                    _, count = helpers.run_concurrently(
                         data=transactions,
-                        it=iter((tr, policy) for tr in transactions),
+                        callback=lambda tr: (tr, policy),
                         submit_fn=submit_start_processing,
                         concurrency=policy.loop.concurrency.value,
                         limit=policy.loop.limit,

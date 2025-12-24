@@ -199,9 +199,9 @@ class ProducerMixin(ABC):
                     batch_number=batch_number,
                     batch_size=len(batch),
                 )
-                count = helpers.run_concurrently_with_refill(
+                _, count = helpers.run_concurrently(
                     data=batch,
-                    it=iter((tr, policy) for tr in batch),
+                    callback=lambda tr: (tr, policy),
                     submit_fn=submit_start_producing,
                     concurrency=policy.loop.concurrency.value,
                     limit=policy.loop.limit,
