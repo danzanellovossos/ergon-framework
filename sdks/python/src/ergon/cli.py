@@ -3,7 +3,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from ergon_framework import manager
+from ergon import manager
 
 
 # ---------------------------------------------------------------------

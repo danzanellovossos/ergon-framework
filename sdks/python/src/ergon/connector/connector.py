@@ -19,6 +19,25 @@ class Connector(ABC):
         """Publish a transaction (sync)."""
         pass
 
+    def fetch_transaction_by_id(self, transaction_id: str, *args, **kwargs) -> transaction.Transaction:
+        """
+        Get a transaction by its id.
+
+        Args:
+            transaction_id: The id of the transaction to get.
+
+        Returns:
+            The transaction.
+
+        
+        Use cases:
+        - Testing
+        - Debugging
+        - Replaying
+
+        """
+        pass
+
     def get_transactions_count(self, *args, **kwargs) -> int:
         """Get the total number of transactions in the connector target system."""
         pass
