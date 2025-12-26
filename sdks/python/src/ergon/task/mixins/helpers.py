@@ -60,176 +60,195 @@ def run_with_context(
 
 
 # ============================================================
-#  RUN WITH TIMEOUT (SYNC) + CONTEXT WRAPPER
-# ============================================================
-def run_with_timeout(
-    *args,
-    fn: Callable,
-    timeout: int = 0,
-    ctx: context.Context = None,
-    trace_name: str = None,
-    trace_attrs: dict = {},
-    **kwargs,
-):
-    if ctx is None:
-        ctx = context.get_current()
-
-    def _wrapper():
-        return run_with_context(*args, fn=fn, ctx=ctx, trace_name=trace_name, trace_attrs=trace_attrs, **kwargs)
-
-    if timeout == 0:
-        return _wrapper()
-
-    ex = futures.ThreadPoolExecutor(max_workers=1)
-    try:
-        return ex.submit(_wrapper).result(timeout=timeout)
-    finally:
-        ex.shutdown(wait=False)
-
-
-# ============================================================
-#  RUN WITH RETRY + TIMEOUT (SYNC) + CONTEXT WRAPPER
-# ============================================================
-def run_with_retry_and_timeout(
-    *args,
-    fn: Callable,
-    retry: policies.RetryPolicy,
-    ctx: context.Context = None,
-    trace_name: str = None,
-    trace_attrs: dict = {},
-    **kwargs,
-) -> Tuple[bool, Any]:
-    if ctx is None:
-        ctx = context.get_current()
-
-    with tracer.start_as_current_span(
-        trace_name,
-        attributes={**trace_attrs, "max_attempts": retry.max_attempts},
-    ):
-        last_exc = None
-        for attempt in range(retry.max_attempts):
-            try:
-                result = run_with_timeout(
-                    *args,
-                    fn=fn,
-                    timeout=retry.timeout,
-                    ctx=ctx,
-                    trace_name=f"{trace_name}.attempt.{attempt + 1}",
-                    trace_attrs={"attempt": attempt + 1, "max_attempts": retry.max_attempts},
-                    **kwargs,
-                )
-                return True, result
-            except exceptions.TransactionException as e:
-                if e.category == exceptions.ExceptionType.BUSINESS:
-                    return False, e
-                last_exc = e
-            except BaseException as e:
-                last_exc = e
-
-            if attempt == retry.max_attempts - 1:
-                return False, last_exc
-
-            run_with_context(
-                fn=lambda: utils.backoff(retry.backoff, retry.backoff_multiplier, retry.backoff_cap, attempt),
-                ctx=ctx,
-                trace_name=f"backoff.attempt.{attempt + 1}",
-                trace_attrs={"attempt": attempt + 1, "max_attempts": retry.max_attempts},
-            )
-
-
-# ============================================================
 #  RUN FN (SYNC EXECUTION FACTORY) - Works as function AND decorator
 # ============================================================
 def run_fn(
     *args,
     fn: Optional[Callable] = None,
     retry: Optional[policies.RetryPolicy] = None,
-    executor: Optional[futures.Executor] = None,
-    ctx: context.Context = None,
+    ctx: Optional[context.Context] = None,
     trace_name: Optional[str] = None,
     trace_attrs: dict = {},
+    executor: Optional[futures.Executor] = None,
     **kwargs,
 ):
     """
-    Executes a function with context + span + timeout + retries.
+    Execute a callable inside Ergon's execution envelope.
 
-    Can be used as:
-    1. Normal function: run_fn(fn=my_func, retry=..., *args, **kwargs)
-    2. Decorator: @run_fn(retry=...) or @run_fn
+    This function is a *foundational execution primitive* and provides a
+    consistent, observable, policy-driven way to run synchronous code with:
+
+      - OpenTelemetry context propagation
+      - Structured tracing
+      - Retry semantics
+      - Optional per-attempt timeouts
+
+    It can be used either as a normal function or as a decorator.
+
+    --------------------------------------------------------------------
+    EXECUTION MODES
+    --------------------------------------------------------------------
+
+    1) DIRECT EXECUTION (executor is None)
+
+        The callable is executed *immediately* in the current thread.
+        The function returns a tuple:
+
+            (success: bool, result: Any | Exception)
+
+        This mode is used when:
+          - You are already inside an execution engine (e.g. Consumer loop)
+          - You want deterministic, inline execution
+          - You need explicit control over error handling
+          - You are composing higher-level execution semantics
+
+        This is the most common mode inside the framework itself.
+
+    2) SUBMITTED EXECUTION (executor is provided)
+
+        The callable is submitted to the provided Executor and executed
+        asynchronously. In this case, `run_fn` returns a `Future` whose
+        result will be:
+
+            (success: bool, result: Any | Exception)
+
+        This mode is used when:
+          - You are *orchestrating concurrency*, not business logic
+          - You want to parallelize independent executions
+          - You are building a runner, scheduler, or dispatcher
+          - You explicitly want execution to escape the current thread
+
+        The executor defines *where* execution happens, but **not how**.
+        All retries, timeouts, tracing, and context propagation still occur
+        inside the execution envelope.
+
+    --------------------------------------------------------------------
+    DECORATOR MODE
+    --------------------------------------------------------------------
+
+    When used as a decorator:
+
+        @run_fn(retry=...)
+        def my_function(...):
+
+    The decorator is syntactic sugar over direct execution:
+
+      - The wrapped function is executed inline
+      - Failures raise exceptions instead of returning (success, result)
+      - `executor` is intentionally ignored
+
+    Decorator mode is intended for:
+      - Service methods
+      - Task internals
+      - Domain-level logic
+
+    It must NOT be used to introduce concurrency.
+
+    --------------------------------------------------------------------
+    IMPORTANT INVARIANTS
+    --------------------------------------------------------------------
+
+    - `run_fn` never decides *whether* retries or timeouts apply
+      — policies define behavior, not control flow.
+
+    - Passing an executor controls *where* execution happens,
+      never *how* it behaves.
+
+    - The execution envelope (context, tracing, retries, timeouts)
+      is identical in all modes.
+
+    In short:
+      - Use `executor` at orchestration boundaries
+      - Do NOT use `executor` inside domain or business logic
     """
 
-    # DECORATOR MODE: called without fn, returns decorator
-
+    # ============================================================
+    # DECORATOR MODE
+    # ============================================================
     if fn is None:
 
-        def decorator(func: Callable) -> Callable:
-            def wrapper(*wrapper_args, **wrapper_kwargs) -> Any:
-                result = run_fn(
+        def decorator(func: Callable):
+            def wrapper(*wrapper_args, **wrapper_kwargs):
+                success, result = run_fn(
+                    *wrapper_args,
                     fn=func,
                     retry=retry,
-                    executor=executor,
                     ctx=ctx,
-                    trace_name=trace_name or func.__getattribute__("__qualname__"),
+                    trace_name=trace_name or func.__qualname__,
                     trace_attrs=trace_attrs,
-                    *wrapper_args,
+                    executor=None,  # decorators always execute inline
                     **wrapper_kwargs,
                 )
-                # If executor is provided, result is a Future
-                if executor:
-                    success, result = result.result()
-                else:
-                    success, result = result
 
                 if not success:
                     if isinstance(result, BaseException):
                         raise result
-                    raise RuntimeError(f"Function {func.__name__} failed: {result}")
+                    raise RuntimeError(f"Function {func.__qualname__} failed: {result}")
+
                 return result
 
             return wrapper
 
         return decorator
 
-    trace_name = trace_name or fn.__getattribute__("__qualname__")
+    # ============================================================
+    # EXECUTION MODE
+    # ============================================================
+    ctx = ctx or context.get_current()
+    trace_name = trace_name or fn.__qualname__
+    retry = retry or policies.RetryPolicy(max_attempts=1)
 
-    # FUNCTION MODE: fn provided, execute it
-    if ctx is None:
-        ctx = context.get_current()
-
-    def _run(*run_args, **run_kwargs) -> Tuple[bool, Any]:
-        # NO RETRY / NO TIMEOUT
-        if retry is None or (retry.max_attempts == 1 and retry.timeout is None):
-            try:
-                return True, run_with_context(
-                    *run_args, fn=fn, ctx=ctx, trace_name=trace_name, trace_attrs=trace_attrs, **run_kwargs
-                )
-            except BaseException as e:
-                return False, e
-
-        # SINGLE ATTEMPT + TIMEOUT
-        if retry.max_attempts == 1 and retry.timeout:
-            try:
-                return True, run_with_timeout(
-                    *run_args,
-                    fn=fn,
-                    ctx=ctx,
-                    timeout=retry.timeout,
-                    trace_name=trace_name,
-                    trace_attrs=trace_attrs,
-                    **run_kwargs,
-                )
-            except BaseException as e:
-                return False, e
-
-        # FULL RETRY + TIMEOUT
-        return run_with_retry_and_timeout(
-            *run_args, fn=fn, retry=retry, ctx=ctx, trace_name=trace_name, trace_attrs=trace_attrs, **run_kwargs
+    def attempt(attempt_no: int):
+        return run_with_context(
+            *args,
+            fn=fn,
+            ctx=ctx,
+            trace_name=f"{trace_name}.attempt.{attempt_no}",
+            trace_attrs={**trace_attrs, "attempt": attempt_no},
+            **kwargs,
         )
 
-    if executor:
-        return executor.submit(_run, *args, **kwargs)
+    def run():
+        last_exc = None
 
-    return _run(*args, **kwargs)
+        with tracer.start_as_current_span(
+            trace_name,
+            attributes={
+                **trace_attrs,
+                **(retry.model_dump(exclude_none=True) if retry else {}),
+            },
+        ):
+            for attempt_no in range(1, retry.max_attempts + 1):
+                try:
+                    if retry.timeout:
+                        with futures.ThreadPoolExecutor(max_workers=1) as ex:
+                            future = ex.submit(attempt, attempt_no)
+                            return True, future.result(timeout=retry.timeout)
+                    else:
+                        return True, attempt(attempt_no)
+
+                except exceptions.TransactionException as e:
+                    if e.category == exceptions.ExceptionType.BUSINESS:
+                        return False, e
+                    last_exc = e
+
+                except BaseException as e:
+                    last_exc = e
+
+                if attempt_no < retry.max_attempts:
+                    utils.backoff(
+                        retry.backoff,
+                        retry.backoff_multiplier,
+                        retry.backoff_cap,
+                        attempt_no - 1,
+                    )
+
+            return False, last_exc
+
+    if executor:
+        return executor.submit(run)
+
+    return run()
 
 
 def run_concurrently(

@@ -1,7 +1,6 @@
-import uuid
 import time
-
-from typing import Optional, Dict
+import uuid
+from typing import Dict, Optional
 
 
 def headers_generator(
