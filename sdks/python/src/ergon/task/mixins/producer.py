@@ -9,7 +9,8 @@ from more_itertools import chunked
 
 from ... import connector, telemetry
 from .. import base, exceptions, policies
-from . import helpers, metrics as mixin_metrics, utils
+from . import helpers, utils
+from . import metrics as mixin_metrics
 
 logger = logging.getLogger(__name__)
 tracer = telemetry.tracing.get_tracer(__name__)

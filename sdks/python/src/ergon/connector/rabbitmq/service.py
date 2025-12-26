@@ -1,12 +1,14 @@
 import functools
+import json
 import logging
 import time
-import json
-import pika
-from typing import Optional, Dict, Any, List
-from .models import RabbitmqClient, RabbitmqProducerMessage, RabbitmqConsumerMessage
-from .helper import headers_generator
 from collections import deque
+from typing import Any, Dict, List, Optional
+
+import pika
+
+from .helper import headers_generator
+from .models import RabbitmqClient, RabbitmqProducerMessage
 
 logger = logging.getLogger(__name__)
 

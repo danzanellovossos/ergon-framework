@@ -11,8 +11,7 @@ All metrics follow OpenTelemetry semantic conventions where applicable.
 
 import time
 from contextlib import contextmanager
-from functools import wraps
-from typing import Callable, Optional
+from typing import Callable
 
 from ... import telemetry
 

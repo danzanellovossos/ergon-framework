@@ -9,7 +9,8 @@ from opentelemetry import context as otel_context
 
 from ... import connector, telemetry
 from .. import base, exceptions, policies
-from . import helpers, metrics as mixin_metrics, producer, utils
+from . import helpers, producer, utils
+from . import metrics as mixin_metrics
 
 logger = logging.getLogger(__name__)
 tracer = telemetry.tracing.get_tracer(__name__)

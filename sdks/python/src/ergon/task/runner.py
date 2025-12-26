@@ -6,6 +6,7 @@ from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from typing import Literal
 
+from ..connector import Transaction
 from ..telemetry import logging, metrics, tracing
 from .base import (
     BaseAsyncTask,
@@ -13,9 +14,6 @@ from .base import (
     TaskConfig,
     TaskExecMetadata,
 )
-
-from ..connector import Transaction
-from .policies import ConsumerPolicy
 
 
 # -------------------------------------------------------------
@@ -41,7 +39,6 @@ async def __run_transaction_async(
     transaction: Transaction = None,
     transaction_id: str = None,
 ):
-    tracer = tracing.get_tracer(__name__)
     policy_obj = next((p for p in instance.policies if p.name == policy), None)
     if not policy_obj:
         raise ValueError(f"Policy '{policy}' not found")

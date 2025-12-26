@@ -1,8 +1,8 @@
-import uuid
-from typing import List, Optional, Dict, Generator
+from typing import Dict, Generator, List, Optional
 
 from ergon_framework import Connector, Transaction
 from src.connectors.rabbitmq_connector.service import RabbitMQService
+
 from .models import RabbitmqClient
 
 
