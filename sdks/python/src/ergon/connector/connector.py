@@ -29,7 +29,7 @@ class Connector(ABC):
         Returns:
             The transaction.
 
-        
+
         Use cases:
         - Testing
         - Debugging

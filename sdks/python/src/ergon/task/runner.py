@@ -17,6 +17,7 @@ from .base import (
 from ..connector import Transaction
 from .policies import ConsumerPolicy
 
+
 # -------------------------------------------------------------
 # TELEMETRY INITIALIZATION
 # -------------------------------------------------------------
@@ -35,7 +36,7 @@ def __init_telemetry(config: TaskConfig, task_exec_metadata: TaskExecMetadata):
 # ASYNC TRANSACTION EXECUTION PATH
 # -------------------------------------------------------------
 async def __run_transaction_async(
-    instance: BaseAsyncTask, 
+    instance: BaseAsyncTask,
     policy: str,
     transaction: Transaction = None,
     transaction_id: str = None,
@@ -56,6 +57,7 @@ async def __run_transaction_async(
     if not success:
         raise result
     return result
+
 
 # -------------------------------------------------------------
 # ASYNC EXECUTION PATH
@@ -152,10 +154,10 @@ async def __run_task_async(config: TaskConfig, mode: Literal["task", "transactio
                 attributes={"transaction_id": kwargs.get("transaction_id")},
             ):
                 await __run_transaction_async(
-                    instance=instance, 
-                    policy=kwargs.get("policy", None), 
-                    transaction=kwargs.get("transaction"), 
-                    transaction_id=kwargs.get("transaction_id")
+                    instance=instance,
+                    policy=kwargs.get("policy", None),
+                    transaction=kwargs.get("transaction"),
+                    transaction_id=kwargs.get("transaction_id"),
                 )
 
         # -------------------------------------------------------------
@@ -178,9 +180,8 @@ async def __run_task_async(config: TaskConfig, mode: Literal["task", "transactio
             await instance.exit()
 
 
-
 def __run_transaction_sync(
-    instance: BaseTask, 
+    instance: BaseTask,
     policy: str,
     transaction: Transaction = None,
     transaction_id: str = None,
@@ -213,6 +214,7 @@ def __run_transaction_sync(
     if not success:
         raise result
     return result
+
 
 # -------------------------------------------------------------
 # SYNC EXECUTION PATH
@@ -306,12 +308,12 @@ def __run_task_sync(config: TaskConfig, mode: Literal["task", "transaction"] = "
                 attributes={"transaction_id": kwargs.get("transaction_id")},
             ):
                 __run_transaction_sync(
-                    instance=instance, 
-                    policy=kwargs.get("policy", None), 
-                    transaction=kwargs.get("transaction"), 
-                    transaction_id=kwargs.get("transaction_id")
+                    instance=instance,
+                    policy=kwargs.get("policy", None),
+                    transaction=kwargs.get("transaction"),
+                    transaction_id=kwargs.get("transaction_id"),
                 )
-            
+
         # -------------------------------------------------------------
         # EXECUTE TASK
         # -------------------------------------------------------------

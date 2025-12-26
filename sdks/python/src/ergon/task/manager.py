@@ -49,31 +49,21 @@ class TaskManager:
         # Sync tasks → normal call
         return run_task(config=config, debug=debug, mode="task", *args, **kwargs)
 
-    def process_transaction(
-        self, 
-        task: str, 
-        policy: str,
-        transaction: Transaction,
-        *args,
-        **kwargs
-    ):
+    def process_transaction(self, task: str, policy: str, transaction: Transaction, *args, **kwargs):
         if task not in self._registry:
             raise ValueError(f"Task '{task}' is not registered.")
         config = self._registry[task]
-        return run_task(config=config, debug=True, mode="transaction", transaction=transaction, policy=policy, *args, **kwargs)
+        return run_task(
+            config=config, debug=True, mode="transaction", transaction=transaction, policy=policy, *args, **kwargs
+        )
 
-    def process_transaction_by_id(
-        self,
-        task: str,
-        policy: str,
-        transaction_id: str,
-        *args,
-        **kwargs
-    ):
+    def process_transaction_by_id(self, task: str, policy: str, transaction_id: str, *args, **kwargs):
         if task not in self._registry:
             raise ValueError(f"Task '{task}' is not registered.")
         config = self._registry[task]
-        return run_task(config=config, debug=True, mode="transaction", transaction_id=transaction_id, policy=policy, *args, **kwargs)
+        return run_task(
+            config=config, debug=True, mode="transaction", transaction_id=transaction_id, policy=policy, *args, **kwargs
+        )
 
     # -------------------------------------------------------------
     # LIST / GET

@@ -58,6 +58,7 @@ def run_with_context(
 
     return with_context(*args, fn=fn, ctx=ctx, trace_name=trace_name, trace_attrs=trace_attrs, **kwargs)
 
+
 # ============================================================
 #  RUN FN (SYNC EXECUTION FACTORY) - Works as function AND decorator
 # ============================================================
@@ -165,6 +166,7 @@ def run_fn(
     # DECORATOR MODE
     # ============================================================
     if fn is None:
+
         def decorator(func: Callable):
             def wrapper(*wrapper_args, **wrapper_kwargs):
                 success, result = run_fn(
@@ -174,16 +176,14 @@ def run_fn(
                     ctx=ctx,
                     trace_name=trace_name or func.__qualname__,
                     trace_attrs=trace_attrs,
-                    executor=None,   # decorators always execute inline
+                    executor=None,  # decorators always execute inline
                     **wrapper_kwargs,
                 )
 
                 if not success:
                     if isinstance(result, BaseException):
                         raise result
-                    raise RuntimeError(
-                        f"Function {func.__qualname__} failed: {result}"
-                    )
+                    raise RuntimeError(f"Function {func.__qualname__} failed: {result}")
 
                 return result
 
