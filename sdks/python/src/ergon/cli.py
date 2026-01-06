@@ -1,13 +1,14 @@
 import argparse
+import json
 import shutil
 import sys
 from pathlib import Path
 
-from ergon import manager
-
+from .task.manager import manager
+from .connector import Transaction
 
 # ---------------------------------------------------------------------
-# Utility: copy the bootstrap template and rename the internal src package
+# Utility: bootstrap project
 # ---------------------------------------------------------------------
 def bootstrap_project(project_name: str, target_dir: str):
     root = Path(__file__).resolve().parent
@@ -18,17 +19,13 @@ def bootstrap_project(project_name: str, target_dir: str):
 
     target = Path(target_dir).resolve()
     target_src = target / "src" / project_name
-
     target_src.mkdir(parents=True, exist_ok=True)
 
     for item in template_src.rglob("*"):
         rel = item.relative_to(template_src)
         dest = target_src / rel
-
-        if item.is_dir():
-            dest.mkdir(parents=True, exist_ok=True)
-        else:
-            dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if item.is_file():
             shutil.copy2(item, dest)
 
     print(f"✔ Bootstrapped successfully at src/{project_name}")
@@ -45,38 +42,56 @@ def create_parser():
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
-    # -----------------------------------------------------------------
+    # -------------------------------------------------------------
     # ergon list
-    # -----------------------------------------------------------------
+    # -------------------------------------------------------------
     subparsers.add_parser("list", help="List all registered tasks")
 
-    # -----------------------------------------------------------------
+    # -------------------------------------------------------------
     # ergon run <task>
-    # -----------------------------------------------------------------
+    # -------------------------------------------------------------
     run_parser = subparsers.add_parser("run", help="Run a registered task")
     run_parser.add_argument("task_name", type=str)
 
-    # -----------------------------------------------------------------
-    # ergon bootstrap <project_name> <target_dir>
-    # -----------------------------------------------------------------
+    # -------------------------------------------------------------
+    # ergon process-transaction
+    # -------------------------------------------------------------
+    tx_parser = subparsers.add_parser(
+        "process-transaction",
+        help="Process a single transaction (inline payload)",
+    )
+    tx_parser.add_argument("task", type=str)
+    tx_parser.add_argument("policy", type=str)
+    tx_parser.add_argument(
+        "--payload-json",
+        required=True,
+        help="Transaction payload as JSON string",
+    )
+
+    # -------------------------------------------------------------
+    # ergon process-transaction-by-id
+    # -------------------------------------------------------------
+    tx_id_parser = subparsers.add_parser(
+        "process-transaction-by-id",
+        help="Process a transaction by ID via connector fetch",
+    )
+    tx_id_parser.add_argument("task", type=str)
+    tx_id_parser.add_argument("policy", type=str)
+    tx_id_parser.add_argument("transaction_id", type=str)
+
+    # -------------------------------------------------------------
+    # ergon bootstrap
+    # -------------------------------------------------------------
     bootstrap_parser = subparsers.add_parser(
         "bootstrap",
         help="Create a new project using the Ergon template",
-        description="Example: ergon bootstrap jsl_manifesto .",
     )
-
-    bootstrap_parser.add_argument(
-        "project_name",
-        type=str,
-        help="Name of the python package that will go under src/",
-    )
-
+    bootstrap_parser.add_argument("project_name", type=str)
     bootstrap_parser.add_argument(
         "target_dir",
-        type=str,
         nargs="?",
         default=".",
-        help="Directory where project will be created (default: current directory)",
+        help="Target directory (default: current directory)",
     )
 
     return parser
@@ -93,7 +108,9 @@ def ergon():
         parser.print_help()
         sys.exit(1)
 
-    # ---- LIST TASKS ----
+    # -------------------------------------------------------------
+    # LIST TASKS
+    # -------------------------------------------------------------
     if args.command == "list":
         tasks = manager.list_tasks()
         if not tasks:
@@ -104,20 +121,45 @@ def ergon():
                 print(f"  - {t}")
         return
 
-    # ---- RUN TASK ----
+    # -------------------------------------------------------------
+    # RUN TASK
+    # -------------------------------------------------------------
     if args.command == "run":
-        try:
-            manager.run(args.task_name)
-        except Exception as exc:
-            print(f"[ERROR] Failed to run task '{args.task_name}': {exc}")
-            sys.exit(1)
+        manager.run(args.task_name)
         return
 
-    # ---- BOOTSTRAP PROJECT ----
-    if args.command == "bootstrap":
+    # -------------------------------------------------------------
+    # PROCESS TRANSACTION (INLINE)
+    # -------------------------------------------------------------
+    if args.command == "process-transaction":
         try:
-            bootstrap_project(args.project_name, args.target_dir)
-        except Exception as exc:
-            print(f"[ERROR] Could not bootstrap project: {exc}")
-            sys.exit(1)
+            payload = json.loads(args.payload_json)
+        except json.JSONDecodeError as exc:
+            print(f"[ERROR] Invalid JSON payload: {exc}")
+            sys.exit(2)
+
+        transaction = Transaction(payload=payload)
+        manager.process_transaction(
+            task=args.task,
+            policy=args.policy,
+            transaction=transaction,
+        )
+        return
+
+    # -------------------------------------------------------------
+    # PROCESS TRANSACTION BY ID
+    # -------------------------------------------------------------
+    if args.command == "process-transaction-by-id":
+        manager.process_transaction_by_id(
+            task=args.task,
+            policy=args.policy,
+            transaction_id=args.transaction_id,
+        )
+        return
+
+    # -------------------------------------------------------------
+    # BOOTSTRAP
+    # -------------------------------------------------------------
+    if args.command == "bootstrap":
+        bootstrap_project(args.project_name, args.target_dir)
         return

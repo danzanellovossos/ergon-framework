@@ -1,4 +1,5 @@
 from . import connector, service, task, telemetry, utils
+from .task.manager import manager
 
 __all__ = [
     "service",
@@ -6,6 +7,7 @@ __all__ = [
     "task",
     "telemetry",
     "utils",
+    "manager",
 ]
 
 __version__ = "0.1.0"
