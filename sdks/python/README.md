@@ -10,15 +10,22 @@
 
 ## Installation
 
-```bash
-pip install ergon-framework
-```
-
-Or with `uv`:
+Ergon is not yet published to PyPI. Install as a local dependency:
 
 ```bash
-uv add ergon-framework
+pip install -e /path/to/ergon-framework/sdks/python
 ```
+
+Or add to your `pyproject.toml`:
+
+```toml
+[project]
+dependencies = [
+    "ergon @ file:///path/to/ergon-framework/sdks/python",
+]
+```
+
+📖 **[Full Getting Started Guide](docs/getting-started.md)** — Complete setup, project configuration, and task registration
 
 ---
 
@@ -388,7 +395,14 @@ my-project/
 
 ## Documentation
 
+### Python SDK Guides
+
+- **[Getting Started](docs/getting-started.md)** — Installation, project setup, and running your first task
+- **[CLI Reference](docs/cli.md)** — Commands, options, and exit codes
 - **[Project Structure Guide](docs/project-structure.md)** — How to organize connectors, tasks, and shared modules
+
+### Framework Concepts
+
 - **[Framework Architecture](../../docs/architecture.md)** — Full system specification and design philosophy
 - **[Transaction Abstraction](../../docs/modules/1.transaction.md)** — Understanding atomicity rules
 - **[Task Module](../../docs/modules/2.task.md)** — Mixins, lifecycles, and execution modes
@@ -402,3 +416,4 @@ my-project/
 
 This project is licensed under the [MIT License](../../LICENSE).
 
+<br/>

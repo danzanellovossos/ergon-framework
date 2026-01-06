@@ -1,4 +1,3 @@
-
 <p align="left">
   <img src="assets/logo.png" alt="Ergon Framework Logo" height="200">
 </p>
@@ -14,6 +13,39 @@
 Ergon is a framework designed to solve the "maturity gap" in background processing. While simple job queues are great for basic workloads and raw async scripts are flexible but unstructured, Ergon provides a **rigorous architectural foundation** for mission-critical workloads.
 
 The framework enforces a strict **layered architecture** where business logic (`Tasks`) is completely isolated from transport mechanics (`Connectors` & `Services`). This ensures your automation code remains deterministic, testable, and portable—whether you're consuming from message queues, reading from object storage, or streaming from databases.
+
+---
+
+## Getting Started
+
+Ergon is a language-agnostic framework specification with official SDK implementations. The **Python SDK** is currently available.
+
+### Quick Install (Python)
+
+Ergon is not yet published to PyPI. Clone the repository and install as a local dependency:
+
+```bash
+git clone https://github.com/your-org/ergon-framework.git
+pip install -e /path/to/ergon-framework/sdks/python
+```
+
+### Running Tasks
+
+Once your project is configured, use the CLI to interact with registered tasks:
+
+```bash
+ergon list              # List all registered tasks
+ergon run <task-name>   # Run a specific task
+```
+
+### Next Steps
+
+For complete setup instructions, project configuration, and CLI documentation:
+
+📖 **[Python SDK Documentation](sdks/python/README.md)**
+
+- [Getting Started Guide](sdks/python/docs/getting-started.md) — Full installation and project setup
+- [CLI Reference](sdks/python/docs/cli.md) — Commands, options, and exit codes
 
 ---
 
@@ -228,3 +260,5 @@ Deep dive into the core framework concepts:
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
+
+<br/>

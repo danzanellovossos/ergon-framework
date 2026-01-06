@@ -21,20 +21,7 @@ class Connector(ABC):
 
     def fetch_transaction_by_id(self, transaction_id: str, *args, **kwargs) -> transaction.Transaction:
         """
-        Get a transaction by its id.
-
-        Args:
-            transaction_id: The id of the transaction to get.
-
-        Returns:
-            The transaction.
-
-
-        Use cases:
-        - Testing
-        - Debugging
-        - Replaying
-
+        Fetches a transaction by its id for individual processing.
         """
         pass
 
@@ -57,10 +44,13 @@ class AsyncConnector(ABC):
         """Publish a transaction asynchronously."""
         pass
 
+    async def fetch_transaction_by_id_async(self, transaction_id: str, *args, **kwargs) -> transaction.Transaction:
+        """Fetches a transaction by its id for individual processing asynchronously."""
+        pass
+
     async def get_transactions_count_async(self, *args, **kwargs) -> int:
         """Get the total number of transactions in the connector target system asynchronously."""
         pass
-
 
 # ---------------------------------------------------------
 # CONNECTOR CONFIG (supports both sync + async)
