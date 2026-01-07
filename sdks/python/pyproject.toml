@@ -58,4 +58,4 @@ docstring-code-format = true
 skip-magic-trailing-comma = false
 
 [project.scripts]
-ergon = "ergon_framework.cli:ergon"
+ergon = "ergon.cli:ergon"
