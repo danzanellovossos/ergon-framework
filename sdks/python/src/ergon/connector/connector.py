@@ -52,6 +52,7 @@ class AsyncConnector(ABC):
         """Get the total number of transactions in the connector target system asynchronously."""
         pass
 
+
 # ---------------------------------------------------------
 # CONNECTOR CONFIG (supports both sync + async)
 # ---------------------------------------------------------

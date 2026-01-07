@@ -47,17 +47,27 @@ class TaskManager:
         if task not in self._registry:
             raise ValueError(f"Task '{task}' is not registered.")
         config = self._registry[task]
-        sys.exit(run_task(
-            config=config, debug=True, mode="transaction", transaction=transaction, policy=policy, *args, **kwargs
-        ))
+        sys.exit(
+            run_task(
+                config=config, debug=True, mode="transaction", transaction=transaction, policy=policy, *args, **kwargs
+            )
+        )
 
     def process_transaction_by_id(self, task: str, policy: str, transaction_id: str, *args, **kwargs) -> None:
         if task not in self._registry:
             raise ValueError(f"Task '{task}' is not registered.")
         config = self._registry[task]
-        sys.exit(run_task(
-            config=config, debug=True, mode="transaction", transaction_id=transaction_id, policy=policy, *args, **kwargs
-        ))
+        sys.exit(
+            run_task(
+                config=config,
+                debug=True,
+                mode="transaction",
+                transaction_id=transaction_id,
+                policy=policy,
+                *args,
+                **kwargs,
+            )
+        )
 
     # -------------------------------------------------------------
     # LIST / GET

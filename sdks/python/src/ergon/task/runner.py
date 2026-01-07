@@ -22,13 +22,14 @@ from .base import (
 # EXIT CODES (POSIX-ALIGNED)
 # =============================================================
 
+
 class ExitCode(IntEnum):
     SUCCESS = 0
     ERROR = 1
     CONFIG_ERROR = 2
 
-    SIGINT = 130    # 128 + SIGINT(2)
-    SIGTERM = 143   # 128 + SIGTERM(15)
+    SIGINT = 130  # 128 + SIGINT(2)
+    SIGTERM = 143  # 128 + SIGTERM(15)
 
 
 # =============================================================
@@ -66,6 +67,7 @@ def get_shutdown_exit_code() -> ExitCode:
 # TELEMETRY INITIALIZATION
 # =============================================================
 
+
 def __init_telemetry(config: TaskConfig, task_exec_metadata: TaskExecMetadata):
     if getattr(config, "logging", None):
         logging._apply_logging_config(cfg=config.logging, metadata=task_exec_metadata)
@@ -80,6 +82,7 @@ def __init_telemetry(config: TaskConfig, task_exec_metadata: TaskExecMetadata):
 # =============================================================
 # ASYNC TRANSACTION EXECUTION
 # =============================================================
+
 
 async def __run_transaction_async(
     instance: BaseAsyncTask,
@@ -107,6 +110,7 @@ async def __run_transaction_async(
 # =============================================================
 # ASYNC TASK EXECUTION
 # =============================================================
+
 
 async def __run_task_async(
     config: TaskConfig,
@@ -144,10 +148,7 @@ async def __run_task_async(
                     await conn.init_async()
                 connectors[name] = conn
 
-            services = {
-                name: cfg.service(*cfg.args, **cfg.kwargs)
-                for name, cfg in config.services.items()
-            }
+            services = {name: cfg.service(*cfg.args, **cfg.kwargs) for name, cfg in config.services.items()}
 
             instance = config.task(
                 connectors=connectors,
@@ -173,9 +174,11 @@ async def __run_task_async(
         if instance is not None:
             await instance.exit()
 
+
 # =============================================================
 # SYNC TRANSACTION EXECUTION
 # =============================================================
+
 
 def __run_transaction_sync(
     instance: BaseTask,
@@ -198,9 +201,12 @@ def __run_transaction_sync(
     if not success:
         raise result
     return result
+
+
 # =============================================================
 # SYNC TASK EXECUTION
 # =============================================================
+
 
 def __run_task_sync(
     config: TaskConfig,
@@ -231,15 +237,9 @@ def __run_task_sync(
             f"{config.task.__name__}.run",
             attributes={"task.execution.id": task_exec_metadata["execution_id"]},
         ):
-            connectors = {
-                name: cfg.connector(*cfg.args, **cfg.kwargs)
-                for name, cfg in config.connectors.items()
-            }
+            connectors = {name: cfg.connector(*cfg.args, **cfg.kwargs) for name, cfg in config.connectors.items()}
 
-            services = {
-                name: cfg.service(*cfg.args, **cfg.kwargs)
-                for name, cfg in config.services.items()
-            }
+            services = {name: cfg.service(*cfg.args, **cfg.kwargs) for name, cfg in config.services.items()}
 
             instance = config.task(
                 connectors=connectors,
@@ -269,6 +269,7 @@ def __run_task_sync(
 # =============================================================
 # PUBLIC API — RUNNER
 # =============================================================
+
 
 def run_task(
     config: TaskConfig,
@@ -313,10 +314,7 @@ def run_task(
     # MULTI-PROCESS (SYNC ONLY)
     # ---------------------------------------------------------
     if is_async:
-        raise RuntimeError(
-            "Async tasks cannot be executed with multiple processes. "
-            "Use debug=True or max_workers=1."
-        )
+        raise RuntimeError("Async tasks cannot be executed with multiple processes. Use debug=True or max_workers=1.")
 
     has_error = False
 
@@ -328,9 +326,7 @@ def run_task(
                 "worker_id": worker_id,
                 "total_workers": config.max_workers,
             }
-            futures.append(
-                executor.submit(__run_task_sync, config, mode, *args, **worker_kwargs)
-            )
+            futures.append(executor.submit(__run_task_sync, config, mode, *args, **worker_kwargs))
 
         for f in futures:
             try:
