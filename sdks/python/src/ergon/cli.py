@@ -106,7 +106,7 @@ def create_parser():
 def ergon(tasks: Optional[List[TaskConfig]] = None):
     if tasks:
         for cfg in tasks:
-            if manager.get(cfg.name) is None:
+            if not manager.get(cfg.name):
                 manager.register(cfg)
 
     parser = create_parser()
