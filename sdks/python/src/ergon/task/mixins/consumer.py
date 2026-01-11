@@ -110,12 +110,14 @@ class ConsumerMixin(ABC):
             duration=time.perf_counter() - stage_start,
             outcome="ok" if success else "error",
         )
+        logger.info(f"Transaction {transaction.id} processed with outcome: {'ok' if success else 'error'}")
         return success, result
 
     # =====================================================================
     # SUCCESS HANDLER
     # =====================================================================
     def _handle_success(self, transaction, result, retry: policies.RetryPolicy):
+        logger.info(f"Transaction {transaction.id} success handler started")
         stage_start = time.perf_counter()
         success, handler_result = helpers.run_fn(
             fn=lambda: self.handle_process_success(transaction, result),
@@ -130,14 +132,14 @@ class ConsumerMixin(ABC):
             duration=time.perf_counter() - stage_start,
             outcome="ok" if success else "error",
         )
-        logger.info(f"Transaction {transaction.id} processed successfully")
+        logger.info(f"Transaction {transaction.id} success handler completed with outcome: {'ok' if success else 'error'}")
         return success, handler_result
 
     # =====================================================================
     # EXCEPTION HANDLER
     # =====================================================================
     def _handle_exception(self, transaction, exc, retry: policies.RetryPolicy):
-        logger.error(f"Transaction {transaction.id} processed with exception: {exc}")
+        logger.error(f"Transaction {transaction.id} exception handler started")
         stage_start = time.perf_counter()
         success, result = helpers.run_fn(
             fn=lambda: self.handle_process_exception(transaction, exc),
@@ -152,6 +154,7 @@ class ConsumerMixin(ABC):
             duration=time.perf_counter() - stage_start,
             outcome="ok" if success else "error",
         )
+        logger.info(f"Transaction {transaction.id} exception handler completed with outcome: {'ok' if success else 'error'}")
         return success, result
 
     # =====================================================================
