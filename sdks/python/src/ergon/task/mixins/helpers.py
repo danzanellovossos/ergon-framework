@@ -213,6 +213,7 @@ def run_fn(
 
         with tracer.start_as_current_span(
             trace_name,
+            context=ctx,
             attributes={
                 **trace_attrs,
                 **(retry.model_dump(exclude_none=True) if retry else {}),
