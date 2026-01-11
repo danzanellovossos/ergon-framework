@@ -8,6 +8,7 @@ from .runner import run_task
 
 logger = logging.getLogger(__name__)
 
+
 class TaskManager:
     """
     Global registry and orchestrator for Ergon tasks.

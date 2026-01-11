@@ -132,7 +132,9 @@ class ConsumerMixin(ABC):
             duration=time.perf_counter() - stage_start,
             outcome="ok" if success else "error",
         )
-        logger.info(f"Transaction {transaction.id} success handler completed with outcome: {'ok' if success else 'error'}")
+        logger.info(
+            f"Transaction {transaction.id} success handler completed with outcome: {'ok' if success else 'error'}"
+        )
         return success, handler_result
 
     # =====================================================================
@@ -154,7 +156,9 @@ class ConsumerMixin(ABC):
             duration=time.perf_counter() - stage_start,
             outcome="ok" if success else "error",
         )
-        logger.info(f"Transaction {transaction.id} exception handler completed with outcome: {'ok' if success else 'error'}")
+        logger.info(
+            f"Transaction {transaction.id} exception handler completed with outcome: {'ok' if success else 'error'}"
+        )
         return success, result
 
     # =====================================================================

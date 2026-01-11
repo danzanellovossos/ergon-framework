@@ -225,11 +225,15 @@ def run_fn(
                         with futures.ThreadPoolExecutor(max_workers=1) as ex:
                             future = ex.submit(attempt, attempt_no)
                             result = future.result(timeout=retry.timeout)
-                            logger.info(f"Attempt {attempt_no} to run function {fn.__qualname__} completed with outcome: 'ok'")
+                            logger.info(
+                                f"Attempt {attempt_no} to run function {fn.__qualname__} completed with outcome: 'ok'"
+                            )
                             return True, result
                     else:
                         result = attempt(attempt_no)
-                        logger.info(f"Attempt {attempt_no} to run function {fn.__qualname__} completed with outcome: 'ok'")
+                        logger.info(
+                            f"Attempt {attempt_no} to run function {fn.__qualname__} completed with outcome: 'ok'"
+                        )
                         return True, result
 
                 except exceptions.TransactionException as e:
@@ -242,14 +246,18 @@ def run_fn(
                     last_exc = e
 
                 if attempt_no < retry.max_attempts:
-                    logger.info(f"Attempt {attempt_no} to run function {fn.__qualname__} failed with exception: {last_exc}. Calling backoff.")
+                    logger.info(
+                        f"Attempt {attempt_no} to run function {fn.__qualname__} failed with exception: {last_exc}. Calling backoff."
+                    )
                     utils.backoff(
                         retry.backoff,
                         retry.backoff_multiplier,
                         retry.backoff_cap,
                         attempt_no - 1,
                     )
-            logger.info(f"Attempt {retry.max_attempts} to run function {fn.__qualname__} failed with exception: {last_exc}")
+            logger.info(
+                f"Attempt {retry.max_attempts} to run function {fn.__qualname__} failed with exception: {last_exc}"
+            )
             return False, last_exc
 
     if executor:
