@@ -42,12 +42,14 @@ class ConsumerMixin(ABC):
             # -----------------------
             # 1) PROCESS STEP
             # -----------------------
+            logger.info(f"Transaction {transaction.id} processing started")
             process_ok, process_result = self._handle_process(transaction, policy.process.retry)
 
             # -----------------------
             # 2) EXCEPTION HANDLER
             # -----------------------
             if not process_ok:
+                logger.error(f"Transaction {transaction.id} process handler failed with outcome '{process_result}'")
                 final_status = "exception"
                 if isinstance(process_result, exceptions.TransactionException):
                     process_result = process_result
@@ -59,14 +61,17 @@ class ConsumerMixin(ABC):
                     process_result = exceptions.TransactionException(
                         str(process_result), exceptions.ExceptionType.SYSTEM
                     )
+                logger.error(f"Invoking exception handler for transaction {transaction.id} with outcome: '{process_result}'")
                 return self._handle_exception(transaction, process_result, policy.exception.retry)
 
             # -----------------------
             # 3) SUCCESS HANDLER
             # -----------------------
+            logger.info(f"Invoking success handler for transaction {transaction.id} with outcome: '{process_result}'")
             success_ok, success_result = self._handle_success(transaction, process_result, policy.success.retry)
 
             if not success_ok:
+                logger.error(f"Transaction {transaction.id} success handler failed with outcome '{success_result}'")
                 final_status = "exception"
                 if isinstance(success_result, exceptions.TransactionException):
                     success_result = success_result
@@ -78,6 +83,7 @@ class ConsumerMixin(ABC):
                     success_result = exceptions.TransactionException(
                         str(success_result), exceptions.ExceptionType.SYSTEM
                     )
+                logger.error(f"Invoking exception handler for transaction {transaction.id} with outcome: '{success_result}'")
                 return self._handle_exception(transaction, success_result, policy.exception.retry)
 
             return True, success_result
@@ -95,7 +101,7 @@ class ConsumerMixin(ABC):
     # PROCESS HANDLER
     # =====================================================================
     def _handle_process(self, transaction, retry: policies.RetryPolicy):
-        logger.info(f"Transaction {transaction.id} processing started")
+        logger.info(f"Transaction {transaction.id} process handler started")
         stage_start = time.perf_counter()
         success, result = helpers.run_fn(
             fn=lambda: self.process_transaction(transaction),
@@ -110,7 +116,7 @@ class ConsumerMixin(ABC):
             duration=time.perf_counter() - stage_start,
             outcome="ok" if success else "error",
         )
-        logger.info(f"Transaction {transaction.id} processed with outcome: {'ok' if success else 'error'}")
+        logger.info(f"Transaction {transaction.id} process handler completed with status: {'success' if success else 'error'}")
         return success, result
 
     # =====================================================================
@@ -133,7 +139,7 @@ class ConsumerMixin(ABC):
             outcome="ok" if success else "error",
         )
         logger.info(
-            f"Transaction {transaction.id} success handler completed with outcome: {'ok' if success else 'error'}"
+            f"Transaction {transaction.id} success handler completed with status: {'success' if success else 'error'}"
         )
         return success, handler_result
 
@@ -157,7 +163,7 @@ class ConsumerMixin(ABC):
             outcome="ok" if success else "error",
         )
         logger.info(
-            f"Transaction {transaction.id} exception handler completed with outcome: {'ok' if success else 'error'}"
+            f"Transaction {transaction.id} exception handler completed with status: {'success' if success else 'error'}"
         )
         return success, result
 
@@ -165,7 +171,7 @@ class ConsumerMixin(ABC):
     # FETCH HANDLER
     # =====================================================================
     def _handle_fetch(self, conn, policy: policies.FetchPolicy, batch_size: int):
-        logger.info(f"Fetching transactions with batch size {batch_size}", extra=policy.extra)
+        logger.info(f"Fetch handler started for batch size {batch_size}", extra=policy.extra)
         fetch_start = time.perf_counter()
         success, result = helpers.run_fn(
             fn=lambda: conn.fetch_transactions(batch_size, **policy.extra),
@@ -183,6 +189,7 @@ class ConsumerMixin(ABC):
             duration=time.perf_counter() - fetch_start,
             success=success,
         )
+        logger.info(f"Fetch handler completed with status: {'success' if success else 'error'}")
         return success, result
 
     # =====================================================================

@@ -220,19 +220,19 @@ def run_fn(
             },
         ):
             for attempt_no in range(1, retry.max_attempts + 1):
-                logger.info(f"Attempt {attempt_no} to run function {fn.__qualname__} started")
+                logger.debug(f"Attempt {attempt_no} to run function {fn.__qualname__} started")
                 try:
                     if retry.timeout:
                         with futures.ThreadPoolExecutor(max_workers=1) as ex:
                             future = ex.submit(attempt, attempt_no)
                             result = future.result(timeout=retry.timeout)
-                            logger.info(
+                            logger.debug(
                                 f"Attempt {attempt_no} to run function {fn.__qualname__} completed with outcome: 'ok'"
                             )
                             return True, result
                     else:
                         result = attempt(attempt_no)
-                        logger.info(
+                        logger.debug(
                             f"Attempt {attempt_no} to run function {fn.__qualname__} completed with outcome: 'ok'"
                         )
                         return True, result
@@ -247,7 +247,7 @@ def run_fn(
                     last_exc = e
 
                 if attempt_no < retry.max_attempts:
-                    logger.info(
+                    logger.warning(
                         f"Attempt {attempt_no} to run function {fn.__qualname__} failed with exception: {last_exc}. Calling backoff."
                     )
                     utils.backoff(
@@ -256,7 +256,7 @@ def run_fn(
                         retry.backoff_cap,
                         attempt_no - 1,
                     )
-            logger.info(
+            logger.warning(
                 f"Attempt {retry.max_attempts} to run function {fn.__qualname__} failed with exception: {last_exc}"
             )
             return False, last_exc
