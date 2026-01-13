@@ -61,7 +61,9 @@ class ConsumerMixin(ABC):
                     process_result = exceptions.TransactionException(
                         str(process_result), exceptions.ExceptionType.SYSTEM
                     )
-                logger.error(f"Invoking exception handler for transaction {transaction.id} with outcome: '{process_result}'")
+                logger.error(
+                    f"Invoking exception handler for transaction {transaction.id} with outcome: '{process_result}'"
+                )
                 return self._handle_exception(transaction, process_result, policy.exception.retry)
 
             # -----------------------
@@ -83,7 +85,9 @@ class ConsumerMixin(ABC):
                     success_result = exceptions.TransactionException(
                         str(success_result), exceptions.ExceptionType.SYSTEM
                     )
-                logger.error(f"Invoking exception handler for transaction {transaction.id} with outcome: '{success_result}'")
+                logger.error(
+                    f"Invoking exception handler for transaction {transaction.id} with outcome: '{success_result}'"
+                )
                 return self._handle_exception(transaction, success_result, policy.exception.retry)
 
             return True, success_result
@@ -116,7 +120,9 @@ class ConsumerMixin(ABC):
             duration=time.perf_counter() - stage_start,
             outcome="ok" if success else "error",
         )
-        logger.info(f"Transaction {transaction.id} process handler completed with status: {'success' if success else 'error'}")
+        logger.info(
+            f"Transaction {transaction.id} process handler completed with status: {'success' if success else 'error'}"
+        )
         return success, result
 
     # =====================================================================

@@ -195,6 +195,7 @@ class NonRetryableExecutionException(Exception):
 
     This exception is execution-scoped, not transaction-scoped.
     """
+
     message: str = "Execution failed and should not be retried."
 
     def __init__(self, message: str | None = None):
