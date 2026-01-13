@@ -237,10 +237,8 @@ def run_fn(
                         )
                         return True, result
 
-                except exceptions.TransactionException as e:
-                    if e.category == exceptions.ExceptionType.BUSINESS:
-                        return False, e
-                    last_exc = e
+                except exceptions.NonRetryableExecutionException as e:
+                    return False, e
 
                 except Exception as e:
                     logger.error(f"Attempt {attempt_no} to run function {fn.__qualname__} failed with exception: {e}")
