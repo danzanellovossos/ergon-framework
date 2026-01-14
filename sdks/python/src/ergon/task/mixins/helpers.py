@@ -246,7 +246,8 @@ def run_fn(
 
                 if attempt_no < retry.max_attempts:
                     logger.warning(
-                        f"Attempt {attempt_no} to run function {fn.__qualname__} failed with exception: {last_exc}. Calling backoff."
+                        f"Attempt {attempt_no} to run function {fn.__qualname__} failed with exception: {last_exc}."
+                        "Calling backoff."
                     )
                     with tracer.start_as_current_span(
                         "backoff",
