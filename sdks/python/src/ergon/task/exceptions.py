@@ -186,3 +186,21 @@ class FetchException(Exception):
 
     def __str__(self):
         return self.message
+
+
+class NonRetryableException(Exception):
+    """
+    Exception raised to explicitly signal that an execution
+    must NOT be retried, regardless of retry policy.
+
+    This exception is execution-scoped, not transaction-scoped.
+    """
+
+    message: str = "Execution failed and should not be retried."
+
+    def __init__(self, message: str | None = None):
+        self.message = message or self.message
+        super().__init__(self.message)
+
+    def __str__(self):
+        return self.message

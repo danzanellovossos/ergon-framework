@@ -100,7 +100,11 @@ When a task's `config.py` module is imported, it typically calls `manager.regist
 
 ## Entry Point Setup
 
-Create a `main.py` file in your project that serves as the CLI entry point:
+Create a `main.py` file in your project that serves as the CLI entry point.
+
+### Recommended: Passing Tasks Directly
+
+The `ergon()` function accepts an optional list of `TaskConfig` objects. Tasks passed this way are automatically registered if not already present. This approach is cleaner than wildcard imports and avoids linter warnings.
 
 ```python
 from ergon.cli import ergon
@@ -108,8 +112,56 @@ from ergon.utils import load_env
 
 load_env()
 
-# Import task configs for registration
-from my_project.tasks.example_task.config import *
+from my_project.tasks import TASKS
+
+def main():
+    ergon(TASKS)
+
+if __name__ == "__main__":
+    main()
+```
+
+Define your task list in `tasks/__init__.py`:
+
+```python
+from .order_ingestion.config import TASK_ORDER_INGESTION
+from .order_enrichment.config import TASK_ORDER_ENRICHMENT
+from .order_dispatch.config import TASK_ORDER_DISPATCH
+
+TASKS = [
+    TASK_ORDER_INGESTION,
+    TASK_ORDER_ENRICHMENT,
+    TASK_ORDER_DISPATCH,
+]
+
+__all__ = [
+    "TASK_ORDER_INGESTION",
+    "TASK_ORDER_ENRICHMENT",
+    "TASK_ORDER_DISPATCH",
+    "TASKS",
+]
+```
+
+**Benefits of this approach:**
+
+- No wildcard imports (`from ... import *`)
+- No linter suppression comments required
+- Explicit, readable task registration
+- Easy to see all available tasks in one place
+
+### Alternative: Wildcard Imports
+
+You can also register tasks via wildcard imports, though this requires linter suppression:
+
+```python
+from ergon.cli import ergon
+from ergon.utils import load_env
+
+load_env()
+
+# Import task configs for registration (requires linter ignore)
+from my_project.tasks.order_ingestion.config import *  # noqa: F401, F403
+from my_project.tasks.order_enrichment.config import *  # noqa: F401, F403
 
 def main():
     ergon()
@@ -118,27 +170,8 @@ def main():
 ### What This Pattern Ensures
 
 1. **Environment variables are loaded** before any task configuration is evaluated
-2. **Task configurations are imported** and registered with the task manager
+2. **Task configurations are registered** with the task manager
 3. **The Ergon CLI has access** to all registered tasks when it executes
-
-### Registering Multiple Tasks
-
-Import each task's config module to register it:
-
-```python
-from ergon.cli import ergon
-from ergon.utils import load_env
-
-load_env()
-
-# Import all task configs
-from my_project.tasks.order_ingestion.config import *
-from my_project.tasks.order_enrichment.config import *
-from my_project.tasks.order_dispatch.config import *
-
-def main():
-    ergon()
-```
 
 ---
 

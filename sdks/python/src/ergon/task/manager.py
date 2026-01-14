@@ -1,9 +1,12 @@
 import sys
+import logging
 from typing import Dict, List
 
 from ..connector import Transaction
 from .base import BaseAsyncTask, BaseTask, TaskConfig
 from .runner import run_task
+
+logger = logging.getLogger(__name__)
 
 
 class TaskManager:
@@ -29,7 +32,7 @@ class TaskManager:
 
         # Duplicate check
         if config.name in self._registry:
-            raise ValueError(f"Task name '{config.name}' already registered.")
+            logger.warning(f"Task name '{config.name}' already registered.")
 
         self._registry[config.name] = config
 

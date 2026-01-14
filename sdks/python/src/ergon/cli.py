@@ -6,6 +6,8 @@ from pathlib import Path
 
 from .task.manager import manager
 from .connector import Transaction
+from .task.base import TaskConfig
+from typing import List, Optional
 
 
 # ---------------------------------------------------------------------
@@ -101,7 +103,12 @@ def create_parser():
 # ---------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------
-def ergon():
+def ergon(tasks: Optional[List[TaskConfig]] = None):
+    if tasks:
+        for cfg in tasks:
+            if not manager.get(cfg.name):
+                manager.register(cfg)
+
     parser = create_parser()
     args = parser.parse_args()
 

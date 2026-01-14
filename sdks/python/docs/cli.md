@@ -253,19 +253,77 @@ ergon command
 └─────────────────┘
 ```
 
-### Task Discovery
+### The `ergon()` Function
 
-Tasks are **not** auto-discovered. The CLI only has access to tasks that were registered before `ergon()` is called. This is why the entry point must import task configuration modules:
+```python
+def ergon(tasks: Optional[List[TaskConfig]] = None) -> None
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tasks` | `Optional[List[TaskConfig]]` | List of task configurations to register before CLI execution. Tasks already registered are skipped. |
+
+**Example:**
+
+```python
+from ergon.cli import ergon
+from ergon.task import TaskConfig
+from typing import List
+
+TASKS: List[TaskConfig] = [...]
+
+ergon(TASKS)  # Registers tasks, then executes CLI
+```
+
+### Task Registration
+
+Tasks are **not** auto-discovered. The CLI only has access to tasks that are registered before commands execute. There are two ways to register tasks:
+
+#### Option 1: Pass Tasks Directly (Recommended)
+
+Pass a list of `TaskConfig` objects to `ergon()`. Tasks are automatically registered if not already present:
+
+```python
+from ergon.cli import ergon
+from my_project.tasks import TASKS
+
+def main():
+    ergon(TASKS)  # Registers all tasks in the list
+```
+
+Define your task list in `tasks/__init__.py`:
+
+```python
+from .order_ingestion.config import TASK_ORDER_INGESTION
+from .order_enrichment.config import TASK_ORDER_ENRICHMENT
+
+TASKS = [
+    TASK_ORDER_INGESTION,
+    TASK_ORDER_ENRICHMENT,
+]
+```
+
+This approach:
+
+- Avoids wildcard imports
+- Eliminates linter warnings
+- Provides explicit, readable registration
+
+#### Option 2: Import Config Modules
+
+Import task configuration modules before calling `ergon()`:
 
 ```python
 from ergon.cli import ergon
 
-# These imports register tasks with the manager
-from my_project.tasks.task_a.config import *
-from my_project.tasks.task_b.config import *
+# These imports register tasks via manager.register() calls in each config module
+from my_project.tasks.task_a.config import *  # noqa: F401, F403
+from my_project.tasks.task_b.config import *  # noqa: F401, F403
 
 def main():
-    ergon()  # CLI now has access to task_a and task_b
+    ergon()
 ```
 
 ---
