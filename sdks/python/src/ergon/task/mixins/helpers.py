@@ -241,7 +241,6 @@ def run_fn(
                     return False, e
 
                 except Exception as e:
-                    
                     logger.error(f"Attempt {attempt_no} to run function {fn.__qualname__} failed with exception: {e}")
                     last_exc = e
 
@@ -250,9 +249,14 @@ def run_fn(
                         f"Attempt {attempt_no} to run function {fn.__qualname__} failed with exception: {last_exc}. Calling backoff."
                     )
                     with tracer.start_as_current_span(
-                        "backoff", 
-                        attributes={"backoff": retry.backoff, "multiplier": retry.backoff_multiplier, "cap": retry.backoff_cap, "attempt": attempt_no - 1}
-                    ):   
+                        "backoff",
+                        attributes={
+                            "backoff": retry.backoff,
+                            "multiplier": retry.backoff_multiplier,
+                            "cap": retry.backoff_cap,
+                            "attempt": attempt_no - 1,
+                        },
+                    ):
                         utils.backoff(
                             retry.backoff,
                             retry.backoff_multiplier,
