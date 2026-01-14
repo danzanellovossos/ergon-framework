@@ -188,7 +188,7 @@ class FetchException(Exception):
         return self.message
 
 
-class NonRetryableExecutionException(Exception):
+class NonRetryableException(Exception):
     """
     Exception raised to explicitly signal that an execution
     must NOT be retried, regardless of retry policy.
