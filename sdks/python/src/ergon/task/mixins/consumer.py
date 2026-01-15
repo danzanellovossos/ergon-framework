@@ -225,6 +225,7 @@ class ConsumerMixin(ABC):
             executor = futures.ThreadPoolExecutor(max_workers=policy.loop.concurrency.value)
 
             ctx = otel_context.Context()
+
             def submit_start_processing(tr, pol):
                 return helpers.run_fn(
                     fn=lambda: self._start_processing(tr, pol),

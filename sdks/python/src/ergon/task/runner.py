@@ -237,7 +237,6 @@ def __run_task_sync(
         attributes={"task.execution.id": task_exec_metadata["execution_id"]},
     ):
         try:
-
             connectors = {}
             with tracer.start_as_current_span(
                 f"{config.task.__name__}.connectors.init",
@@ -249,7 +248,7 @@ def __run_task_sync(
                         attributes={"task.execution.id": task_exec_metadata["execution_id"]},
                     ):
                         connectors[name] = cfg.connector(*cfg.args, **cfg.kwargs)
-                
+
             services = {}
             with tracer.start_as_current_span(
                 f"{config.task.__name__}.services.init",

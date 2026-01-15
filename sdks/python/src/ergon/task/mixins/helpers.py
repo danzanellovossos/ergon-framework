@@ -212,7 +212,6 @@ def run_fn(
         last_exc = None
 
         for attempt_no in range(1, retry.max_attempts + 1):
-            
             logger.debug(f"Attempt {attempt_no} to run function {fn.__qualname__} started")
             try:
                 if retry.timeout:
@@ -225,9 +224,7 @@ def run_fn(
                         return True, result
                 else:
                     result = attempt(attempt_no)
-                    logger.debug(
-                        f"Attempt {attempt_no} to run function {fn.__qualname__} completed with outcome: 'ok'"
-                    )
+                    logger.debug(f"Attempt {attempt_no} to run function {fn.__qualname__} completed with outcome: 'ok'")
                     return True, result
 
             except exceptions.NonRetryableException as e:
@@ -243,12 +240,7 @@ def run_fn(
                 logger.warning(
                     f"Attempt {attempt_no} to run function {fn.__qualname__} failed with exception: {last_exc}. Calling backoff."
                 )
-                utils.backoff(
-                    retry.backoff,
-                    retry.backoff_multiplier,
-                    retry.backoff_cap,
-                    attempt_no - 1
-                )
+                utils.backoff(retry.backoff, retry.backoff_multiplier, retry.backoff_cap, attempt_no - 1)
 
         logger.warning(
             f"Attempt {retry.max_attempts} to run function {fn.__qualname__} failed with exception: {last_exc}"
