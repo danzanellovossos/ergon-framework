@@ -3,11 +3,11 @@ import json
 import shutil
 import sys
 from pathlib import Path
+from typing import List, Optional
 
-from .task.manager import manager
 from .connector import Transaction
 from .task.base import TaskConfig
-from typing import List, Optional
+from .task.manager import manager
 
 
 # ---------------------------------------------------------------------
