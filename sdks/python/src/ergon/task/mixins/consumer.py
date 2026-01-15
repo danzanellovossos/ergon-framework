@@ -224,9 +224,12 @@ class ConsumerMixin(ABC):
             conn = self._resolve_connector(policy.fetch.connector_name)
             executor = futures.ThreadPoolExecutor(max_workers=policy.loop.concurrency.value)
 
+            ctx = otel_context.Context()
+
             def submit_start_processing(tr, pol):
                 return helpers.run_fn(
                     fn=lambda: self._start_processing(tr, pol),
+                    ctx=ctx,
                     executor=executor,
                     trace_name=f"{self.__class__.__name__}.start_processing",
                     trace_attrs={"transaction_id": tr.id},
@@ -279,7 +282,7 @@ class ConsumerMixin(ABC):
                 #  RUN CONCURRENTLY WITH REFILL (with batch-level span)
                 # ============================================================
                 if policy.loop.streaming:
-                    batch_context = otel_context.Context()
+                    batch_context = ctx
                 else:
                     batch_context = None  # Use current context
 
