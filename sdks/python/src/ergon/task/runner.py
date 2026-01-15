@@ -232,24 +232,49 @@ def __run_task_sync(
 
     instance = None
 
-    try:
-        with tracer.start_as_current_span(
-            f"{config.task.__name__}.run",
-            attributes={"task.execution.id": task_exec_metadata["execution_id"]},
-        ):
-            connectors = {name: cfg.connector(*cfg.args, **cfg.kwargs) for name, cfg in config.connectors.items()}
+    with tracer.start_as_current_span(
+        f"{config.task.__name__}.run",
+        attributes={"task.execution.id": task_exec_metadata["execution_id"]},
+    ):
+        try:
 
-            services = {name: cfg.service(*cfg.args, **cfg.kwargs) for name, cfg in config.services.items()}
+            connectors = {}
+            with tracer.start_as_current_span(
+                f"{config.task.__name__}.connectors.init",
+                attributes={"task.execution.id": task_exec_metadata["execution_id"]},
+            ):
+                for name, cfg in config.connectors.items():
+                    with tracer.start_as_current_span(
+                        f"{config.task.__name__}.connectors.{name}.init",
+                        attributes={"task.execution.id": task_exec_metadata["execution_id"]},
+                    ):
+                        connectors[name] = cfg.connector(*cfg.args, **cfg.kwargs)
+                
+            services = {}
+            with tracer.start_as_current_span(
+                f"{config.task.__name__}.services.init",
+                attributes={"task.execution.id": task_exec_metadata["execution_id"]},
+            ):
+                for name, cfg in config.services.items():
+                    with tracer.start_as_current_span(
+                        f"{config.task.__name__}.services.{name}.init",
+                        attributes={"task.execution.id": task_exec_metadata["execution_id"]},
+                    ):
+                        services[name] = cfg.service(*cfg.args, **cfg.kwargs)
 
-            instance = config.task(
-                connectors=connectors,
-                services=services,
-                policies=config.policies,
-                worker_id=worker_id,
-                task_config=config,
-                *args,
-                **kwargs,
-            )
+            with tracer.start_as_current_span(
+                f"{config.task.__name__}.instance.init",
+                attributes={"task.execution.id": task_exec_metadata["execution_id"]},
+            ):
+                instance = config.task(
+                    connectors=connectors,
+                    services=services,
+                    policies=config.policies,
+                    worker_id=worker_id,
+                    task_config=config,
+                    *args,
+                    **kwargs,
+                )
 
             if mode == "transaction":
                 __run_transaction_sync(
@@ -259,11 +284,19 @@ def __run_task_sync(
                     transaction_id=kwargs.get("transaction_id", None),
                 )
             else:
-                instance.execute()
+                with tracer.start_as_current_span(
+                    f"{config.task.__name__}.execute",
+                    attributes={"task.execution.id": task_exec_metadata["execution_id"]},
+                ):
+                    instance.execute()
 
-    finally:
-        if instance is not None:
-            instance.exit()
+        finally:
+            if instance is not None:
+                with tracer.start_as_current_span(
+                    f"{config.task.__name__}.exit",
+                    attributes={"task.execution.id": task_exec_metadata["execution_id"]},
+                ):
+                    instance.exit()
 
 
 # =============================================================
