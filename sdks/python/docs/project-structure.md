@@ -16,6 +16,8 @@ my_project/
 ├── _observability/            # Telemetry infrastructure (Grafana, Prometheus, etc.)
 ├── connectors/                # Custom connectors when plugins don't cut it
 │   └── {connector_name}/      # One folder per connector
+├── services/                  # Custom services when plugins don't cut it
+│   └── {service_name}/        # One folder per service
 └── tasks/                     # Where the magic happens
     ├── {task_name}/           # One folder per task
     └── [shared modules]       # Stuff used across all tasks
@@ -25,25 +27,43 @@ The philosophy is simple:
 
 - **Tasks** = pure business logic (no I/O, no protocol noise)
 - **Connectors** = the bridge to external systems
+- **Services** = protocols for external APIs
+- **Settings** = wiring (telemetry, connectors, services)
 - **Shared modules** = don't repeat yourself
+
+**Separation of concerns:**
+
+- **Tasks** = business logic only. They reference connectors and services from `settings`, but never touch environment variables directly.
+- **Connectors** = I/O layer. They handle fetching and dispatching transactions.
+- **Services** = protocol layer. They handle HTTP calls, authentication, retries, etc.
+- **Settings** = configuration root. All telemetry, connectors, and services are configured here once.
 
 ---
 
 ## Entry Point: `main.py`
 
-Every Ergon project has exactly one entry point. It loads your environment and hands control to the CLI:
+Every Ergon project has exactly one entry point. It is minimal and focused:
 
 ```python
-from ergon_framework.cli import ergon
-from ergon_framework.utils.env import load_env
+from ergon.cli import ergon
+from my_project.tasks import TASKS
 
-load_env()  # Load .env before anything else
+def main():
+    ergon(TASKS)
 
 if __name__ == "__main__":
-    ergon()
+    main()
 ```
 
-That's it. The CLI discovers your registered tasks and runs them. You never touch this file again unless you're doing something exotic.
+**Key properties:**
+
+- Single entry point
+- CLI invoked via `ergon(TASKS)`
+- Task registration is explicit
+- No auto-discovery
+- No environment loading here—that happens in `tasks/__init__.py`
+
+The CLI does not scan the filesystem. It only has access to tasks that are explicitly registered before commands execute.
 
 ---
 
@@ -97,6 +117,44 @@ connectors/
 
 ---
 
+## Services: Protocol Layer for External APIs
+
+### When Do You Need a Custom Service?
+
+Services handle protocol-level interactions with external APIs. They're similar to connectors but are used for enrichment, data transformation, or API calls that don't fit the transaction model.
+
+### The Service Folder Structure
+
+```
+services/
+├── __init__.py
+└── crm_service/               # Name it after the system
+    ├── __init__.py
+    ├── service.py             # The service interface
+    ├── client.py              # The protocol client
+    ├── schemas.py             # Pydantic models (optional)
+    └── exceptions.py          # Custom errors (optional)
+```
+
+### What Goes Where?
+
+| File | What It Does |
+|------|--------------|
+| `client.py` | Knows *how* to talk to the external API. HTTP calls, authentication, retries—all the protocol mechanics. |
+| `service.py` | Wraps the client and exposes business-level methods. This is what your tasks interact with. |
+| `schemas.py` | Pydantic models for validating requests and responses. |
+| `exceptions.py` | Custom exception classes specific to the service. |
+
+### Built-in, Plugin, or Custom?
+
+| Situation | What to Do |
+|-----------|------------|
+| OpenAI, common APIs | Install a plugin: `pip install ergon-service-openai` |
+| Internal company API | Build a custom service directly in your project. |
+| Third-party API with no plugin | Build a custom service directly in your project. |
+
+---
+
 ## Tasks: Where Your Logic Lives
 
 The `tasks/` folder is the heart of your project. It contains two things:
@@ -106,23 +164,62 @@ The `tasks/` folder is the heart of your project. It contains two things:
 
 ```
 tasks/
-├── __init__.py
+├── __init__.py             # Task registration + settings.load_env()
 ├── settings.py             # All your connectors, services, telemetry configs
 ├── constants.py            # Enums, magic values, thresholds
 ├── schemas.py              # Pydantic models shared across tasks
 ├── exceptions.py           # Exception classes shared across tasks
 ├── helpers.py              # Utility functions shared across tasks
 │
-├── order_ingestion/        # One task
+├── document_search/        # One task
 │   ├── task.py
 │   ├── config.py
 │   └── ...
 │
-└── order_enrichment/       # Another task
+└── data_extraction/       # Another task
     ├── task.py
     ├── config.py
     └── ...
 ```
+
+### `tasks/__init__.py` — Task Registration
+
+This file follows a specific pattern that ensures environment variables are loaded before task configurations are evaluated:
+
+```python
+from . import settings
+from .document_search.config import TASK_DOCUMENT_SEARCH
+from .data_extraction.config import TASK_DATA_EXTRACTION
+from .xml_generation.config import TASK_XML_GENERATION
+from .initial_routing.config import TASK_INITIAL_ROUTING
+
+settings.load_env()
+
+TASKS = [
+    TASK_DOCUMENT_SEARCH,
+    TASK_DATA_EXTRACTION,
+    TASK_XML_GENERATION,
+    TASK_INITIAL_ROUTING,
+]
+
+__all__ = [
+    "settings",
+    "TASK_DOCUMENT_SEARCH",
+    "TASK_DATA_EXTRACTION",
+    "TASK_XML_GENERATION",
+    "TASK_INITIAL_ROUTING",
+    "TASKS",
+]
+```
+
+**Why this order matters:**
+
+1. **Settings imported first** — Makes `settings` module available
+2. **Task configs imported** — Each config module is evaluated (may reference `settings`)
+3. **Environment loaded** — `settings.load_env()` makes environment variables available
+4. **Tasks listed** — Explicit list of registered tasks
+
+This ensures that when task configuration modules are evaluated, all environment variables are already loaded and available via `os.getenv()` in `settings.py`.
 
 ---
 
@@ -132,77 +229,315 @@ These files prevent you from writing the same code in every task.
 
 ### `settings.py` — The Control Center
 
-This is where all your infrastructure configuration lives. Connectors, services, telemetry—define them once, reference them everywhere.
+This file is the single control center for:
+- Telemetry (logging, tracing, metrics)
+- Connectors
+- Services
+- Environment loading
+
+**Important characteristics:**
+- `load_env()` is called once at the top
+- Telemetry is env-driven and optional
+- No branching on dev / prod
+- Uses OpenTelemetry OTLP exporters
+- Tasks never read environment variables directly
+
+Here's a complete example based on production patterns:
 
 ```python
+"""
+Ergon Task Framework Settings
+
+This module defines global configuration for:
+- Logging
+- Tracing
+- Metrics
+- Connectors
+- Services
+
+It is used to configure the framework telemetry, connectors, and services.
+"""
+
 import os
-from ergon_framework.connector import ConnectorConfig, ServiceConfig
-from ergon_framework.telemetry import logging, tracing
 
-# Connector configurations (RabbitMQ is built-in)
-RABBITMQ_CONNECTOR = ConnectorConfig(
+from ergon import connector, service, telemetry
+from ergon.utils import load_env
+from ergon.connector.rabbitmq import RabbitMQConnector, RabbitMQClient
+from ergon_service_openai.service import OpenAIClient, OpenAIService
+
+# Import custom services from your project
+from my_project.services.crm_service.service import CrmClient, CrmService
+from my_project.services.billing_service.service import BillingClient, BillingService
+
+load_env()
+
+# ----------------------------------------
+# OTEL Resource (applies to all telemetry)
+# ----------------------------------------
+OTEL_RESOURCE = {
+    "service.name": "my-project",
+    "service.version": "0.1.0",
+}
+
+# ----------------------------------------
+# --- LOGGING CONFIGURATION ---
+# ----------------------------------------
+LOGGING = telemetry.logging.LoggingConfig()
+LOGGING.level = "DEBUG"
+
+LOGGING.formatters = [
+    telemetry.logging.LogFormatter(
+        name="default",
+        fmt="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s",
+    )
+]
+
+LOGGING.handlers.append(
+    telemetry.logging.ConsoleLogHandler(
+        level="DEBUG",
+        stream="stdout",
+        formatter="default",
+    )
+)
+
+if os.getenv("OTEL_LOGS_ENABLED") == "true":
+    LOGGING.handlers.append(
+        telemetry.logging.OTLPLogHandler(
+            level="DEBUG",
+            resource=OTEL_RESOURCE,
+            formatter="default",
+            processors=[
+                telemetry.logging.LogProcessor(
+                    processor=telemetry.logging.BatchLogRecordProcessor,
+                    exporters=[
+                        telemetry.logging.OTLPLogExporter(
+                            endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+                            insecure=True,
+                        ),
+                    ],
+                ),
+            ],
+        )
+    )
+
+# ----------------------------------------
+# --- TRACING CONFIGURATION ---
+# ----------------------------------------
+if os.getenv("OTEL_TRACES_ENABLED") == "true":
+    TRACING = telemetry.tracing.TracingConfig()
+    TRACING.resource = OTEL_RESOURCE
+    TRACING.processors.append(
+        telemetry.tracing.SpanProcessor(
+            processor=telemetry.tracing.BatchSpanProcessor,
+            exporters=[
+                telemetry.tracing.OTLPSpanExporter(
+                    endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+                    insecure=True,
+                )
+            ],
+        )
+    )
+else:
+    TRACING = None
+
+# ----------------------------------------
+# --- METRICS CONFIGURATION ---
+# ----------------------------------------
+if os.getenv("OTEL_METRICS_ENABLED") == "true":
+    METRICS = telemetry.metrics.MetricsConfig()
+    METRICS.resource = OTEL_RESOURCE
+    METRICS.readers.append(
+        telemetry.metrics.MetricReader(
+            reader=telemetry.metrics.PeriodicExportingMetricReader,
+            config={"export_interval_millis": 5000},
+            exporters=[
+                telemetry.metrics.OTLPMetricExporter(
+                    endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
+                    insecure=True,
+                ),
+            ],
+        ),
+    )
+else:
+    METRICS = None
+
+# ----------------------------------------
+# --- CONNECTOR CONFIGURATION ---
+# ----------------------------------------
+RABBITMQ_CLIENT = RabbitMQClient(
+    host=os.getenv("RABBITMQ_HOST"),
+    port=int(os.getenv("RABBITMQ_PORT", "5672")),
+    username=os.getenv("RABBITMQ_USERNAME"),
+    password=os.getenv("RABBITMQ_PASSWORD"),
+)
+
+RABBITMQ_CONNECTOR = connector.ConnectorConfig(
     connector=RabbitMQConnector,
-    kwargs={"host": os.getenv("RABBITMQ_HOST"), "queue": "orders"}
+    kwargs={"client": RABBITMQ_CLIENT},
 )
 
-# Service configurations (for enrichment, APIs, etc.)
-OPENAI_SERVICE = ServiceConfig(
+# ----------------------------------------
+# --- SERVICE CONFIGURATION ---
+# ----------------------------------------
+
+# OpenAI Service
+OPENAI_CLIENT = OpenAIClient(
+    api_key=os.getenv("OPENAI_API_KEY"),
+    model=os.getenv("OPENAI_MODEL", "gpt-4"),
+)
+
+OPENAI_SERVICE = service.ServiceConfig(
     service=OpenAIService,
-    kwargs={"api_key": os.getenv("OPENAI_API_KEY")}
+    kwargs={"client": OPENAI_CLIENT},
 )
 
-# Telemetry
-LOGGING = logging.LoggingConfig(level="INFO", handlers=[...])
-TRACING = tracing.TracingConfig(processors=[...])
+# CRM Service (custom)
+CRM_CLIENT = CrmClient(
+    api_key=os.getenv("CRM_API_KEY"),
+    base_url=os.getenv("CRM_BASE_URL"),
+)
+
+CRM_SERVICE = service.ServiceConfig(
+    service=CrmService,
+    kwargs={"client": CRM_CLIENT},
+)
+
+# Billing Service (custom)
+BILLING_CLIENT = BillingClient(
+    username=os.getenv("BILLING_USERNAME"),
+    password=os.getenv("BILLING_PASSWORD"),
+)
+
+BILLING_SERVICE = service.ServiceConfig(
+    service=BillingService,
+    kwargs={"client": BILLING_CLIENT},
+)
 ```
 
-**Why this matters:** Your tasks never touch environment variables directly. They just reference `settings.RABBITMQ_CONNECTOR`. When you need to swap RabbitMQ for Kafka (or Excel, or a custom connector), you change one file—not twenty.
+**Telemetry is controlled via environment variables:**
+
+```bash
+OTEL_LOGS_ENABLED=true
+OTEL_TRACES_ENABLED=true
+OTEL_METRICS_ENABLED=true
+OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
+```
+
+**Why this matters:** Your tasks never touch environment variables directly. They just reference `settings.RABBITMQ_CONNECTOR` or `settings.OPENAI_SERVICE`. When you need to swap RabbitMQ for Kafka (or Excel, or a custom connector), you change one file—not twenty. Telemetry is optional and controlled by environment flags, making it easy to enable/disable observability without code changes.
 
 ---
 
-### `constants.py` — No More Magic Numbers
+### `constants.py` — Configuration and Constants
 
-Enums, thresholds, and business constants. Name things properly.
+This file contains retry policies, configuration objects, and business constants. It may reference schemas and environment variables.
 
 ```python
-from enum import Enum
+import os
 
-class OrderStatus(str, Enum):
-    PENDING = "pending"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
+from ergon.task.policies import RetryPolicy
+from . import schemas
 
-DEFAULT_BATCH_SIZE = 100
-MAX_RETRY_ATTEMPTS = 5
-PROCESSING_TIMEOUT_SECONDS = 300
+# ----------------------------------------
+# --- RETRY POLICY CONFIGURATION ---
+# ----------------------------------------
+def default_retry_policy():
+    return RetryPolicy(
+        max_attempts=3,
+        backoff=1,
+        backoff_multiplier=2,
+        backoff_cap=10,
+    )
+
+# ----------------------------------------
+# --- EXTERNAL SYSTEM CONFIGURATION ---
+# ----------------------------------------
+
+# Example: Workflow phases configuration
+WORKFLOW_PHASES = schemas.WorkflowPhases(
+    initial_phase=schemas.WorkflowPhase(
+        name="Initial Phase",
+        id=os.getenv("WORKFLOW_INITIAL_PHASE_ID", "123456"),
+    ),
+    processing_phase=schemas.WorkflowPhase(
+        name="Processing Phase",
+        id=os.getenv("WORKFLOW_PROCESSING_PHASE_ID", "123457"),
+    ),
+    completed_phase=schemas.WorkflowPhase(
+        name="Completed Phase",
+        id=os.getenv("WORKFLOW_COMPLETED_PHASE_ID", "123458"),
+    ),
+)
+
+# Example: Field mappings
+WORKFLOW_FIELDS = schemas.WorkflowFields(
+    document_id=schemas.WorkflowField(
+        name="Document ID",
+        id="document_id",
+    ),
+    status=schemas.WorkflowField(
+        name="Status",
+        id="status",
+    ),
+)
+
+# Organization/System IDs
+EXTERNAL_SYSTEM_ORG_ID = os.getenv("EXTERNAL_SYSTEM_ORG_ID")
 ```
 
-**Why this matters:** When someone asks "what's the batch size?", they look in one place. When you need to change it, you change it once.
+**Why this matters:** Retry policies, external system configurations, and field mappings are defined once and reused across tasks. When configuration needs to change, you update it in one place.
 
 ---
 
 ### `schemas.py` — Shared Data Models
 
-Pydantic models that multiple tasks use. Define common payloads here.
+Pydantic models that multiple tasks use. This includes configuration schemas (for external systems), shared payload models, and output schemas.
 
 ```python
+from typing import Any, Optional
 from pydantic import BaseModel
-from typing import Optional
-from datetime import datetime
 
+# ----------------------------------------
+# External System Configuration Schemas
+# ----------------------------------------
+class WorkflowPhase(BaseModel):
+    name: str
+    id: str
+
+class WorkflowField(BaseModel):
+    name: str
+    id: str
+
+class WorkflowPhases(BaseModel):
+    initial_phase: WorkflowPhase
+    processing_phase: WorkflowPhase
+    completed_phase: WorkflowPhase
+
+class WorkflowFields(BaseModel):
+    document_id: WorkflowField
+    status: WorkflowField
+
+# ----------------------------------------
+# Shared Transaction Payloads
+# ----------------------------------------
 class BasePayload(BaseModel):
     """Every transaction payload inherits from this."""
-    created_at: datetime
     source: str
+    created_at: Optional[str] = None
 
-class UserPayload(BasePayload):
-    user_id: str
-    email: str
-    name: Optional[str] = None
+class DocumentPayload(BasePayload):
+    document_id: str
+    document_type: str
+    content: dict
+
+# ----------------------------------------
+# Process Transaction Output
+# ----------------------------------------
+class ProcessTransactionOutput(BaseModel):
+    destination_phase: WorkflowPhase
+    data: Optional[Any] = None
 ```
 
-**Why this matters:** If three tasks work with `UserPayload`, you don't want three different definitions that might drift apart.
+**Why this matters:** Configuration schemas (like `WorkflowPhases`, `WorkflowFields`) are used in `constants.py` to define external system mappings. Shared payload models ensure consistency across tasks. Output schemas standardize task return values.
 
 ---
 
@@ -317,39 +652,33 @@ All of these are pre-configured with the right mixins. Just pick the one that fi
 
 ### `config.py` — Wiring It All Together
 
-This file defines how your task runs: which connectors, which services, what policies.
+This file defines how your task runs: which connectors, which services, what policies. It references configurations from `settings.py`.
 
 ```python
-from ergon_framework.task import TaskConfig, manager, policies
+from ergon.task import TaskConfig
 from .. import settings
-from .task import OrderProcessorTask
-
-# Define the consumer policy
-CONSUMER_POLICY = policies.ConsumerPolicy()
-CONSUMER_POLICY.name = "order-consumer"
-CONSUMER_POLICY.loop.concurrency.value = 10      # Process 10 at a time
-CONSUMER_POLICY.loop.batch.size = 50             # Fetch 50 per batch
-CONSUMER_POLICY.loop.streaming = True            # Keep polling
-CONSUMER_POLICY.process.retry.max_attempts = 3   # Retry failures 3 times
-CONSUMER_POLICY.process.retry.backoff = 1        # Start with 1 second
-CONSUMER_POLICY.process.retry.backoff_multiplier = 2  # Double each retry
+from .task import DocumentSearchTask
 
 # Define the task configuration
-TASK_CONFIG = TaskConfig(
-    task=OrderProcessorTask,
-    name="order-processor",
+TASK_DOCUMENT_SEARCH = TaskConfig(
+    task=DocumentSearchTask,
+    name="document-search",
     connectors={"input": settings.RABBITMQ_CONNECTOR},
-    services={"crm": settings.CRM_SERVICE},
-    policies=[CONSUMER_POLICY],
+    services={"openai": settings.OPENAI_SERVICE},
+    policies=[...],  # Policy configuration
     logging=settings.LOGGING,
     tracing=settings.TRACING,
+    metrics=settings.METRICS,
 )
-
-# Register it
-manager.register(TASK_CONFIG)
 ```
 
-**Why this is separate from `task.py`:** Configuration changes shouldn't require touching business logic. Need to bump concurrency? Edit `config.py`. Business rules changed? Edit `task.py`. Clear boundaries.
+**Why this is separate from `task.py`:**
+
+- **Configuration vs. Logic** — Configuration changes shouldn't require touching business logic
+- **Single Source of Truth** — Connectors and services are defined once in `settings.py`
+- **Environment-Agnostic Tasks** — Tasks don't know about environment variables
+- **Easy Testing** — Mock `settings` instead of mocking environment variables
+- **Clear Boundaries** — Need to bump concurrency? Edit `config.py`. Business rules changed? Edit `task.py`
 
 ---
 
@@ -449,11 +778,17 @@ my_order_pipeline/
 │       ├── service.py
 │       └── schemas.py
 │
+├── services/
+│   └── crm_service/                  # Custom service for CRM API
+│       ├── __init__.py
+│       ├── service.py
+│       └── client.py
+│
 └── tasks/
     ├── __init__.py
-    ├── settings.py                   # RABBITMQ_CONNECTOR, EXCEL_CONNECTOR, CRM_SERVICE
-    ├── constants.py                  # OrderStatus, BATCH_SIZE
-    ├── schemas.py                    # BasePayload, UserPayload
+    ├── settings.py                   # Telemetry, RABBITMQ_CONNECTOR, OPENAI_SERVICE
+    ├── constants.py                  # Retry policies, workflow phases
+    ├── schemas.py                    # WorkflowPhases, BasePayload, ProcessTransactionOutput
     ├── exceptions.py                 # ValidationError
     ├── helpers.py                    # generate_idempotency_key
     │
