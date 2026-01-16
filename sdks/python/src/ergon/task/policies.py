@@ -44,6 +44,7 @@ class RetryPolicy(BaseModel):
 
 class FetchPolicy(BaseModel):
     retry: RetryPolicy = Field(default_factory=RetryPolicy, description="The retry policy for fetching transactions.")
+    batch: BatchPolicy = Field(default_factory=BatchPolicy, description="The batch policy for fetching transactions.")
     connector_name: str = Field(default=None, description="The name of the connector to use for fetching transactions.")
     extra: dict = Field(default_factory=dict)
 
@@ -75,7 +76,6 @@ class EmptyQueuePolicy(BaseModel):
 
 
 class ConsumerLoopPolicy(BaseModel):
-    batch: BatchPolicy = Field(default_factory=BatchPolicy, description="The batch policy for the consumer loop.")
     concurrency: ConcurrencyPolicy = Field(
         default_factory=ConcurrencyPolicy, description="The concurrency policy for the consumer loop."
     )
