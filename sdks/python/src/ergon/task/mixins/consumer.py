@@ -295,13 +295,15 @@ class ConsumerMixin(ABC):
                         "streaming": policy.loop.streaming,
                     },
                 ):
-                    _, count = helpers.run_concurrently(
-                        data=transactions,
-                        callback=lambda tr: (tr, policy),
-                        submit_fn=submit_start_processing,
+
+                    def submissions():
+                        for tr in transactions:
+                            yield lambda tr=tr: submit_start_processing(tr, policy)
+
+                    count = helpers.multithread_execute(
+                        submissions=submissions(),
                         concurrency=policy.loop.concurrency.value,
                         limit=policy.loop.limit,
-                        count=processed,
                         timeout=policy.loop.transaction_timeout,
                     )
 
