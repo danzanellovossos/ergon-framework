@@ -1,13 +1,12 @@
 import os
-from dotenv import load_dotenv
 
+from dotenv import load_dotenv
 
 global ENV_LOADED
 ENV_LOADED = False
 
 
 def load_env():
-    
     global ENV_LOADED
     if ENV_LOADED:
         return
