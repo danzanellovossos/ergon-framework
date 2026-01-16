@@ -386,9 +386,7 @@ class AsyncConsumerMixin(ABC):
     # =====================================================================
     #   FETCH WITH RETRIES (ASYNC)
     # =====================================================================
-    async def _fetch_transactions(
-        self, conn, policy: policies.FetchPolicy
-    ) -> tuple[bool, List[connector.Transaction]]:
+    async def _fetch_transactions(self, conn, policy: policies.FetchPolicy) -> tuple[bool, List[connector.Transaction]]:
         logger.info(f"Fetching transactions with batch size {policy.batch.size}", extra=policy.extra)
         fetch_start = time.perf_counter()
         success, result = await helpers.run_fn_async(
