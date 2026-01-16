@@ -2,7 +2,7 @@
 import asyncio
 import logging
 from concurrent import futures
-from typing import Any, Callable, Iterator, Optional, Tuple, Iterable
+from typing import Callable, Iterable, Optional
 
 from opentelemetry import context
 

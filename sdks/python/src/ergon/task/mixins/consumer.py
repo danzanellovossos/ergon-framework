@@ -295,6 +295,7 @@ class ConsumerMixin(ABC):
                         "streaming": policy.loop.streaming,
                     },
                 ):
+
                     def submissions():
                         for tr in transactions:
                             yield lambda tr=tr: submit_start_processing(tr, policy)
