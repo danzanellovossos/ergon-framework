@@ -253,6 +253,8 @@ ergon command
 └─────────────────┘
 ```
 
+**Important:** The CLI does not scan the filesystem. It only has access to tasks that are explicitly registered before commands execute.
+
 ### The `ergon()` Function
 
 ```python
@@ -269,19 +271,17 @@ def ergon(tasks: Optional[List[TaskConfig]] = None) -> None
 
 ```python
 from ergon.cli import ergon
-from ergon.task import TaskConfig
-from typing import List
+from my_project.tasks import TASKS
 
-TASKS: List[TaskConfig] = [...]
-
-ergon(TASKS)  # Registers tasks, then executes CLI
+def main():
+    ergon(TASKS)  # Registers tasks, then executes CLI
 ```
 
 ### Task Registration
 
-Tasks are **not** auto-discovered. The CLI only has access to tasks that are registered before commands execute. There are two ways to register tasks:
+Tasks are **not** auto-discovered. The CLI is deterministic and explicit by design. There is one recommended way to register tasks:
 
-#### Option 1: Pass Tasks Directly (Recommended)
+#### Recommended: Pass Tasks Directly
 
 Pass a list of `TaskConfig` objects to `ergon()`. Tasks are automatically registered if not already present:
 
@@ -296,35 +296,31 @@ def main():
 Define your task list in `tasks/__init__.py`:
 
 ```python
-from .order_ingestion.config import TASK_ORDER_INGESTION
-from .order_enrichment.config import TASK_ORDER_ENRICHMENT
+from . import settings
+from .document_search.config import TASK_DOCUMENT_SEARCH
+from .data_extraction.config import TASK_DATA_EXTRACTION
+
+settings.load_env()
 
 TASKS = [
-    TASK_ORDER_INGESTION,
-    TASK_ORDER_ENRICHMENT,
+    TASK_DOCUMENT_SEARCH,
+    TASK_DATA_EXTRACTION,
 ]
 ```
 
-This approach:
+**Why tasks must be registered before CLI execution:**
 
-- Avoids wildcard imports
-- Eliminates linter warnings
-- Provides explicit, readable registration
+1. The CLI does not scan the filesystem for tasks
+2. Tasks must be explicitly imported and registered
+3. The task manager only knows about tasks that were registered before `ergon()` is called
+4. This ensures deterministic, predictable behavior
 
-#### Option 2: Import Config Modules
+**The difference between passing tasks and import-based registration:**
 
-Import task configuration modules before calling `ergon()`:
+- **Passing tasks to `ergon(TASKS)`**: Tasks are explicitly listed in `tasks/__init__.py` and passed to the CLI. This is the recommended approach.
+- **Import-based registration**: Tasks are registered via `manager.register()` calls in their config modules when imported. This requires wildcard imports and linter suppressions.
 
-```python
-from ergon.cli import ergon
-
-# These imports register tasks via manager.register() calls in each config module
-from my_project.tasks.task_a.config import *  # noqa: F401, F403
-from my_project.tasks.task_b.config import *  # noqa: F401, F403
-
-def main():
-    ergon()
-```
+The recommended approach is explicit, avoids linter warnings, and makes it clear which tasks are available at runtime.
 
 ---
 

@@ -2,7 +2,16 @@ import os
 from dotenv import load_dotenv
 
 
+global ENV_LOADED
+ENV_LOADED = False
+
+
 def load_env():
+    
+    global ENV_LOADED
+    if ENV_LOADED:
+        return
+
     env_file = os.environ.get("ENV_FILE")
 
     if not env_file:
@@ -15,3 +24,4 @@ def load_env():
         )
 
     load_dotenv(env_file, encoding="utf-8", override=False)
+    ENV_LOADED = True

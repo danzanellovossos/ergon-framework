@@ -98,20 +98,16 @@ When a task's `config.py` module is imported, it typically calls `manager.regist
 
 ---
 
-## Entry Point Setup
+## Step-by-Step Implementation
 
-Create a `main.py` file in your project that serves as the CLI entry point.
+This section walks you through building an Ergon project from top to bottom, following production patterns.
 
-### Recommended: Passing Tasks Directly
+### Step 1: Entry Point (`main.py`)
 
-The `ergon()` function accepts an optional list of `TaskConfig` objects. Tasks passed this way are automatically registered if not already present. This approach is cleaner than wildcard imports and avoids linter warnings.
+Every Ergon project has exactly one entry point: `main.py`. This file is minimal and focused—it imports tasks and hands control to the CLI.
 
 ```python
 from ergon.cli import ergon
-from ergon.utils import load_env
-
-load_env()
-
 from my_project.tasks import TASKS
 
 def main():
@@ -121,57 +117,134 @@ if __name__ == "__main__":
     main()
 ```
 
-Define your task list in `tasks/__init__.py`:
+**Key properties:**
+
+- Single entry point
+- CLI invoked via `ergon(TASKS)`
+- Task registration is explicit
+- No auto-discovery
+- No environment loading here—that happens in `tasks/__init__.py`
+
+This pattern ensures deterministic, predictable behavior suitable for production workloads.
+
+---
+
+### Step 2: Task Registration (`tasks/__init__.py`)
+
+Tasks are registered in `tasks/__init__.py`. This file follows a specific pattern that ensures environment variables are loaded before task configurations are evaluated.
 
 ```python
-from .order_ingestion.config import TASK_ORDER_INGESTION
-from .order_enrichment.config import TASK_ORDER_ENRICHMENT
-from .order_dispatch.config import TASK_ORDER_DISPATCH
+from . import settings
+from .document_search.config import TASK_DOCUMENT_SEARCH
+from .data_extraction.config import TASK_DATA_EXTRACTION
+from .xml_generation.config import TASK_XML_GENERATION
+from .initial_routing.config import TASK_INITIAL_ROUTING
+
+settings.load_env()
 
 TASKS = [
-    TASK_ORDER_INGESTION,
-    TASK_ORDER_ENRICHMENT,
-    TASK_ORDER_DISPATCH,
+    TASK_DOCUMENT_SEARCH,
+    TASK_DATA_EXTRACTION,
+    TASK_XML_GENERATION,
+    TASK_INITIAL_ROUTING,
 ]
 
 __all__ = [
-    "TASK_ORDER_INGESTION",
-    "TASK_ORDER_ENRICHMENT",
-    "TASK_ORDER_DISPATCH",
+    "settings",
+    "TASK_DOCUMENT_SEARCH",
+    "TASK_DATA_EXTRACTION",
+    "TASK_XML_GENERATION",
+    "TASK_INITIAL_ROUTING",
     "TASKS",
 ]
 ```
 
-**Benefits of this approach:**
+**Key properties:**
 
-- No wildcard imports (`from ... import *`)
-- No linter suppression comments required
-- Explicit, readable task registration
-- Easy to see all available tasks in one place
+- `settings.load_env()` is executed before task configs are evaluated
+- Tasks are explicitly listed in `TASKS`
+- Import order matters and is intentional
+- No auto-discovery or magic registration
 
-### Alternative: Wildcard Imports
+**Why this order matters:**
 
-You can also register tasks via wildcard imports, though this requires linter suppression:
+1. **Settings imported first** — Makes `settings` module available
+2. **Task configs imported** — Each config module is evaluated
+3. **Environment loaded** — `settings.load_env()` makes environment variables available
+4. **Tasks listed** — Explicit list of registered tasks
 
-```python
-from ergon.cli import ergon
-from ergon.utils import load_env
+This ensures that when task configuration modules are evaluated, all environment variables are already loaded and available via `os.getenv()` in `settings.py`.
 
-load_env()
+---
 
-# Import task configs for registration (requires linter ignore)
-from my_project.tasks.order_ingestion.config import *  # noqa: F401, F403
-from my_project.tasks.order_enrichment.config import *  # noqa: F401, F403
+### Step 3: Settings Configuration (`tasks/settings.py`)
 
-def main():
-    ergon()
+Environment variables are loaded in `tasks/settings.py` via `load_env()`. This function is called at the top of `settings.py`, before any connector or service configurations are created.
+
+**Important:** `load_env()` is called in `settings.py`, not in `main.py`. This ensures environment variables are available when connector and service configurations are created.
+
+See the [Project Structure Guide](project-structure.md#settingspy--the-control-center) for a complete `settings.py` example with telemetry, connectors, and services configuration.
+
+---
+
+### Step 4: Constants (`tasks/constants.py`)
+
+Constants file contains retry policies, configuration objects, and business constants. It may reference schemas and environment variables.
+
+See the [Project Structure Guide](project-structure.md#constantspy--configuration-and-constants) for a complete `constants.py` example.
+
+---
+
+### Step 5: Schemas (`tasks/schemas.py`)
+
+Schemas file contains Pydantic models that multiple tasks use. This includes configuration schemas (for external systems), shared payload models, and output schemas.
+
+See the [Project Structure Guide](project-structure.md#schemaspy--shared-data-models) for a complete `schemas.py` example.
+
+### Environment File Pattern
+
+The `load_env()` function uses the `ENV_FILE` environment variable to determine which `.env` file to load:
+
+```bash
+# Development
+ENV_FILE=.env.local
+
+# Production
+ENV_FILE=.env.production
+
+# Staging
+ENV_FILE=.env.staging
 ```
 
-### What This Pattern Ensures
+If `ENV_FILE` is not set, `load_env()` will raise a `ValueError` with clear instructions.
 
-1. **Environment variables are loaded** before any task configuration is evaluated
-2. **Task configurations are registered** with the task manager
-3. **The Ergon CLI has access** to all registered tasks when it executes
+### Why Environment Loading Exists
+
+Even though `os.getenv()` works, Ergon provides `load_env()` for several reasons:
+
+1. **Centralized loading** — Environment variables are loaded in one place, before any task configuration is evaluated
+2. **Environment-specific files** — Supports `.env.local`, `.env.production`, etc. based on the `ENV_FILE` variable
+3. **Consistent initialization** — Ensures all environment variables are available before connectors and services are configured
+4. **Production-ready** — Explicit control over which environment file is loaded
+
+### Why Tasks Never Touch Environment Variables Directly
+
+Tasks reference pre-configured connectors and services from `settings.py`:
+
+```python
+# ❌ Don't do this in task code
+api_key = os.getenv("OPENAI_API_KEY")
+
+# ✅ Do this instead
+from .. import settings
+# Use settings.OPENAI_SERVICE which already has the API key configured
+```
+
+This separation ensures:
+
+- **Single source of truth** — Configuration lives in `settings.py`
+- **Easy testing** — Mock `settings` instead of mocking environment variables
+- **Environment-agnostic tasks** — Tasks don't need to know which environment they're running in
 
 ---
 
@@ -226,26 +299,40 @@ my_project/
 ├── src/
 │   └── my_project/
 │       ├── __init__.py
-│       ├── main.py                 # CLI entry point
-│       ├── connectors/             # Custom connectors
+│       ├── main.py                 # Single entry point: ergon(TASKS)
+│       ├── connectors/             # Custom connectors (optional)
 │       │   └── {connector_name}/
 │       │       ├── connector.py
 │       │       └── service.py
+│       ├── services/               # Custom services (optional)
+│       │   └── {service_name}/
+│       │       ├── service.py
+│       │       └── client.py
 │       └── tasks/
-│           ├── __init__.py
-│           ├── settings.py         # Shared connector/service configs
-│           ├── constants.py        # Shared constants
+│           ├── __init__.py         # Task registration + settings.load_env()
+│           ├── settings.py         # Telemetry, connectors, services
+│           ├── constants.py        # Shared constants, retry policies
 │           ├── schemas.py          # Shared Pydantic models
 │           ├── exceptions.py       # Shared exceptions
 │           ├── helpers.py          # Shared utilities
 │           └── {task_name}/
 │               ├── __init__.py
 │               ├── task.py         # Task implementation
-│               ├── config.py       # TaskConfig and registration
+│               ├── config.py       # TaskConfig definition
 │               ├── schemas.py      # Task-specific models
 │               ├── exceptions.py   # Task-specific exceptions
 │               └── helpers.py      # Task-specific utilities
 ```
+
+**Key points:**
+
+- `main.py` is minimal—just imports `TASKS` and calls `ergon(TASKS)`
+- `tasks/__init__.py` handles task registration and calls `settings.load_env()`
+- `tasks/settings.py` is the control center for telemetry, connectors, and services
+- `tasks/constants.py` contains retry policies and configuration objects
+- `tasks/schemas.py` contains shared Pydantic models
+- `connectors/` and `services/` are at the same level—both optional
+- Each task has its own folder with `task.py` and `config.py` separated
 
 For detailed guidance on project organization, see the [Project Structure Guide](project-structure.md).
 
@@ -276,8 +363,10 @@ Ergon's explicit registration model means you do **not** need:
 - Magic discovery mechanisms
 - Framework-level auto-imports
 - Decorator-based registration at module load time
+- Environment variable access in task code
+- Dev/prod branching logic in code
 
-You have complete control over task registration through standard Python imports.
+You have complete control over task registration through standard Python imports. Configuration is environment-driven, not code-driven.
 
 ---
 
