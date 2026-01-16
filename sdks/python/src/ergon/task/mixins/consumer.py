@@ -176,21 +176,21 @@ class ConsumerMixin(ABC):
     # =====================================================================
     # FETCH HANDLER
     # =====================================================================
-    def _handle_fetch(self, conn, policy: policies.FetchPolicy, batch_size: int):
-        logger.info(f"Fetch handler started for batch size {batch_size}", extra=policy.extra)
+    def _handle_fetch(self, conn, policy: policies.FetchPolicy):
+        logger.info(f"Fetch handler started for batch size {policy.batch.size}", extra=policy.extra)
         fetch_start = time.perf_counter()
         success, result = helpers.run_fn(
-            fn=lambda: conn.fetch_transactions(batch_size, **policy.extra),
+            fn=lambda: conn.fetch_transactions(policy.batch.size, **policy.extra),
             retry=policy.retry,
             trace_name=f"{self.__class__.__name__}.fetch_transactions",
-            trace_attrs={"batch_size": batch_size},
+            trace_attrs={"batch_size": policy.batch.size},
         )
         # Record fetch metrics
         fetched_count = len(result) if success and result else 0
         mixin_metrics.record_consumer_fetch(
             task_name=getattr(self, "name", self.__class__.__name__),
             connector_name=conn.__class__.__name__,
-            batch_size=batch_size,
+            batch_size=policy.batch.size,
             fetched_count=fetched_count,
             duration=time.perf_counter() - fetch_start,
             success=success,
@@ -241,7 +241,7 @@ class ConsumerMixin(ABC):
                 # -------------------------
                 # FETCH
                 # -------------------------
-                success, result = self._handle_fetch(conn, policy.fetch, policy.loop.batch.size)
+                success, result = self._handle_fetch(conn, policy.fetch)
                 if not success:
                     logger.error(f"Fetch failed → {result}")
                     break
@@ -386,23 +386,21 @@ class AsyncConsumerMixin(ABC):
     # =====================================================================
     #   FETCH WITH RETRIES (ASYNC)
     # =====================================================================
-    async def _fetch_transactions(
-        self, conn, policy: policies.FetchPolicy, batch_size: int
-    ) -> tuple[bool, List[connector.Transaction]]:
-        logger.info(f"Fetching transactions with batch size {batch_size}", extra=policy.extra)
+    async def _fetch_transactions(self, conn, policy: policies.FetchPolicy) -> tuple[bool, List[connector.Transaction]]:
+        logger.info(f"Fetching transactions with batch size {policy.batch.size}", extra=policy.extra)
         fetch_start = time.perf_counter()
         success, result = await helpers.run_fn_async(
-            fn=lambda: conn.fetch_transactions_async(batch_size, **policy.extra),
+            fn=lambda: conn.fetch_transactions_async(policy.batch.size, **policy.extra),
             retry=policy.retry,
             trace_name=f"{self.__class__.__name__}.fetch_transactions",
-            trace_attrs={"batch_size": batch_size},
+            trace_attrs={"batch_size": policy.batch.size},
         )
         # Record fetch metrics
         fetched_count = len(result) if success and result else 0
         mixin_metrics.record_consumer_fetch(
             task_name=getattr(self, "name", self.__class__.__name__),
             connector_name=conn.__class__.__name__,
-            batch_size=batch_size,
+            batch_size=policy.batch.size,
             fetched_count=fetched_count,
             duration=time.perf_counter() - fetch_start,
             success=success,
@@ -552,7 +550,7 @@ class AsyncConsumerMixin(ABC):
                 # ============================================================
                 #  FETCH
                 # ============================================================
-                success, result = await self._fetch_transactions(conn, policy.fetch, policy.loop.batch.size)
+                success, result = await self._fetch_transactions(conn, policy.fetch)
 
                 if not success:
                     logger.error(f"Fetch failed → {result}")
