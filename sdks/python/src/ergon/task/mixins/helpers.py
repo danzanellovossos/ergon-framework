@@ -2,7 +2,7 @@
 import asyncio
 import logging
 from concurrent import futures
-from typing import Any, Callable, Iterator, Optional, Tuple
+from typing import Any, Callable, Iterator, Optional, Tuple, Iterable
 
 from opentelemetry import context
 
@@ -254,70 +254,80 @@ def run_fn(
     return run()
 
 
-def run_concurrently(
-    data: Any,
-    callback: Callable,
-    submit_fn: Callable,
+def multithread_execute(
+    submissions: Iterable[Callable[[], futures.Future]],
+    *,
     concurrency: int,
-    limit: int = None,
-    count: int = 0,
-    timeout: float = None,
+    limit: Optional[int] = None,
+    timeout: Optional[float] = None,
 ) -> int:
-    active = set[futures.Future]()
-    results = []
-    submit_count = count
-    it = iter(callback(x) for x in data)
-    # ============================================================
-    #  INITIAL FILL
-    # ============================================================
-    for _ in range(min(concurrency, len(data))):
-        try:
-            if limit and submit_count >= limit:
-                break
-            args = next(it)
-            active.add(submit_fn(*args))
-            submit_count += 1
-        except StopIteration:
-            break
+    """
+    Execute submitted callables with bounded concurrency and refill.
+
+    - submissions yields callables that RETURN a Future when called
+    - this function manages in-flight futures only
+    - no domain semantics, no retries, no tracing
+
+    Returns:
+        Number of completed submissions
+    """
+
+    in_flight: set[futures.Future] = set()
+    completed = 0
+
+    submit_iter = iter(submissions)
 
     # ============================================================
-    #  PROCESS LOOP
+    # INITIAL FILL
     # ============================================================
-    while active:
-        # ============================================================
-        #  WAIT FOR FIRST COMPLETED
-        # ============================================================
-        done, remaining = futures.wait(active, return_when=futures.FIRST_COMPLETED)
-        count = 0
+    while len(in_flight) < concurrency:
+        if limit is not None and completed + len(in_flight) >= limit:
+            break
+        try:
+            submit = next(submit_iter)
+        except StopIteration:
+            break
+        try:
+            in_flight.add(submit())
+        except Exception as e:
+            logger.error(f"Submission failed before execution: {e}")
+
+    # ============================================================
+    # MAIN LOOP
+    # ============================================================
+    while in_flight:
+        done, in_flight = futures.wait(
+            in_flight,
+            return_when=futures.FIRST_COMPLETED,
+            timeout=timeout,
+        )
 
         for fut in done:
             try:
-                result = fut.result(timeout=timeout)
-                results.append(result)
+                fut.result()
             except futures.TimeoutError:
-                logger.error("[Producer] Transaction lifecycle TIMEOUT")
+                logger.error("Execution timeout")
             except Exception as e:
-                logger.error(f"[Producer] Error: {e}")
-            count += 1
+                logger.error(f"Execution error: {e}")
+            finally:
+                completed += 1
 
-        active = remaining
         # ============================================================
-        #  REFILL
+        # REFILL
         # ============================================================
-        if limit and submit_count >= limit:
-            break
-
-        while len(active) < concurrency:
-            if limit and submit_count >= limit:
+        while len(in_flight) < concurrency:
+            if limit is not None and completed + len(in_flight) >= limit:
                 break
-
             try:
-                args = next(it)
-                active.add(submit_fn(*args))
+                submit = next(submit_iter)
             except StopIteration:
                 break
+            try:
+                in_flight.add(submit())
+            except Exception as e:
+                logger.error(f"Submission failed before execution: {e}")
 
-    return results, count
+    return completed
 
 
 # ============================================================
@@ -331,7 +341,10 @@ async def with_context_async(
     trace_attrs: dict = {},
     **kwargs,
 ):
-    """Async OTEL context attach/detach wrapper."""
+    """
+    Async OTEL context attach/detach wrapper.
+    Mirrors with_context (sync).
+    """
 
     if ctx is None:
         ctx = context.get_current()
@@ -355,233 +368,206 @@ async def run_with_context_async(
     trace_attrs: dict = {},
     **kwargs,
 ):
+    """
+    Smallest async execution primitive.
+    Mirrors run_with_context (sync).
+    """
+
     if ctx is None:
         ctx = context.get_current()
 
-    return await with_context_async(*args, fn=fn, ctx=ctx, trace_name=trace_name, trace_attrs=trace_attrs, **kwargs)
+    return await with_context_async(
+        *args,
+        fn=fn,
+        ctx=ctx,
+        trace_name=trace_name,
+        trace_attrs=trace_attrs,
+        **kwargs,
+    )
 
 
 # ============================================================
-#  RUN WITH TIMEOUT (ASYNC) + CONTEXT WRAPPER
-# ============================================================
-async def run_with_timeout_async(
-    *args,
-    fn: Callable,
-    timeout: int = 0,
-    ctx: context.Context = None,
-    trace_name: str = None,
-    trace_attrs: dict = {},
-    **kwargs,
-):
-    if ctx is None:
-        ctx = context.get_current()
-
-    async def _wrapper():
-        return await run_with_context_async(
-            *args, fn=fn, ctx=ctx, trace_name=trace_name, trace_attrs=trace_attrs, **kwargs
-        )
-
-    if timeout == 0:
-        return await _wrapper()
-
-    return await asyncio.wait_for(_wrapper(), timeout=timeout)
-
-
-# ============================================================
-#  RUN WITH RETRY + TIMEOUT (ASYNC) + CONTEXT WRAPPER
-# ============================================================
-async def run_with_retry_and_timeout_async(
-    *args,
-    fn: Callable,
-    retry: policies.RetryPolicy,
-    ctx: context.Context = None,
-    trace_name: str = None,
-    trace_attrs: dict = {},
-    **kwargs,
-) -> Tuple[bool, Any]:
-    if ctx is None:
-        ctx = context.get_current()
-
-    with tracer.start_as_current_span(
-        trace_name,
-        attributes={**trace_attrs, "max_attempts": retry.max_attempts},
-    ):
-        last_exc = None
-
-        for attempt in range(retry.max_attempts):
-            try:
-                result = await run_with_timeout_async(
-                    *args,
-                    fn=fn,
-                    timeout=retry.timeout,
-                    ctx=ctx,
-                    trace_name=f"{trace_name}.attempt.{attempt + 1}",
-                    trace_attrs={"attempt": attempt + 1, "max_attempts": retry.max_attempts},
-                    **kwargs,
-                )
-                return True, result
-
-            except exceptions.TransactionException as e:
-                if e.category == exceptions.ExceptionType.BUSINESS:
-                    return False, e
-                last_exc = e
-
-            except BaseException as e:
-                last_exc = e
-
-            if attempt == retry.max_attempts - 1:
-                return False, last_exc
-
-            await run_with_context_async(
-                fn=lambda: utils.sleep_async(retry.backoff, retry.backoff_multiplier, retry.backoff_cap, attempt),
-                ctx=ctx,
-                trace_name=f"backoff.attempt.{attempt + 1}",
-                trace_attrs={"attempt": attempt + 1, "max_attempts": retry.max_attempts},
-            )
-
-
-# ============================================================
-#  RUN FN (ASYNC EXECUTION FACTORY) - Works as function AND decorator
+#  RUN FN (ASYNC EXECUTION FACTORY) — FUNCTION + DECORATOR
 # ============================================================
 def run_fn_async(
     *args,
     fn: Optional[Callable] = None,
     retry: Optional[policies.RetryPolicy] = None,
-    ctx: context.Context = None,
+    ctx: Optional[context.Context] = None,
     trace_name: Optional[str] = None,
     trace_attrs: dict = {},
     **kwargs,
 ):
     """
-    Executes an async function with context + span + timeout + retries.
+    Async equivalent of run_fn.
 
-    Can be used as:
-    1. Normal function: run_fn_async(fn=my_func, retry=..., *args, **kwargs)
-    2. Decorator: @run_fn_async(retry=...) or @run_fn_async
+    Returns:
+        (success: bool, result: Any | Exception)
+
+    Same invariants as sync:
+      - retries decided by policy
+      - no concurrency here
+      - no scheduling
     """
 
-    # DECORATOR MODE: called without fn, returns decorator
+    # ============================================================
+    # DECORATOR MODE
+    # ============================================================
     if fn is None:
 
-        def decorator(func: Callable) -> Callable:
-            async def wrapper(*wrapper_args, **wrapper_kwargs) -> Any:
+        def decorator(func: Callable):
+            async def wrapper(*wrapper_args, **wrapper_kwargs):
                 success, result = await run_fn_async(
+                    *wrapper_args,
                     fn=func,
                     retry=retry,
                     ctx=ctx,
-                    trace_name=trace_name or f"{func.__module__}.{func.__name__}",
+                    trace_name=trace_name or func.__qualname__,
                     trace_attrs=trace_attrs,
-                    *wrapper_args,
                     **wrapper_kwargs,
                 )
+
                 if not success:
                     if isinstance(result, BaseException):
                         raise result
-                    raise RuntimeError(f"Function {func.__name__} failed: {result}")
+                    raise RuntimeError(f"Function {func.__qualname__} failed: {result}")
+
                 return result
 
             return wrapper
 
         return decorator
 
-    # FUNCTION MODE: fn provided, execute it
-    if ctx is None:
-        ctx = context.get_current()
+    # ============================================================
+    # EXECUTION MODE
+    # ============================================================
+    ctx = ctx or context.get_current()
+    trace_name = trace_name or fn.__qualname__
+    retry = retry or policies.RetryPolicy(max_attempts=1)
 
-    async def _run(*run_args, **run_kwargs) -> Tuple[bool, Any]:
-        # NO RETRY / NO TIMEOUT
-        if retry is None or (retry.max_attempts == 1 and retry.timeout is None):
-            try:
-                res = await run_with_context_async(
-                    *run_args, fn=fn, ctx=ctx, trace_name=trace_name, trace_attrs=trace_attrs, **run_kwargs
-                )
-                return True, res
-            except Exception as e:
-                return False, e
-
-        # SINGLE ATTEMPT + TIMEOUT
-        if retry.max_attempts == 1:
-            try:
-                res = await run_with_timeout_async(
-                    *run_args,
-                    fn=fn,
-                    ctx=ctx,
-                    timeout=retry.timeout,
-                    trace_name=trace_name,
-                    trace_attrs=trace_attrs,
-                    **run_kwargs,
-                )
-                return True, res
-            except Exception as e:
-                return False, e
-
-        # FULL RETRY
-        return await run_with_retry_and_timeout_async(
-            *run_args, fn=fn, retry=retry, ctx=ctx, trace_name=trace_name, trace_attrs=trace_attrs, **run_kwargs
+    async def attempt(attempt_no: int):
+        return await run_with_context_async(
+            *args,
+            fn=fn,
+            ctx=ctx,
+            trace_name=f"{trace_name}.attempt.{attempt_no}",
+            trace_attrs={**trace_attrs, "attempt": attempt_no},
+            **kwargs,
         )
 
-    return _run(*args, **kwargs)
+    async def run():
+        last_exc = None
+
+        for attempt_no in range(1, retry.max_attempts + 1):
+            logger.debug(f"[async] Attempt {attempt_no} → {fn.__qualname__}")
+            try:
+                if retry.timeout:
+                    result = await asyncio.wait_for(
+                        attempt(attempt_no),
+                        timeout=retry.timeout,
+                    )
+                else:
+                    result = await attempt(attempt_no)
+
+                return True, result
+
+            except exceptions.NonRetryableException as e:
+                return False, e
+
+            except asyncio.TimeoutError as e:
+                last_exc = e
+                logger.error(f"[async] Timeout on attempt {attempt_no}")
+
+            except Exception as e:
+                last_exc = e
+                logger.error(f"[async] Error on attempt {attempt_no}: {e}")
+
+            if attempt_no < retry.max_attempts:
+                await utils.sleep_async(
+                    retry.backoff,
+                    retry.backoff_multiplier,
+                    retry.backoff_cap,
+                    attempt_no - 1,
+                )
+
+        return False, last_exc
+
+    return run()
 
 
 # ============================================================
-#  RUN CONCURRENTLY WITH REFILL (ASYNC)
+#  ASYNC CONCURRENT EXECUTION WITH REFILL
 # ============================================================
-async def run_concurrently_with_refill_async(
-    data: Any, it: Iterator, submit_fn: Callable, concurrency: int, limit: int, count: int, timeout: int
+async def async_execute(
+    submissions: Iterable[Callable[[], asyncio.Task]],
+    *,
+    concurrency: int,
+    limit: Optional[int] = None,
+    timeout: Optional[float] = None,
 ) -> int:
-    active = set[asyncio.Task]()
-    submit_count = count
+    """
+    Async equivalent of multithread_execute.
+
+    - submissions yield callables that RETURN an asyncio.Task
+    - manages in-flight tasks only
+    - no retries
+    - no tracing
+    - no domain semantics
+
+    Returns:
+        Number of completed tasks
+    """
+
+    in_flight: set[asyncio.Task] = set()
+    completed = 0
+    submit_iter = iter(submissions)
 
     # ============================================================
-    #  INITIAL FILL
+    # INITIAL FILL
     # ============================================================
-    for _ in range(min(concurrency, len(data))):
+    while len(in_flight) < concurrency:
+        if limit is not None and completed + len(in_flight) >= limit:
+            break
         try:
-            if limit and submit_count >= limit:
-                break
-            args = next(it)
-            task = asyncio.create_task(submit_fn(*args))
-            active.add(task)
-            submit_count += 1
+            submit = next(submit_iter)
+            in_flight.add(submit())
         except StopIteration:
             break
+        except Exception as e:
+            logger.error(f"[async] Submission failed: {e}")
 
     # ============================================================
-    #  PROCESS LOOP
+    # MAIN LOOP
     # ============================================================
-    while active:
-        # ============================================================
-        #  WAIT FOR FIRST COMPLETED
-        # ============================================================
-        done, remaining = await asyncio.wait(active, return_when=asyncio.FIRST_COMPLETED)
+    while in_flight:
+        done, in_flight = await asyncio.wait(
+            in_flight,
+            return_when=asyncio.FIRST_COMPLETED,
+            timeout=timeout,
+        )
 
         for task in done:
             try:
-                await asyncio.wait_for(task, timeout=timeout)
+                await task
             except asyncio.TimeoutError:
-                logger.error("[AsyncProducer] Transaction lifecycle TIMEOUT")
+                logger.error("[async] Execution timeout")
             except Exception as e:
-                logger.error(f"[AsyncProducer] Error → {e}")
-            count += 1
-
-        active = remaining
+                logger.error(f"[async] Execution error: {e}")
+            finally:
+                completed += 1
 
         # ============================================================
-        #  REFILL
+        # REFILL
         # ============================================================
-        if limit and submit_count >= limit:
-            continue
-
-        while len(active) < concurrency:
-            if limit and submit_count >= limit:
+        while len(in_flight) < concurrency:
+            if limit is not None and completed + len(in_flight) >= limit:
                 break
-
             try:
-                args = next(it)
-                task = asyncio.create_task(submit_fn(*args))
-                active.add(task)
-                submit_count += 1
+                submit = next(submit_iter)
+                in_flight.add(submit())
             except StopIteration:
                 break
+            except Exception as e:
+                logger.error(f"[async] Submission failed: {e}")
 
-    return count
+    return completed
