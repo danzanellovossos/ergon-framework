@@ -180,11 +180,11 @@ def _build_console_handler_dict(cfg: ConsoleLogHandler, *args, **kwargs):
 def _resolve_filename(cfg, *args, **kwargs):
     template = cfg.filename
     task = kwargs["task"]
-    pid = str(kwargs["pid"])
+    metadata = kwargs["metadata"]
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     final = template.format(
-        pid=pid,
+        pid=metadata["pid"],
         task=task.name,
         timestamp=timestamp,
     )
@@ -314,7 +314,7 @@ _LOG_HANDLER_BUILDERS_DICT = {
 _LOGGING_CONFIGURED = False
 
 
-def _apply_logging_config(cfg: LoggingConfig, metadata: dict):
+def _apply_logging_config(cfg: LoggingConfig, task: object, metadata: dict):
     global _LOGGING_CONFIGURED
     if _LOGGING_CONFIGURED:
         return
@@ -335,7 +335,7 @@ def _apply_logging_config(cfg: LoggingConfig, metadata: dict):
 
     for idx, handler_cfg in enumerate(cfg.handlers):
         builder = _LOG_HANDLER_BUILDERS_DICT[handler_cfg.type]
-        handler_dict = builder(cfg=handler_cfg, metadata=metadata)
+        handler_dict = builder(cfg=handler_cfg, task=task, metadata=metadata)
 
         handler_name = f"handler_{idx}"
         handlers_dict[handler_name] = handler_dict

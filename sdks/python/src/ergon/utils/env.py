@@ -1,8 +1,6 @@
 import os
-
 from dotenv import load_dotenv
 
-global ENV_LOADED
 ENV_LOADED = False
 
 
@@ -15,12 +13,13 @@ def load_env():
 
     if not env_file:
         raise ValueError(
-            "ENV_FILE is not set. You must set the ENV_FILE environment variable."
-            "Example: ENV_FILE=.env.local"
-            "Example: ENV_FILE=.env.dev"
-            "Example: ENV_FILE=.env.prod"
-            "Example: ENV_FILE=.env.staging"
+            "ENV_FILE is not set. You must set the ENV_FILE environment variable. "
+            "Example: ENV_FILE=.env.local | .env.dev | .env.prod | .env.staging"
         )
 
-    load_dotenv(env_file, encoding="utf-8", override=False)
+    # If env vars already exist, we are likely in Docker/K8s
+    # dotenv should NOT override them
+    if os.path.exists(env_file):
+        load_dotenv(env_file, encoding="utf-8", override=False)
+
     ENV_LOADED = True

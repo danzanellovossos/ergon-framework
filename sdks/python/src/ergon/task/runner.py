@@ -68,9 +68,9 @@ def get_shutdown_exit_code() -> ExitCode:
 # =============================================================
 
 
-def __init_telemetry(config: TaskConfig, task_exec_metadata: TaskExecMetadata):
+def __init_telemetry(config: TaskConfig, task: object, task_exec_metadata: TaskExecMetadata):
     if getattr(config, "logging", None):
-        logging._apply_logging_config(cfg=config.logging, metadata=task_exec_metadata)
+        logging._apply_logging_config(cfg=config.logging, task=task, metadata=task_exec_metadata)
 
     if getattr(config, "tracing", None):
         tracing._apply_tracing_config(cfg=config.tracing, metadata=task_exec_metadata)
@@ -131,7 +131,7 @@ async def __run_task_async(
         worker_id=worker_id,
     ).model_dump()
 
-    __init_telemetry(config, task_exec_metadata)
+    __init_telemetry(config, task=config.task, task_exec_metadata=task_exec_metadata)
     tracer = tracing.get_tracer(f"task.{config.name}")
 
     instance = None
@@ -227,7 +227,7 @@ def __run_task_sync(
         worker_id=worker_id,
     ).model_dump()
 
-    __init_telemetry(config, task_exec_metadata)
+    __init_telemetry(config, task=config.task, task_exec_metadata=task_exec_metadata)
     tracer = tracing.get_tracer(__name__)
 
     instance = None
