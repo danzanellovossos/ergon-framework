@@ -241,6 +241,7 @@ class ConsumerMixin(ABC):
                 # -------------------------
                 # FETCH
                 # -------------------------
+                logger.info(f"Fetching transactions for batch {batch_number} with policy {policy.fetch}")
                 success, result = self._handle_fetch(conn, policy.fetch)
                 if not success:
                     logger.error(f"Fetch failed → {result}")
@@ -253,7 +254,9 @@ class ConsumerMixin(ABC):
                 # -------------------------
                 if not transactions:
                     if not policy.loop.streaming:
+                        logger.info(f"Non-streaming mode detected, breaking loop")
                         break
+                    logger.info(f"Empty queue detected for batch {batch_number}")
                     # Record empty queue wait metric
                     mixin_metrics.record_consumer_empty_queue_wait(
                         task_name=getattr(self, "name", self.__class__.__name__),
