@@ -264,9 +264,9 @@ class ConsumerMixin(ABC):
                         wait_count=empty_count,
                     )
                     utils.backoff(
-                        policy.loop.empty_queue.backoff,
-                        policy.loop.empty_queue.backoff_multiplier,
-                        policy.loop.empty_queue.backoff_cap,
+                        policy.fetch.empty.backoff,
+                        policy.fetch.empty.backoff_multiplier,
+                        policy.fetch.empty.backoff_cap,
                         empty_count,
                     )
                     empty_count += 1
@@ -308,7 +308,7 @@ class ConsumerMixin(ABC):
                         submissions=submissions(),
                         concurrency=policy.loop.concurrency.value,
                         limit=policy.loop.limit,
-                        timeout=policy.loop.transaction_timeout,
+                        timeout=policy.transaction_runtime.timeout,
                     )
 
                 processed += count
@@ -577,9 +577,9 @@ class AsyncConsumerMixin(ABC):
                         wait_count=empty_count,
                     )
                     await utils.backoff_async(
-                        backoff=policy.loop.empty_queue.backoff,
-                        backoff_multiplier=policy.loop.empty_queue.backoff_multiplier,
-                        backoff_cap=policy.loop.empty_queue.backoff_cap,
+                        backoff=policy.fetch.empty.backoff,
+                        backoff_multiplier=policy.fetch.empty.backoff_multiplier,
+                        backoff_cap=policy.fetch.empty.backoff_cap,
                         attempt=empty_count,
                     )
                     empty_count += 1
@@ -623,7 +623,7 @@ class AsyncConsumerMixin(ABC):
                         concurrency=policy.loop.concurrency.value,
                         limit=policy.loop.limit,
                         count=processed,
-                        timeout=policy.loop.transaction_timeout,
+                        timeout=policy.transaction_runtime.timeout,
                     )
 
                 processed += count
