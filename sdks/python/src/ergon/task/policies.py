@@ -83,6 +83,7 @@ class RetryPolicy(BaseModel):
     def _normalize_numbers(cls, v):
         return _normalize_optional(v)
 
+
 class TransactionRuntimePolicy(BaseModel):
     timeout: Optional[float] = Field(default=60.0, ge=0)
 
@@ -91,9 +92,11 @@ class TransactionRuntimePolicy(BaseModel):
     def _normalize_optional_numbers(cls, v):
         return _normalize_optional(v)
 
+
 # =====================================================================
 #   CONSUMER STEP POLICIES
 # =====================================================================
+
 
 class EmptyFetchPolicy(BaseModel):
     backoff: float = Field(default=0.0, ge=0.0)
@@ -111,7 +114,8 @@ class EmptyFetchPolicy(BaseModel):
     @classmethod
     def _normalize_numbers(cls, v):
         return _normalize_optional(v)
-        
+
+
 class FetchPolicy(BaseModel):
     retry: RetryPolicy = Field(default_factory=RetryPolicy)
     batch: BatchPolicy = Field(default_factory=BatchPolicy)
@@ -135,6 +139,7 @@ class ExceptionPolicy(BaseModel):
 # =====================================================================
 #   CONSUMER LOOP POLICIES
 # =====================================================================
+
 
 class ConsumerLoopPolicy(BaseModel):
     concurrency: ConcurrencyPolicy = Field(default_factory=ConcurrencyPolicy)

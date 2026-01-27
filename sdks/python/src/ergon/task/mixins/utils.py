@@ -1,6 +1,6 @@
 # utils.py
-import logging
 import asyncio
+import logging
 import time
 
 from ... import telemetry
@@ -21,7 +21,9 @@ def compute_backoff(backoff: float, multiplier: float, cap: float, attempt: int)
 
 def backoff(backoff: float, multiplier: float, cap: float, attempt: int):
     """Blocking sleep with computed backoff."""
-    logger.debug(f"Computing backoff for attempt {attempt} with backoff {backoff}, multiplier {multiplier}, and cap {cap}")
+    logger.debug(
+        f"Computing backoff for attempt {attempt} with backoff {backoff}, multiplier {multiplier}, and cap {cap}"
+    )
     delay = compute_backoff(backoff, multiplier, cap, attempt)
     logger.debug(f"Computed backoff: {delay} seconds")
     if delay > 0:
@@ -35,7 +37,9 @@ def backoff(backoff: float, multiplier: float, cap: float, attempt: int):
 
 async def backoff_async(backoff: float, multiplier: float, cap: float, attempt: int):
     """Async backoff with computed backoff."""
-    logger.info(f"Computing async backoff for attempt {attempt} with backoff {backoff}, multiplier {multiplier}, and cap {cap}")
+    logger.info(
+        f"Computing async backoff for attempt {attempt} with backoff {backoff}, multiplier {multiplier}, and cap {cap}"
+    )
     delay = compute_backoff(backoff, multiplier, cap, attempt)
     if delay > 0:
         with tracer.start_as_current_span("sleep", attributes={"delay": delay}):

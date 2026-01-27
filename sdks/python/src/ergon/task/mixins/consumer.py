@@ -255,7 +255,7 @@ class ConsumerMixin(ABC):
                 if not transactions:
                     logger.info(f"Empty queue detected for batch {batch_number}")
                     if not policy.loop.streaming:
-                        logger.info(f"Non-streaming mode detected, breaking loop")
+                        logger.info("Non-streaming mode detected, breaking loop")
                         break
                     logger.info(f"{empty_count} consecutive empty queue detections so far")
                     # Record empty queue wait metric
@@ -568,7 +568,7 @@ class AsyncConsumerMixin(ABC):
                 if not transactions:
                     logger.info(f"Empty queue detected for batch {batch_number}")
                     if not policy.loop.streaming:
-                        logger.info(f"Non-streaming mode detected, breaking loop")
+                        logger.info("Non-streaming mode detected, breaking loop")
                         break
                     logger.info(f"{empty_count} consecutive empty queue detections so far")
                     # Record empty queue wait metric
