@@ -1,4 +1,5 @@
 import os
+
 from dotenv import load_dotenv
 
 ENV_LOADED = False
@@ -20,6 +21,6 @@ def load_env():
     # If env vars already exist, we are likely in Docker/K8s
     # dotenv should NOT override them
     if os.path.exists(env_file):
-        load_dotenv(env_file, encoding="utf-8", override=False)
+        load_dotenv(env_file, encoding="utf-8", override=True)
 
     ENV_LOADED = True

@@ -84,14 +84,42 @@ class RetryPolicy(BaseModel):
         return _normalize_optional(v)
 
 
+class TransactionRuntimePolicy(BaseModel):
+    timeout: Optional[float] = Field(default=60.0, ge=0)
+
+    @field_validator("timeout", mode="before")
+    @classmethod
+    def _normalize_optional_numbers(cls, v):
+        return _normalize_optional(v)
+
+
 # =====================================================================
 #   CONSUMER STEP POLICIES
 # =====================================================================
 
 
+class EmptyFetchPolicy(BaseModel):
+    backoff: float = Field(default=0.0, ge=0.0)
+    backoff_multiplier: float = Field(default=1.0, ge=0.0)
+    backoff_cap: float = Field(default=0.0, ge=0.0)
+    interval: float = Field(default=0.0, ge=0.0)
+
+    @field_validator(
+        "backoff",
+        "backoff_multiplier",
+        "backoff_cap",
+        "interval",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_numbers(cls, v):
+        return _normalize_optional(v)
+
+
 class FetchPolicy(BaseModel):
     retry: RetryPolicy = Field(default_factory=RetryPolicy)
     batch: BatchPolicy = Field(default_factory=BatchPolicy)
+    empty: EmptyFetchPolicy = Field(default_factory=EmptyFetchPolicy)
     connector_name: Optional[str] = None
     extra: dict = Field(default_factory=dict)
 
@@ -113,31 +141,11 @@ class ExceptionPolicy(BaseModel):
 # =====================================================================
 
 
-class EmptyQueuePolicy(BaseModel):
-    backoff: float = Field(default=0.0, ge=0.0)
-    backoff_multiplier: float = Field(default=1.0, ge=0.0)
-    backoff_cap: float = Field(default=0.0, ge=0.0)
-    interval: float = Field(default=0.0, ge=0.0)
-
-    @field_validator(
-        "backoff",
-        "backoff_multiplier",
-        "backoff_cap",
-        "interval",
-        mode="before",
-    )
-    @classmethod
-    def _normalize_numbers(cls, v):
-        return _normalize_optional(v)
-
-
 class ConsumerLoopPolicy(BaseModel):
     concurrency: ConcurrencyPolicy = Field(default_factory=ConcurrencyPolicy)
     timeout: Optional[float] = Field(default=None, ge=0)
     limit: Optional[int] = Field(default=None, ge=0)
-    transaction_timeout: Optional[float] = Field(default=None, ge=0)
     streaming: bool = Field(default=False)
-    empty_queue: EmptyQueuePolicy = Field(default_factory=EmptyQueuePolicy)
 
     @field_validator("timeout", "transaction_timeout", "limit", mode="before")
     @classmethod
@@ -159,6 +167,7 @@ class ConsumerPolicy(BaseModel):
     name: Optional[str] = None
     loop: ConsumerLoopPolicy = Field(default_factory=ConsumerLoopPolicy)
     fetch: FetchPolicy = Field(default_factory=FetchPolicy)
+    transaction_runtime: TransactionRuntimePolicy = Field(default_factory=TransactionRuntimePolicy)
     process: ProcessPolicy = Field(default_factory=ProcessPolicy)
     success: SuccessPolicy = Field(default_factory=SuccessPolicy)
     exception: ExceptionPolicy = Field(default_factory=ExceptionPolicy)

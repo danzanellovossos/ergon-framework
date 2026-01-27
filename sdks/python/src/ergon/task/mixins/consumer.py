@@ -241,6 +241,7 @@ class ConsumerMixin(ABC):
                 # -------------------------
                 # FETCH
                 # -------------------------
+                logger.info(f"Fetching transactions for batch {batch_number} with policy {policy.fetch}")
                 success, result = self._handle_fetch(conn, policy.fetch)
                 if not success:
                     logger.error(f"Fetch failed → {result}")
@@ -252,17 +253,20 @@ class ConsumerMixin(ABC):
                 # EMPTY QUEUE HANDLING
                 # -------------------------
                 if not transactions:
+                    logger.info(f"Empty queue detected for batch {batch_number}")
                     if not policy.loop.streaming:
+                        logger.info("Non-streaming mode detected, breaking loop")
                         break
+                    logger.info(f"{empty_count} consecutive empty queue detections so far")
                     # Record empty queue wait metric
                     mixin_metrics.record_consumer_empty_queue_wait(
                         task_name=getattr(self, "name", self.__class__.__name__),
                         wait_count=empty_count,
                     )
                     utils.backoff(
-                        policy.loop.empty_queue.backoff,
-                        policy.loop.empty_queue.backoff_multiplier,
-                        policy.loop.empty_queue.backoff_cap,
+                        policy.fetch.empty.backoff,
+                        policy.fetch.empty.backoff_multiplier,
+                        policy.fetch.empty.backoff_cap,
                         empty_count,
                     )
                     empty_count += 1
@@ -304,7 +308,7 @@ class ConsumerMixin(ABC):
                         submissions=submissions(),
                         concurrency=policy.loop.concurrency.value,
                         limit=policy.loop.limit,
-                        timeout=policy.loop.transaction_timeout,
+                        timeout=policy.transaction_runtime.timeout,
                     )
 
                 processed += count
@@ -562,18 +566,20 @@ class AsyncConsumerMixin(ABC):
                 #  EMPTY QUEUE HANDLING
                 # ============================================================
                 if not transactions:
+                    logger.info(f"Empty queue detected for batch {batch_number}")
                     if not policy.loop.streaming:
+                        logger.info("Non-streaming mode detected, breaking loop")
                         break
-
+                    logger.info(f"{empty_count} consecutive empty queue detections so far")
                     # Record empty queue wait metric
                     mixin_metrics.record_consumer_empty_queue_wait(
                         task_name=getattr(self, "name", self.__class__.__name__),
                         wait_count=empty_count,
                     )
                     await utils.backoff_async(
-                        backoff=policy.loop.empty_queue.backoff,
-                        backoff_multiplier=policy.loop.empty_queue.backoff_multiplier,
-                        backoff_cap=policy.loop.empty_queue.backoff_cap,
+                        backoff=policy.fetch.empty.backoff,
+                        backoff_multiplier=policy.fetch.empty.backoff_multiplier,
+                        backoff_cap=policy.fetch.empty.backoff_cap,
                         attempt=empty_count,
                     )
                     empty_count += 1
@@ -617,7 +623,7 @@ class AsyncConsumerMixin(ABC):
                         concurrency=policy.loop.concurrency.value,
                         limit=policy.loop.limit,
                         count=processed,
-                        timeout=policy.loop.transaction_timeout,
+                        timeout=policy.transaction_runtime.timeout,
                     )
 
                 processed += count
