@@ -147,7 +147,7 @@ class ConsumerLoopPolicy(BaseModel):
     limit: Optional[int] = Field(default=None, ge=0)
     streaming: bool = Field(default=False)
 
-    @field_validator("timeout", "transaction_timeout", "limit", mode="before")
+    @field_validator("timeout", "limit", mode="before")
     @classmethod
     def _normalize_optional_numbers(cls, v):
         return _normalize_optional(v)
@@ -177,7 +177,6 @@ class ConsumerPolicy(BaseModel):
 #   PRODUCER POLICIES
 # =====================================================================
 
-
 class PreparePolicy(BaseModel):
     retry: RetryPolicy = Field(default_factory=RetryPolicy)
 
@@ -187,9 +186,8 @@ class ProducerLoopPolicy(BaseModel):
     batch: BatchPolicy = Field(default_factory=BatchPolicy)
     timeout: Optional[float] = Field(default=None, ge=0)
     limit: Optional[int] = Field(default=None, ge=0)
-    transaction_timeout: Optional[float] = Field(default=None, ge=0)
 
-    @field_validator("timeout", "limit", "transaction_timeout", mode="before")
+    @field_validator("timeout", "limit", mode="before")
     @classmethod
     def _normalize_optional_numbers(cls, v):
         return _normalize_optional(v)
@@ -198,6 +196,7 @@ class ProducerLoopPolicy(BaseModel):
 class ProducerPolicy(BaseModel):
     name: Optional[str] = None
     loop: ProducerLoopPolicy = Field(default_factory=ProducerLoopPolicy)
+    transaction_runtime: TransactionRuntimePolicy = Field(default_factory=TransactionRuntimePolicy)
     prepare: PreparePolicy = Field(default_factory=PreparePolicy)
     success: SuccessPolicy = Field(default_factory=SuccessPolicy)
     exception: ExceptionPolicy = Field(default_factory=ExceptionPolicy)

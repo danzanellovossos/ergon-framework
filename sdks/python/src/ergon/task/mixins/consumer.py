@@ -290,6 +290,7 @@ class ConsumerMixin(ABC):
                 else:
                     batch_context = None  # Use current context
 
+                logger.info(f"Starting processing batch {batch_number} with {len(transactions)} transactions.")
                 with tracer.start_as_current_span(
                     f"{self.__class__.__name__}.process_batch",
                     context=batch_context,
