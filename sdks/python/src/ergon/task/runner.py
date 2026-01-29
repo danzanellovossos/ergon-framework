@@ -219,24 +219,29 @@ def __run_task_sync(
 
     worker_id = kwargs.pop("worker_id", None)
 
+    execution_start_time = datetime.now().isoformat()
     task_exec_metadata = TaskExecMetadata(
         task_name=config.name,
         execution_id=str(uuid.uuid4()),
-        execution_start_time=datetime.now().isoformat(),
+        execution_start_time=execution_start_time,
         pid=os.getpid(),
         worker_id=worker_id,
     ).model_dump()
 
     __init_telemetry(config, task=config.task, task_exec_metadata=task_exec_metadata)
     tracer = tracing.get_tracer(__name__)
+    logger = logging.getLogger()
 
     instance = None
+
+    logger.info(f"Task {config.name} started at {execution_start_time}.")
 
     with tracer.start_as_current_span(
         f"{config.task.__name__}.run",
         attributes={"task.execution.id": task_exec_metadata["execution_id"]},
     ):
         try:
+            logger.info("Initializing connectors...")
             connectors = {}
             with tracer.start_as_current_span(
                 f"{config.task.__name__}.connectors.init",
@@ -249,6 +254,7 @@ def __run_task_sync(
                     ):
                         connectors[name] = cfg.connector(*cfg.args, **cfg.kwargs)
 
+            logger.info("Initializing services...")
             services = {}
             with tracer.start_as_current_span(
                 f"{config.task.__name__}.services.init",
@@ -265,6 +271,7 @@ def __run_task_sync(
                 f"{config.task.__name__}.instance.init",
                 attributes={"task.execution.id": task_exec_metadata["execution_id"]},
             ):
+                logger.info("Creating task instance...")
                 instance = config.task(
                     connectors=connectors,
                     services=services,
@@ -276,6 +283,7 @@ def __run_task_sync(
                 )
 
             if mode == "transaction":
+                logger.info("Running task in transaction execution mode...")
                 __run_transaction_sync(
                     instance=instance,
                     policy=kwargs.get("policy"),
@@ -287,6 +295,7 @@ def __run_task_sync(
                     f"{config.task.__name__}.execute",
                     attributes={"task.execution.id": task_exec_metadata["execution_id"]},
                 ):
+                    logger.info("Running task in full execution mode...")
                     instance.execute()
 
         finally:
@@ -295,6 +304,7 @@ def __run_task_sync(
                     f"{config.task.__name__}.exit",
                     attributes={"task.execution.id": task_exec_metadata["execution_id"]},
                 ):
+                    logger.info(f"Exiting task {config.name}...")
                     instance.exit()
 
 

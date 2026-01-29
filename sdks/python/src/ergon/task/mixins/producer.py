@@ -189,12 +189,12 @@ class ProducerMixin(ABC):
             # ============================================================
             #  SUBMIT FUNCTION
             # ============================================================
-            def submit_start_producing(transaction: connector.Transaction, policy: policies.ProducerPolicy):
+            def submit_start_producing(tr, pol):
                 return helpers.run_fn(
-                    fn=lambda: self._start_producing(transaction=transaction, policy=policy),
+                    fn=lambda: self._start_producing(transaction=tr, policy=pol),
                     executor=executor,
                     trace_name=f"{self.__class__.__name__}.start_producing",
-                    trace_attrs={"transaction_id": transaction.id},
+                    trace_attrs={"transaction_id": tr.id},
                 )
 
             # ============================================================
@@ -208,15 +208,18 @@ class ProducerMixin(ABC):
                     batch_number=batch_number,
                     batch_size=len(batch),
                 )
-                _, count = helpers.run_concurrently(
-                    data=batch,
-                    callback=lambda tr: (tr, policy),
-                    submit_fn=submit_start_producing,
+
+                def submissions():
+                    for tr in batch:
+                        yield lambda tr=tr: submit_start_producing(tr, policy)
+
+                count = helpers.multithread_execute(
+                    submissions=submissions(),
                     concurrency=policy.loop.concurrency.value,
                     limit=policy.loop.limit,
-                    count=processed,
-                    timeout=policy.loop.transaction_timeout,
+                    timeout=policy.transaction_runtime.timeout,
                 )
+
                 processed += count
 
                 if policy.loop.limit and processed >= policy.loop.limit:

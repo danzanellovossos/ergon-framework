@@ -280,53 +280,69 @@ def multithread_execute(
     # ============================================================
     # INITIAL FILL
     # ============================================================
+    logger.debug(f"Multithread execute method called with concurrency {concurrency} and limit {limit}.")
+
     while len(in_flight) < concurrency:
+        logger.debug(f"Initial fill: in_flight={len(in_flight)}, completed={completed}, limit={limit}")
         if limit is not None and completed + len(in_flight) >= limit:
+            logger.debug("Initial fill: limit reached, breaking loop")
             break
         try:
+            logger.debug("Initial fill: submitting next submission")
             submit = next(submit_iter)
         except StopIteration:
+            logger.debug("Initial fill: no more submissions, breaking loop")
             break
         try:
+            logger.debug("Initial fill: adding submission to in_flight")
             in_flight.add(submit())
         except Exception as e:
             logger.error(f"Submission failed before execution: {e}")
+            logger.error("Initial fill: submission failed, breaking loop")
+            break
 
     # ============================================================
     # MAIN LOOP
     # ============================================================
     while in_flight:
+        logger.debug(f"Main loop: in_flight={len(in_flight)}, completed={completed}, limit={limit}")
         done, in_flight = futures.wait(
             in_flight,
             return_when=futures.FIRST_COMPLETED,
             timeout=timeout,
         )
-
+        logger.debug(f"Main loop: done={len(done)}, in_flight={len(in_flight)}")
         for fut in done:
             try:
                 fut.result()
+                logger.debug("Main loop: execution completed")
             except futures.TimeoutError:
-                logger.error("Execution timeout")
+                logger.error("Main loop: execution timeout")
             except Exception as e:
-                logger.error(f"Execution error: {e}")
+                logger.error(f"Main loop: execution error: {e}")
             finally:
                 completed += 1
-
+                logger.debug(f"Main loop: execution completed, incrementing completed count to {completed}")
         # ============================================================
         # REFILL
         # ============================================================
         while len(in_flight) < concurrency:
             if limit is not None and completed + len(in_flight) >= limit:
+                logger.debug("Refill: limit reached, breaking loop")
                 break
             try:
+                logger.debug("Refill: submitting next submission")
                 submit = next(submit_iter)
             except StopIteration:
+                logger.debug("Refill: no more submissions, breaking loop")
                 break
             try:
+                logger.debug("Refill: adding submission to in_flight")
                 in_flight.add(submit())
             except Exception as e:
-                logger.error(f"Submission failed before execution: {e}")
-
+                logger.error(f"Refill: submission failed: {e}, breaking loop")
+                break
+    logger.debug(f"Multithread execute method finished with {completed} completed submissions")
     return completed
 
 
