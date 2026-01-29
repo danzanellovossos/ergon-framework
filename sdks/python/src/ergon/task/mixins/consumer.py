@@ -3,6 +3,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from concurrent import futures
+from datetime import datetime
 from typing import Any, List
 
 from opentelemetry import context as otel_context
@@ -216,10 +217,15 @@ class ConsumerMixin(ABC):
             policy = policies.ConsumerPolicy()
 
         def _consume():
+
+            start_time_iso = datetime.now().isoformat()
             start_time = time.perf_counter()
             processed = 0
             empty_count = 0
             batch_number = 0
+
+            logger.info(f"Consume loop started at {start_time_iso}")
+            logger.debug(f"Consume loop running with loop policy: {policy.loop.model_dump_json(indent=2)}")
 
             conn = self._resolve_connector(policy.fetch.connector_name)
             executor = futures.ThreadPoolExecutor(max_workers=policy.loop.concurrency.value)
@@ -241,7 +247,7 @@ class ConsumerMixin(ABC):
                 # -------------------------
                 # FETCH
                 # -------------------------
-                logger.info(f"Fetching transactions for batch {batch_number} with policy {policy.fetch}")
+                logger.info(f"Fetching transactions batch with fetch policy: {policy.fetch.model_dump_json(indent=2)}")
                 success, result = self._handle_fetch(conn, policy.fetch)
                 if not success:
                     logger.error(f"Fetch failed → {result}")
@@ -253,16 +259,19 @@ class ConsumerMixin(ABC):
                 # EMPTY QUEUE HANDLING
                 # -------------------------
                 if not transactions:
-                    logger.info(f"Empty queue detected for batch {batch_number}")
+
+                    logger.info(f"Empty fetch detected at {datetime.now().isoformat()}")
                     if not policy.loop.streaming:
                         logger.info("Non-streaming mode detected, breaking loop")
                         break
-                    logger.info(f"{empty_count} consecutive empty queue detections so far")
-                    # Record empty queue wait metric
+
+                    logger.info(f"{empty_count} consecutive empty fetch detections so far")
+
                     mixin_metrics.record_consumer_empty_queue_wait(
                         task_name=getattr(self, "name", self.__class__.__name__),
                         wait_count=empty_count,
                     )
+
                     utils.backoff(
                         policy.fetch.empty.backoff,
                         policy.fetch.empty.backoff_multiplier,
@@ -273,6 +282,8 @@ class ConsumerMixin(ABC):
                     continue
 
                 empty_count = 0
+
+                logger.info(f"{len(transactions)} transactions fetched at {datetime.now().isoformat()}")
 
                 # Record batch metric
                 mixin_metrics.record_consumer_batch(
@@ -290,7 +301,7 @@ class ConsumerMixin(ABC):
                 else:
                     batch_context = None  # Use current context
 
-                logger.info(f"Starting processing batch {batch_number} with {len(transactions)} transactions.")
+                logger.info(f"Starting batch processing with {len(transactions)} transactions.")
                 with tracer.start_as_current_span(
                     f"{self.__class__.__name__}.process_batch",
                     context=batch_context,
@@ -304,6 +315,11 @@ class ConsumerMixin(ABC):
                     def submissions():
                         for tr in transactions:
                             yield lambda tr=tr: submit_start_processing(tr, policy)
+                    
+                    logger.debug(
+                        f"Submitting {len(transactions)} transactions for processing "
+                        f"with concurrency policy: {policy.loop.concurrency.model_dump_json(indent=2)}."
+                    )
 
                     count = helpers.multithread_execute(
                         submissions=submissions(),
