@@ -217,7 +217,6 @@ class ConsumerMixin(ABC):
             policy = policies.ConsumerPolicy()
 
         def _consume():
-
             start_time_iso = datetime.now().isoformat()
             start_time = time.perf_counter()
             processed = 0
@@ -259,7 +258,6 @@ class ConsumerMixin(ABC):
                 # EMPTY QUEUE HANDLING
                 # -------------------------
                 if not transactions:
-
                     logger.info(f"Empty fetch detected at {datetime.now().isoformat()}")
                     if not policy.loop.streaming:
                         logger.info("Non-streaming mode detected, breaking loop")
@@ -315,7 +313,7 @@ class ConsumerMixin(ABC):
                     def submissions():
                         for tr in transactions:
                             yield lambda tr=tr: submit_start_processing(tr, policy)
-                    
+
                     logger.debug(
                         f"Submitting {len(transactions)} transactions for processing "
                         f"with concurrency policy: {policy.loop.concurrency.model_dump_json(indent=2)}."

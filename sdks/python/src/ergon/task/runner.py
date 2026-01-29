@@ -1,4 +1,3 @@
-import logging
 import asyncio
 import os
 import signal
@@ -208,6 +207,7 @@ def __run_transaction_sync(
 # SYNC TASK EXECUTION
 # =============================================================
 
+
 def __run_task_sync(
     config: TaskConfig,
     mode: Literal["task", "transaction"] = "task",
@@ -231,7 +231,7 @@ def __run_task_sync(
     __init_telemetry(config, task=config.task, task_exec_metadata=task_exec_metadata)
     tracer = tracing.get_tracer(__name__)
     logger = logging.getLogger()
-    
+
     instance = None
 
     logger.info(f"Task {config.name} started at {execution_start_time}.")
@@ -283,7 +283,7 @@ def __run_task_sync(
                 )
 
             if mode == "transaction":
-                logger.info(f"Running task in transaction execution mode...")
+                logger.info("Running task in transaction execution mode...")
                 __run_transaction_sync(
                     instance=instance,
                     policy=kwargs.get("policy"),
@@ -295,7 +295,7 @@ def __run_task_sync(
                     f"{config.task.__name__}.execute",
                     attributes={"task.execution.id": task_exec_metadata["execution_id"]},
                 ):
-                    logger.info(f"Running task in full execution mode...")
+                    logger.info("Running task in full execution mode...")
                     instance.execute()
 
         finally:

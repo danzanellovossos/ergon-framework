@@ -197,7 +197,6 @@ class ProducerMixin(ABC):
                     trace_attrs={"transaction_id": tr.id},
                 )
 
-
             # ============================================================
             #  PRODUCE LOOP
             # ============================================================
@@ -209,6 +208,7 @@ class ProducerMixin(ABC):
                     batch_number=batch_number,
                     batch_size=len(batch),
                 )
+
                 def submissions():
                     for tr in batch:
                         yield lambda tr=tr: submit_start_producing(tr, policy)
