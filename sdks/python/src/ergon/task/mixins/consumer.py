@@ -282,8 +282,7 @@ class ConsumerMixin(ABC):
                 empty_count = 0
 
                 logger.info(
-                    f"{len(transactions)} transaction{'' if len(transactions) == 1 else 's'}"
-                    f"fetched from fetch handler"
+                    f"{len(transactions)} transaction{'' if len(transactions) == 1 else 's'}fetched from fetch handler"
                 )
 
                 # Record batch metric
@@ -308,7 +307,7 @@ class ConsumerMixin(ABC):
                     f"from fetch handler with "
                     f"with concurrency policy: {policy.loop.concurrency.model_dump_json(indent=2)}."
                 )
-                
+
                 with tracer.start_as_current_span(
                     f"{self.__class__.__name__}.process_batch",
                     context=batch_context,
