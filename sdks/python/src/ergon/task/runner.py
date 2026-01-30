@@ -230,7 +230,7 @@ def __run_task_sync(
 
     __init_telemetry(config, task=config.task, task_exec_metadata=task_exec_metadata)
     tracer = tracing.get_tracer(__name__)
-    logger = logging.getLogger()
+    logger = logging.get_logger(__name__)
 
     instance = None
 

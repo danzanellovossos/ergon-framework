@@ -263,7 +263,7 @@ class ConsumerMixin(ABC):
                         logger.info("Non-streaming mode detected, breaking loop")
                         break
 
-                    logger.info(f"{empty_count} consecutive empty fetch detections so far")
+                    logger.debug(f"{empty_count} consecutive empty fetches so far")
 
                     mixin_metrics.record_consumer_empty_queue_wait(
                         task_name=getattr(self, "name", self.__class__.__name__),
@@ -281,7 +281,10 @@ class ConsumerMixin(ABC):
 
                 empty_count = 0
 
-                logger.info(f"{len(transactions)} transactions fetched at {datetime.now().isoformat()}")
+                logger.info(
+                    f"{len(transactions)} transaction{'' if len(transactions) == 1 else 's'}"
+                    f"fetched from fetch handler"
+                )
 
                 # Record batch metric
                 mixin_metrics.record_consumer_batch(
@@ -299,7 +302,13 @@ class ConsumerMixin(ABC):
                 else:
                     batch_context = None  # Use current context
 
-                logger.info(f"Starting batch processing with {len(transactions)} transactions.")
+                logger.info(
+                    f"Starting batch processing of "
+                    f"{len(transactions)} transaction{'' if len(transactions) == 1 else 's'} "
+                    f"from fetch handler with "
+                    f"with concurrency policy: {policy.loop.concurrency.model_dump_json(indent=2)}."
+                )
+                
                 with tracer.start_as_current_span(
                     f"{self.__class__.__name__}.process_batch",
                     context=batch_context,

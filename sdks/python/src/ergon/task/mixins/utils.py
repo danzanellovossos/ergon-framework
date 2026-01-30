@@ -41,8 +41,7 @@ def backoff(backoff: float, multiplier: float, cap: float, attempt: int):
             estimated_wake_time_iso = _get_wake_time_iso(delay)
             logger.info(f"Sleeping for {delay} seconds until {estimated_wake_time_iso}")
             time.sleep(delay)
-            wake_time_iso = _get_wake_time_iso(0)
-            logger.info(f"Woke up from sleep at {wake_time_iso}, estimated wake time was {estimated_wake_time_iso}")
+            logger.info(f"Woke up from {delay} second{'' if delay == 1 else 's'} sleep")
 
 
 async def backoff_async(backoff: float, multiplier: float, cap: float, attempt: int):
@@ -53,5 +52,4 @@ async def backoff_async(backoff: float, multiplier: float, cap: float, attempt: 
             estimated_wake_time_iso = _get_wake_time_iso(delay)
             logger.info(f"Sleeping for {delay} seconds until {estimated_wake_time_iso}")
             await asyncio.sleep(delay)
-            wake_time_iso = _get_wake_time_iso(0)
-            logger.info(f"Woke up from sleep at {wake_time_iso}, estimated wake time was {estimated_wake_time_iso}")
+            logger.info(f"Woke up from {delay} second{'' if delay == 1 else 's'} sleep")
