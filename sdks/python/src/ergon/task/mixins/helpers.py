@@ -294,11 +294,9 @@ def multithread_execute(
             logger.debug("Initial fill: no more submissions, breaking loop")
             break
         try:
-            logger.debug("Initial fill: adding submission to in_flight")
             in_flight.add(submit())
         except Exception as e:
-            logger.error(f"Submission failed before execution: {e}")
-            logger.error("Initial fill: submission failed, breaking loop")
+            logger.error(f"Submission failed before execution: {e}, breaking loop")
             break
 
     # ============================================================

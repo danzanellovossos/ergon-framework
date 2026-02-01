@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import time
+import math
 from datetime import datetime
 
 from ... import telemetry
@@ -18,7 +19,6 @@ def _get_wake_time_iso(delay: float) -> str:
 #  BACKOFF / SLEEP HELPERS
 # ============================================================
 def compute_backoff(backoff: float, multiplier: float, cap: float, attempt: int) -> float:
-    """Compute exponential backoff with multiplier and optional cap."""
     with tracer.start_as_current_span("compute_backoff"):
         logger.info(
             f"Computing backoff with arguments: "
@@ -27,8 +27,19 @@ def compute_backoff(backoff: float, multiplier: float, cap: float, attempt: int)
             f"multiplier {multiplier}, "
             f"and cap {cap}"
         )
-        delay = backoff * (multiplier**attempt)
+
+        if cap > 0 and multiplier > 1 and backoff > 0:
+            # max attempt that won't exceed cap
+            max_attempt = math.floor(
+                math.log(cap / backoff, multiplier)
+            ) if cap > backoff else 0
+            safe_attempt = min(attempt, max_attempt)
+        else:
+            safe_attempt = attempt
+
+        delay = backoff * (multiplier ** safe_attempt)
         computed_delay = min(delay, cap) if cap > 0 else delay
+
         logger.info(f"Computed backoff: {computed_delay} seconds")
         return computed_delay
 

@@ -180,7 +180,7 @@ def _build_console_handler_dict(cfg: ConsoleLogHandler, *args, **kwargs):
 def _resolve_filename(cfg, *args, **kwargs):
     template = cfg.filename
     task = kwargs["task"]
-    metadata = kwargs["metadata"]
+    metadata = metadata["task_name"]
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
     final = template.format(
