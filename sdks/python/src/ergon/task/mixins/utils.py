@@ -1,8 +1,8 @@
 # utils.py
 import asyncio
 import logging
-import time
 import math
+import time
 from datetime import datetime
 
 from ... import telemetry
@@ -30,14 +30,12 @@ def compute_backoff(backoff: float, multiplier: float, cap: float, attempt: int)
 
         if cap > 0 and multiplier > 1 and backoff > 0:
             # max attempt that won't exceed cap
-            max_attempt = math.floor(
-                math.log(cap / backoff, multiplier)
-            ) if cap > backoff else 0
+            max_attempt = math.floor(math.log(cap / backoff, multiplier)) if cap > backoff else 0
             safe_attempt = min(attempt, max_attempt)
         else:
             safe_attempt = attempt
 
-        delay = backoff * (multiplier ** safe_attempt)
+        delay = backoff * (multiplier**safe_attempt)
         computed_delay = min(delay, cap) if cap > 0 else delay
 
         logger.info(f"Computed backoff: {computed_delay} seconds")
