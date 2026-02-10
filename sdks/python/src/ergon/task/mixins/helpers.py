@@ -1,6 +1,7 @@
 # helper.py
 import asyncio
 import logging
+import time
 from concurrent import futures
 from typing import Callable, Iterable, Optional
 
@@ -272,75 +273,90 @@ def multithread_execute(
         Number of completed submissions
     """
 
-    in_flight: set[futures.Future] = set()
+    in_flight: dict[futures.Future, float] = {}
     completed = 0
 
     submit_iter = iter(submissions)
 
+    logger.debug(f"Multithread execute called with concurrency={concurrency}, limit={limit}, timeout={timeout}")
+
     # ============================================================
     # INITIAL FILL
     # ============================================================
-    logger.debug(f"Multithread execute method called with concurrency {concurrency} and limit {limit}.")
-
     while len(in_flight) < concurrency:
-        logger.debug(f"Initial fill: in_flight={len(in_flight)}, completed={completed}, limit={limit}")
         if limit is not None and completed + len(in_flight) >= limit:
-            logger.debug("Initial fill: limit reached, breaking loop")
             break
+
         try:
-            logger.debug("Initial fill: submitting next submission")
             submit = next(submit_iter)
         except StopIteration:
-            logger.debug("Initial fill: no more submissions, breaking loop")
             break
+
         try:
-            in_flight.add(submit())
+            fut = submit()
+            in_flight[fut] = time.perf_counter()
         except Exception as e:
-            logger.error(f"Submission failed before execution: {e}, breaking loop")
+            logger.error(f"Submission failed before execution: {e}")
             break
 
     # ============================================================
     # MAIN LOOP
     # ============================================================
     while in_flight:
-        logger.debug(f"Main loop: in_flight={len(in_flight)}, completed={completed}, limit={limit}")
-        done, in_flight = futures.wait(
-            in_flight,
+        now = time.perf_counter()
+
+        # Wait briefly for *any* completion
+        done, _ = futures.wait(
+            in_flight.keys(),
             return_when=futures.FIRST_COMPLETED,
             timeout=timeout,
         )
-        logger.debug(f"Main loop: done={len(done)}, in_flight={len(in_flight)}")
+
+        # ----------------------------
+        # HANDLE COMPLETED FUTURES
+        # ----------------------------
         for fut in done:
+            start = in_flight.pop(fut, None)
             try:
                 fut.result()
-                logger.debug("Main loop: execution completed")
+                logger.debug("Execution completed")
             except futures.TimeoutError:
-                logger.error("Main loop: execution timeout")
+                logger.error("Execution timeout (future)")
             except Exception as e:
-                logger.error(f"Main loop: execution error: {e}")
+                logger.error(f"Execution error: {e}")
             finally:
                 completed += 1
-                logger.debug(f"Main loop: execution completed, incrementing completed count to {completed}")
+
+        # ----------------------------
+        # EVICT TIMED-OUT FUTURES
+        # ----------------------------
+        if timeout is not None:
+            for fut, start in list(in_flight.items()):
+                if now - start > timeout:
+                    logger.error("Execution timeout (scheduler eviction)")
+                    in_flight.pop(fut)
+                    completed += 1
+
         # ============================================================
         # REFILL
         # ============================================================
         while len(in_flight) < concurrency:
             if limit is not None and completed + len(in_flight) >= limit:
-                logger.debug("Refill: limit reached, breaking loop")
                 break
+
             try:
-                logger.debug("Refill: submitting next submission")
                 submit = next(submit_iter)
             except StopIteration:
-                logger.debug("Refill: no more submissions, breaking loop")
                 break
+
             try:
-                logger.debug("Refill: adding submission to in_flight")
-                in_flight.add(submit())
+                fut = submit()
+                in_flight[fut] = time.perf_counter()
             except Exception as e:
-                logger.error(f"Refill: submission failed: {e}, breaking loop")
+                logger.error(f"Submission failed: {e}")
                 break
-    logger.debug(f"Multithread execute method finished with {completed} completed submissions")
+
+    logger.debug(f"Multithread execute finished with {completed} completed submissions")
     return completed
 
 

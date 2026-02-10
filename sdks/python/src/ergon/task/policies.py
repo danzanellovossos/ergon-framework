@@ -43,10 +43,11 @@ def _normalize_bool(v):
 
 class ConcurrencyPolicy(BaseModel):
     value: int = Field(default=1, ge=1)
+    headroom: int = Field(default=0, ge=0)
     min: int = Field(default=1, ge=1)
     max: int = Field(default=1, ge=1)
 
-    @field_validator("value", "min", "max", mode="before")
+    @field_validator("value", "headroom", "min", "max", mode="before")
     @classmethod
     def _normalize_ints(cls, v):
         return _normalize_optional(v)
