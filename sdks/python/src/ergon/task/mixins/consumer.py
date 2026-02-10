@@ -227,7 +227,7 @@ class ConsumerMixin(ABC):
             logger.debug(f"Consume loop running with loop policy: {policy.loop.model_dump_json(indent=2)}")
 
             conn = self._resolve_connector(policy.fetch.connector_name)
-            executor = futures.ThreadPoolExecutor(max_workers=policy.loop.concurrency.value)
+            executor = futures.ThreadPoolExecutor(max_workers=policy.loop.concurrency.value + policy.loop.concurrency.headroom)
 
             ctx = otel_context.Context()
 
