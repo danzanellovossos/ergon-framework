@@ -1,7 +1,7 @@
 # helper.py
-import time
 import asyncio
 import logging
+import time
 from concurrent import futures
 from typing import Callable, Iterable, Optional
 
@@ -278,9 +278,7 @@ def multithread_execute(
 
     submit_iter = iter(submissions)
 
-    logger.debug(
-        f"Multithread execute called with concurrency={concurrency}, limit={limit}, timeout={timeout}"
-    )
+    logger.debug(f"Multithread execute called with concurrency={concurrency}, limit={limit}, timeout={timeout}")
 
     # ============================================================
     # INITIAL FILL
