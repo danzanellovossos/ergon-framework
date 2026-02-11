@@ -341,6 +341,15 @@ class ConsumerMixin(ABC):
                 if policy.loop.limit and processed >= policy.loop.limit:
                     break
 
+                if policy.fetch.batch.interval and policy.fetch.batch.interval.backoff > 0:
+                    logger.info("Batch interval detected, triggering backoff")
+                    utils.backoff(
+                        backoff=policy.fetch.batch.interval.backoff,
+                        multiplier=policy.fetch.batch.interval.backoff_multiplier,
+                        cap=policy.fetch.batch.interval.backoff_cap,
+                        attempt=0,
+                    )
+
             executor.shutdown()
             elapsed_time = time.perf_counter() - start_time
             logger.info(f"[Consume] Finished. Processed={processed} in {elapsed_time:.2f} seconds")
