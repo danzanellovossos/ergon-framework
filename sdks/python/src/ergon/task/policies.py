@@ -43,12 +43,31 @@ def _normalize_bool(v):
 
 class ConcurrencyPolicy(BaseModel):
     value: int = Field(default=1, ge=1)
+    headroom: int = Field(default=0, ge=0)
     min: int = Field(default=1, ge=1)
     max: int = Field(default=1, ge=1)
 
-    @field_validator("value", "min", "max", mode="before")
+    @field_validator("value", "headroom", "min", "max", mode="before")
     @classmethod
     def _normalize_ints(cls, v):
+        return _normalize_optional(v)
+
+
+class BatchIntervalPolicy(BaseModel):
+    backoff: float = Field(default=0.0, ge=0.0)
+    backoff_multiplier: float = Field(default=1.0, ge=0.0)
+    backoff_cap: float = Field(default=0.0, ge=0.0)
+    interval: float = Field(default=0.0, ge=0.0)
+
+    @field_validator(
+        "backoff",
+        "backoff_multiplier",
+        "backoff_cap",
+        "interval",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_numbers(cls, v):
         return _normalize_optional(v)
 
 
@@ -56,7 +75,7 @@ class BatchPolicy(BaseModel):
     size: int = Field(default=1, ge=1)
     min_size: int = Field(default=1, ge=1)
     max_size: int = Field(default=1, ge=1)
-    interval: float = Field(default=0.0, ge=0.0)
+    interval: BatchIntervalPolicy = Field(default_factory=BatchIntervalPolicy)
 
     @field_validator("size", "min_size", "max_size", "interval", mode="before")
     @classmethod

@@ -1,7 +1,9 @@
 from typing import Dict, Generator, List, Optional
 
-from ..connector import Connector
-from ..transaction import Transaction
+from ergon_framework import Connector, Transaction
+
+from src.ergon.connector import RabbitMQService
+
 from .models import RabbitmqClient
 from .service import RabbitMQService
 
