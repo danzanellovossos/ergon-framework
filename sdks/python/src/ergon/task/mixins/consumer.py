@@ -9,9 +9,9 @@ from typing import Any, List
 from opentelemetry import context as otel_context
 
 from ... import connector, telemetry
-from .. import base, exceptions, policies
-from . import helpers, producer, utils
+from .. import base, exceptions, helpers, policies, utils
 from . import metrics as mixin_metrics
+from . import producer
 
 logger = logging.getLogger(__name__)
 tracer = telemetry.tracing.get_tracer(__name__)

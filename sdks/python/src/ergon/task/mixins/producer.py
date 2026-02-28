@@ -7,8 +7,7 @@ from typing import Any, List
 from more_itertools import chunked
 
 from ... import connector, telemetry
-from .. import base, exceptions, policies
-from . import helpers
+from .. import base, exceptions, helpers, policies
 from . import metrics as mixin_metrics
 
 logger = logging.getLogger(__name__)

@@ -5,7 +5,7 @@ import math
 import time
 from datetime import datetime
 
-from ... import telemetry
+from .. import telemetry
 
 logger = logging.getLogger(__name__)
 tracer = telemetry.tracing.get_tracer(__name__)
