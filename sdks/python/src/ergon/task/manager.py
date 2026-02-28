@@ -27,7 +27,7 @@ class TaskManager:
         """
 
         # Validate task inheritance
-        if not issubclass(config.task, (BaseTask, BaseAsyncTask)):
+        if not issubclass(config.task, (BaseTask, BaseAsyncTask)):  # type: ignore[arg-type]
             raise TypeError(f"Task '{config.name}' must inherit from BaseTask or BaseAsyncTask. Got: {config.task}")
 
         # Duplicate check
@@ -78,7 +78,7 @@ class TaskManager:
     def list_tasks(self) -> List[str]:
         return list(self._registry.keys())
 
-    def get(self, name: str) -> TaskConfig:
+    def get(self, name: str) -> TaskConfig | None:
         return self._registry.get(name)
 
 

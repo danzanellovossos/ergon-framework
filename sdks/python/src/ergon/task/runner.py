@@ -7,7 +7,7 @@ import uuid
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from enum import IntEnum
-from typing import Literal
+from typing import Any, Literal
 
 from ..connector import Transaction
 from ..telemetry import logging, metrics, tracing
@@ -68,14 +68,14 @@ def get_shutdown_exit_code() -> ExitCode:
 # =============================================================
 
 
-def __init_telemetry(config: TaskConfig, task: object, task_exec_metadata: TaskExecMetadata):
-    if getattr(config, "logging", None):
+def __init_telemetry(config: TaskConfig, task: object, task_exec_metadata: dict[str, Any]):
+    if config.logging is not None:
         logging._apply_logging_config(cfg=config.logging, task=task, metadata=task_exec_metadata)
 
-    if getattr(config, "tracing", None):
+    if config.tracing is not None:
         tracing._apply_tracing_config(cfg=config.tracing, metadata=task_exec_metadata)
 
-    if getattr(config, "metrics", None):
+    if config.metrics is not None:
         metrics._apply_metrics_config(cfg=config.metrics, metadata=task_exec_metadata)
 
 
@@ -87,8 +87,8 @@ def __init_telemetry(config: TaskConfig, task: object, task_exec_metadata: TaskE
 async def __run_transaction_async(
     instance: BaseAsyncTask,
     policy: str,
-    transaction: Transaction = None,
-    transaction_id: str = None,
+    transaction: Transaction | None = None,
+    transaction_id: str | None = None,
 ):
     policy_obj = next((p for p in instance.policies if p.name == policy), None)
     if not policy_obj:
@@ -98,10 +98,10 @@ async def __run_transaction_async(
         raise ValueError("Either transaction or transaction_id must be provided")
 
     if transaction_id:
-        conn = instance._resolve_connector(policy_obj.fetch.connector_name)
+        conn = instance._resolve_connector(policy_obj.fetch.connector_name)  # type: ignore[attr-defined]
         transaction = await conn.fetch_transaction_by_id_async(transaction_id)
 
-    success, result = await instance._start_processing(transaction, policy_obj)
+    success, result = await instance._start_processing(transaction, policy_obj)  # type: ignore[attr-defined]
     if not success:
         raise result
     return result
@@ -118,7 +118,7 @@ async def __run_task_async(
     *args,
     **kwargs,
 ):
-    if not issubclass(config.task, BaseAsyncTask):
+    if not issubclass(config.task, BaseAsyncTask):  # type: ignore[arg-type]
         raise ValueError(f"Invalid async task: {config.task}")
 
     worker_id = kwargs.pop("worker_id", None)
@@ -137,7 +137,7 @@ async def __run_task_async(
     instance = None
 
     try:
-        async with tracer.start_as_current_span(
+        async with tracer.start_as_current_span(  # type: ignore[attr-defined]
             f"{config.task.__name__}.run",
             attributes={"task.execution.id": task_exec_metadata["execution_id"]},
         ):
@@ -145,7 +145,7 @@ async def __run_task_async(
             for name, cfg in config.connectors.items():
                 conn = cfg.connector(*cfg.args, **cfg.kwargs)
                 if hasattr(conn, "init_async"):
-                    await conn.init_async()
+                    await conn.init_async()  # type: ignore[attr-defined]
                 connectors[name] = conn
 
             services = {name: cfg.service(*cfg.args, **cfg.kwargs) for name, cfg in config.services.items()}
@@ -163,7 +163,7 @@ async def __run_task_async(
             if mode == "transaction":
                 await __run_transaction_async(
                     instance=instance,
-                    policy=kwargs.get("policy"),
+                    policy=kwargs.get("policy"),  # type: ignore[arg-type]
                     transaction=kwargs.get("transaction"),
                     transaction_id=kwargs.get("transaction_id"),
                 )
@@ -183,8 +183,8 @@ async def __run_task_async(
 def __run_transaction_sync(
     instance: BaseTask,
     policy: str,
-    transaction: Transaction = None,
-    transaction_id: str = None,
+    transaction: Transaction | None = None,
+    transaction_id: str | None = None,
 ):
     policy_obj = next((p for p in instance.policies if p.name == policy), None)
     if not policy_obj:
@@ -194,10 +194,10 @@ def __run_transaction_sync(
         raise ValueError("Either transaction or transaction_id must be provided")
 
     if transaction_id:
-        conn = instance._resolve_connector(policy_obj.fetch.connector_name)
+        conn = instance._resolve_connector(policy_obj.fetch.connector_name)  # type: ignore[attr-defined]
         transaction = conn.fetch_transaction_by_id(transaction_id)
 
-    success, result = instance._start_processing(transaction, policy_obj)
+    success, result = instance._start_processing(transaction, policy_obj)  # type: ignore[attr-defined]
     if not success:
         raise result
     return result
@@ -214,7 +214,7 @@ def __run_task_sync(
     *args,
     **kwargs,
 ):
-    if not issubclass(config.task, BaseTask):
+    if not issubclass(config.task, BaseTask):  # type: ignore[arg-type]
         raise ValueError(f"Invalid sync task: {config.task}")
 
     worker_id = kwargs.pop("worker_id", None)
@@ -286,7 +286,7 @@ def __run_task_sync(
                 logger.info("Running task in transaction execution mode...")
                 __run_transaction_sync(
                     instance=instance,
-                    policy=kwargs.get("policy"),
+                    policy=kwargs.get("policy"),  # type: ignore[arg-type]
                     transaction=kwargs.get("transaction", None),
                     transaction_id=kwargs.get("transaction_id", None),
                 )
@@ -327,7 +327,7 @@ def run_task(
     """
 
     _install_signal_handlers()
-    is_async = issubclass(config.task, BaseAsyncTask)
+    is_async = issubclass(config.task, BaseAsyncTask)  # type: ignore[arg-type]
 
     # ---------------------------------------------------------
     # SINGLE PROCESS

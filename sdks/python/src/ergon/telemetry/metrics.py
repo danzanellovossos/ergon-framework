@@ -70,7 +70,7 @@ def _apply_metrics_config(cfg: MetricsConfig, metadata: dict):
         # For push-based metrics, exporters are passed inside PeriodicExportingMetricReader
         for exporter in r.exporters:
             reader = reader_cls(exporter=exporter, **r.config)
-            provider.add_metric_reader(reader)
+            provider.add_metric_reader(reader)  # type: ignore[attr-defined]
 
     # 4. Register globally
     set_meter_provider(provider)

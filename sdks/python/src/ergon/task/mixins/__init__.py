@@ -1,13 +1,11 @@
 from . import metrics
-from .consumer import AsyncConsumerTask, AsyncHybridTask, ConsumerTask, HybridTask
-from .producer import AsyncProducerTask, ProducerTask
+from .consumer import AsyncConsumerTask, ConsumerTask, HybridTask
+from .producer import ProducerTask
 
 __all__ = [
     "ConsumerTask",
     "ProducerTask",
     "AsyncConsumerTask",
-    "AsyncProducerTask",
-    "AsyncHybridTask",
     "HybridTask",
     "metrics",
 ]

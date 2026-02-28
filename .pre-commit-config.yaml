@@ -8,3 +8,19 @@ repos:
       - id: ruff
         args: ["--fix"]
         files: ^sdks/python/
+
+  - repo: local
+    hooks:
+      - id: pyright
+        name: pyright
+        entry: bash -c 'cd sdks/python && uv run pyright'
+        language: system
+        files: ^sdks/python/.*\.py$
+        pass_filenames: false
+
+      - id: pytest
+        name: pytest
+        entry: bash -c 'cd sdks/python && uv run pytest -v'
+        language: system
+        files: ^sdks/python/.*\.py$
+        pass_filenames: false

@@ -2,6 +2,7 @@ import argparse
 import json
 import shutil
 import sys
+import uuid
 from pathlib import Path
 from typing import List, Optional
 
@@ -120,12 +121,12 @@ def ergon(tasks: Optional[List[TaskConfig]] = None):
     # LIST TASKS
     # -------------------------------------------------------------
     if args.command == "list":
-        tasks = manager.list_tasks()
-        if not tasks:
+        task_names = manager.list_tasks()
+        if not task_names:
             print("No tasks registered. Did you import your config files?")
         else:
             print("Registered tasks:")
-            for t in tasks:
+            for t in task_names:
                 print(f"  - {t}")
         return
 
@@ -146,7 +147,7 @@ def ergon(tasks: Optional[List[TaskConfig]] = None):
             print(f"[ERROR] Invalid JSON payload: {exc}")
             sys.exit(2)
 
-        transaction = Transaction(payload=payload)
+        transaction = Transaction(id=str(uuid.uuid4()), payload=payload)
         manager.process_transaction(
             task=args.task,
             policy=args.policy,

@@ -23,11 +23,11 @@ class Connector(ABC):
         """
         Fetches a transaction by its id for individual processing.
         """
-        pass
+        raise NotImplementedError
 
     def get_transactions_count(self, *args, **kwargs) -> int:
         """Get the total number of transactions in the connector target system."""
-        pass
+        raise NotImplementedError
 
 
 # ---------------------------------------------------------
@@ -46,11 +46,11 @@ class AsyncConnector(ABC):
 
     async def fetch_transaction_by_id_async(self, transaction_id: str, *args, **kwargs) -> transaction.Transaction:
         """Fetches a transaction by its id for individual processing asynchronously."""
-        pass
+        raise NotImplementedError
 
     async def get_transactions_count_async(self, *args, **kwargs) -> int:
         """Get the total number of transactions in the connector target system asynchronously."""
-        pass
+        raise NotImplementedError
 
 
 # ---------------------------------------------------------

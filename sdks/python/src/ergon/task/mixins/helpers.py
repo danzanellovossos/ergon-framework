@@ -2,8 +2,9 @@
 import asyncio
 import logging
 import time
+from collections.abc import Coroutine
 from concurrent import futures
-from typing import Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional, overload
 
 from opentelemetry import context
 
@@ -21,8 +22,8 @@ tracer = telemetry.tracing.get_tracer(__name__)
 def with_context(
     *args,
     fn: Callable,
-    ctx: context.Context = None,
-    trace_name: str = None,
+    ctx: context.Context | None = None,
+    trace_name: str | None = None,
     trace_attrs: dict = {},
     **kwargs,
 ):
@@ -33,7 +34,7 @@ def with_context(
 
     token = context.attach(ctx)
     try:
-        with tracer.start_as_current_span(trace_name, attributes=trace_attrs):
+        with tracer.start_as_current_span(trace_name or "", attributes=trace_attrs):
             return fn(*args, **kwargs)
     finally:
         context.detach(token)
@@ -49,8 +50,8 @@ def get_current_context():
 def run_with_context(
     *args,
     fn: Callable,
-    ctx: context.Context = None,
-    trace_name: str = None,
+    ctx: context.Context | None = None,
+    trace_name: str | None = None,
     trace_attrs: dict = {},
     **kwargs,
 ):
@@ -63,16 +64,55 @@ def run_with_context(
 # ============================================================
 #  RUN FN (SYNC EXECUTION FACTORY) - Works as function AND decorator
 # ============================================================
+@overload
 def run_fn(
-    *args,
-    fn: Optional[Callable] = None,
+    *args: Any,
+    fn: None = None,
+    retry: Optional[policies.RetryPolicy] = ...,
+    ctx: Optional[context.Context] = ...,
+    trace_name: Optional[str] = ...,
+    trace_attrs: dict = ...,
+    executor: Optional[futures.Executor] = ...,
+    **kwargs: Any,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]: ...
+
+
+@overload
+def run_fn(
+    *args: Any,
+    fn: Callable[..., Any],
+    retry: Optional[policies.RetryPolicy] = ...,
+    ctx: Optional[context.Context] = ...,
+    trace_name: Optional[str] = ...,
+    trace_attrs: dict = ...,
+    executor: None = ...,
+    **kwargs: Any,
+) -> tuple[bool, Any]: ...
+
+
+@overload
+def run_fn(
+    *args: Any,
+    fn: Callable[..., Any],
+    retry: Optional[policies.RetryPolicy] = ...,
+    ctx: Optional[context.Context] = ...,
+    trace_name: Optional[str] = ...,
+    trace_attrs: dict = ...,
+    executor: futures.Executor = ...,
+    **kwargs: Any,
+) -> futures.Future[tuple[bool, Any]]: ...
+
+
+def run_fn(
+    *args: Any,
+    fn: Optional[Callable[..., Any]] = None,
     retry: Optional[policies.RetryPolicy] = None,
     ctx: Optional[context.Context] = None,
     trace_name: Optional[str] = None,
-    trace_attrs: dict = {},
+    trace_attrs: dict[str, Any] = {},
     executor: Optional[futures.Executor] = None,
-    **kwargs,
-):
+    **kwargs: Any,
+) -> Callable[[Callable[..., Any]], Callable[..., Any]] | tuple[bool, Any] | futures.Future[tuple[bool, Any]]:
     """
     Execute a callable inside Ergon's execution envelope.
 
@@ -366,8 +406,8 @@ def multithread_execute(
 async def with_context_async(
     *args,
     fn: Callable,
-    ctx: context.Context = None,
-    trace_name: str = None,
+    ctx: context.Context | None = None,
+    trace_name: str | None = None,
     trace_attrs: dict = {},
     **kwargs,
 ):
@@ -381,7 +421,7 @@ async def with_context_async(
 
     token = context.attach(ctx)
     try:
-        with tracer.start_as_current_span(trace_name, attributes=trace_attrs):
+        with tracer.start_as_current_span(trace_name or "", attributes=trace_attrs):
             return await fn(*args, **kwargs)
     finally:
         context.detach(token)
@@ -393,8 +433,8 @@ async def with_context_async(
 async def run_with_context_async(
     *args,
     fn: Callable,
-    ctx: context.Context = None,
-    trace_name: str = None,
+    ctx: context.Context | None = None,
+    trace_name: str | None = None,
     trace_attrs: dict = {},
     **kwargs,
 ):
@@ -419,15 +459,39 @@ async def run_with_context_async(
 # ============================================================
 #  RUN FN (ASYNC EXECUTION FACTORY) — FUNCTION + DECORATOR
 # ============================================================
+@overload
 def run_fn_async(
-    *args,
-    fn: Optional[Callable] = None,
+    *args: Any,
+    fn: None = None,
+    retry: Optional[policies.RetryPolicy] = ...,
+    ctx: Optional[context.Context] = ...,
+    trace_name: Optional[str] = ...,
+    trace_attrs: dict = ...,
+    **kwargs: Any,
+) -> Callable[[Callable[..., Any]], Callable[..., Coroutine[Any, Any, Any]]]: ...
+
+
+@overload
+def run_fn_async(
+    *args: Any,
+    fn: Callable[..., Any],
+    retry: Optional[policies.RetryPolicy] = ...,
+    ctx: Optional[context.Context] = ...,
+    trace_name: Optional[str] = ...,
+    trace_attrs: dict = ...,
+    **kwargs: Any,
+) -> Coroutine[Any, Any, tuple[bool, Any]]: ...
+
+
+def run_fn_async(
+    *args: Any,
+    fn: Optional[Callable[..., Any]] = None,
     retry: Optional[policies.RetryPolicy] = None,
     ctx: Optional[context.Context] = None,
     trace_name: Optional[str] = None,
-    trace_attrs: dict = {},
-    **kwargs,
-):
+    trace_attrs: dict[str, Any] = {},
+    **kwargs: Any,
+) -> Callable[[Callable[..., Any]], Callable[..., Coroutine[Any, Any, Any]]] | Coroutine[Any, Any, tuple[bool, Any]]:
     """
     Async equivalent of run_fn.
 
@@ -513,7 +577,7 @@ def run_fn_async(
                 logger.error(f"[async] Error on attempt {attempt_no}: {e}")
 
             if attempt_no < retry.max_attempts:
-                await utils.sleep_async(
+                await utils.backoff_async(
                     retry.backoff,
                     retry.backoff_multiplier,
                     retry.backoff_cap,

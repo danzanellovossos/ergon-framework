@@ -12,6 +12,6 @@ class ServiceConfig(BaseModel):
     kwargs: keyword arguments passed to service's __init__
     """
 
-    service: object
+    service: type
     args: tuple[Any, ...] = ()
     kwargs: dict[str, Any] = {}
