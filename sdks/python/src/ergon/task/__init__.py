@@ -1,7 +1,6 @@
-from . import exceptions, mixins, policies
+from . import exceptions, helpers, mixins, policies, utils
 from .base import TaskConfig
 from .manager import manager
-from .mixins import helpers as helper
 
 __all__ = [
     "manager",
@@ -9,5 +8,6 @@ __all__ = [
     "mixins",
     "policies",
     "exceptions",
-    "helper",
+    "helpers",
+    "utils",
 ]

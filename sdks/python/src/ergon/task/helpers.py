@@ -8,9 +8,8 @@ from typing import Any, Callable, Iterable, Optional, overload
 
 from opentelemetry import context
 
-from ... import telemetry
-from .. import exceptions, policies
-from . import utils
+from .. import telemetry
+from . import exceptions, policies, utils
 
 logger = logging.getLogger(__name__)
 tracer = telemetry.tracing.get_tracer(__name__)
