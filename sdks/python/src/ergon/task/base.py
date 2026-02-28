@@ -120,7 +120,12 @@ class BaseTask(ABC, metaclass=TaskMeta):
     - ConsumeMixin
     """
 
-    name = "base"
+    name: str = "base"
+    connectors: Dict[str, Connector]
+    services: Dict[str, Any]
+    policies: List[Any]
+    worker_id: Optional[int]
+    task_config: Optional["TaskConfig"]
 
     def __init__(
         self,
@@ -161,7 +166,12 @@ class BaseAsyncTask(ABC, metaclass=TaskMeta):
     Behavior (async produce/consume) will be added via async mixins.
     """
 
-    name = "base_async"
+    name: str = "base_async"
+    connectors: Dict[str, Connector]
+    services: Dict[str, Any]
+    policies: List[Any]
+    worker_id: Optional[int]
+    task_config: Optional["TaskConfig"]
 
     def __init__(
         self,

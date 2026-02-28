@@ -18,7 +18,7 @@ class RabbitMQService:
         self.client = client
 
         self._connection: Optional[pika.BlockingConnection] = None
-        self._channel: Optional[pika.adapters.blocking_connection.BlockingChannel] = None
+        self._channel: Any = None
         self._connect()
 
     # ---------- Conexão / Canal ----------
@@ -33,11 +33,11 @@ class RabbitMQService:
         params = pika.ConnectionParameters(
             host=self.client.host,
             port=self.client.port,
-            virtual_host=self.client.virtual_host,
+            virtual_host=self.client.virtual_host or "/",
             credentials=pika.PlainCredentials(self.client.username, self.client.password),
             connection_attempts=self.client.connection_attempts,
             socket_timeout=self.client.socket_timeout,
-            heartbeat=self.client.heartbeat,
+            heartbeat=int(self.client.heartbeat) if self.client.heartbeat is not None else None,
         )
         self._connection = pika.BlockingConnection(params)
         self._channel = self._connection.channel()
@@ -76,7 +76,9 @@ class RabbitMQService:
         - delivery_tag
         - headers
         """
-        # self._connect()
+        assert self._connection is not None
+        assert self._channel is not None
+
         q = queue_name or self.client.queue_name
 
         buffer = deque()
@@ -127,7 +129,7 @@ class RabbitMQService:
 
         try:
             while len(buffer) < batch_size:
-                self._connection.process_data_events(time_limit=0.1)
+                self._connection.process_data_events(time_limit=0.1)  # type: ignore[union-attr, arg-type]
                 # se houver menos mensagem que o tamanho do batch sai do loop por timeout
                 if time.time() - start > timeout:
                     break
@@ -136,7 +138,8 @@ class RabbitMQService:
 
         return list(buffer)
 
-    def ack_msg(self, delivery_tag) -> int:
+    def ack_msg(self, delivery_tag) -> None:
+        assert self._channel is not None
         try:
             self._channel.basic_ack(delivery_tag=delivery_tag)
             logger.info(f"sucesso ao marcar como lida. tag {delivery_tag}")
@@ -152,6 +155,7 @@ class RabbitMQService:
             except ValueError:
                 raise ValueError("Delivery tag must be an integer.")
 
+        assert self._connection is not None
         logger.info(f"marcando mensagem como recebida. tag {delivery_tag}")
         ack = functools.partial(self.ack_msg, delivery_tag=delivery_tag)
         self._connection.add_callback_threadsafe(ack)
@@ -166,9 +170,9 @@ class RabbitMQService:
             return
 
         if self._channel.is_open:
-            rk = message.payload.get("queue_name") or self.client.queue_name
+            rk = message.payload.get("queue_name") or self.client.queue_name  # type: ignore[attr-defined]
 
-            raw = message.payload.get("body")
+            raw = message.payload.get("body")  # type: ignore[attr-defined]
             if not isinstance(raw, (str, bytes)):
                 body = json.dumps(raw)
             elif isinstance(raw, str):
@@ -177,7 +181,7 @@ class RabbitMQService:
                 body = json.dumps(raw, ensure_ascii=False).encode("utf-8")
 
             properties = pika.BasicProperties(
-                headers=headers_generator(id=message.id, source=message.payload.get("source"))
+                headers=headers_generator(id=message.id, source=message.payload.get("source"))  # type: ignore[attr-defined]
             )
 
             self._channel.basic_publish(

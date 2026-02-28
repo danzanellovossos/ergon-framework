@@ -18,6 +18,9 @@ tracer = telemetry.tracing.get_tracer(__name__)
 
 
 class ConsumerMixin(ABC):
+    name: str
+    connectors: dict[str, connector.Connector]
+
     @abstractmethod
     def process_transaction(self, transaction: connector.Transaction) -> Any:
         raise NotImplementedError
@@ -202,7 +205,7 @@ class ConsumerMixin(ABC):
     # =====================================================================
     # CONNECTOR RESOLUTION
     # =====================================================================
-    def _resolve_connector(self, name: str):
+    def _resolve_connector(self, name: str | None):
         if name:
             return self.connectors[name]
         if len(self.connectors) == 1:
@@ -212,7 +215,7 @@ class ConsumerMixin(ABC):
     # =====================================================================
     # PUBLIC CONSUME LOOP
     # =====================================================================
-    def consume_transactions(self, policy: policies.ConsumerPolicy = None):
+    def consume_transactions(self, policy: policies.ConsumerPolicy | None = None):
         if policy is None:
             policy = policies.ConsumerPolicy()
 
@@ -408,6 +411,9 @@ class HybridTask(producer.ProducerMixin, ConsumerMixin, base.BaseTask):
 
 
 class AsyncConsumerMixin(ABC):
+    name: str
+    connectors: dict[str, connector.Connector]
+
     # =====================================================================
     # HOOKS
     # =====================================================================
@@ -564,7 +570,7 @@ class AsyncConsumerMixin(ABC):
     # =====================================================================
     #   ASYNC PUBLIC CONSUME LOOP (MIRRORS ASYNC PRODUCER)
     # =====================================================================
-    async def consume_transactions(self, conn, policy: policies.ConsumerPolicy = None):
+    async def consume_transactions(self, conn, policy: policies.ConsumerPolicy | None = None):
         if policy is None:
             policy = policies.ConsumerPolicy()
 
@@ -612,8 +618,8 @@ class AsyncConsumerMixin(ABC):
                     )
                     await utils.backoff_async(
                         backoff=policy.fetch.empty.backoff,
-                        backoff_multiplier=policy.fetch.empty.backoff_multiplier,
-                        backoff_cap=policy.fetch.empty.backoff_cap,
+                        multiplier=policy.fetch.empty.backoff_multiplier,
+                        cap=policy.fetch.empty.backoff_cap,
                         attempt=empty_count,
                     )
                     empty_count += 1
@@ -650,13 +656,15 @@ class AsyncConsumerMixin(ABC):
                         "streaming": policy.loop.streaming,
                     },
                 ):
-                    count = await helpers.run_concurrently_with_refill_async(
-                        data=transactions,
-                        it=iter((tr, policy) for tr in transactions),
-                        submit_fn=submit_start_processing,
+
+                    def submissions():
+                        for tr in transactions:
+                            yield lambda tr=tr: asyncio.create_task(submit_start_processing(tr, policy))
+
+                    count = await helpers.async_execute(
+                        submissions=submissions(),
                         concurrency=policy.loop.concurrency.value,
                         limit=policy.loop.limit,
-                        count=processed,
                         timeout=policy.transaction_runtime.timeout,
                     )
 
@@ -699,8 +707,4 @@ class AsyncConsumerMixin(ABC):
 
 
 class AsyncConsumerTask(AsyncConsumerMixin, base.BaseAsyncTask):
-    pass
-
-
-class AsyncHybridTask(AsyncConsumerMixin, producer.AsyncProducerMixin, base.BaseAsyncTask):
     pass

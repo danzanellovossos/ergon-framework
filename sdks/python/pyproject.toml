@@ -20,6 +20,8 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pre-commit>=4.5.0",
+    "pyright>=1.1.390",
+    "pytest>=8.0.0",
     "ruff>=0.6.0",
 ]
 
@@ -56,6 +58,23 @@ docstring-code-format = true
 
 # Behave similar to Black formatting rules
 skip-magic-trailing-comma = false
+
+# -------------------------
+# Pyright configuration
+# -------------------------
+[tool.pyright]
+pythonVersion = "3.10"
+include = ["src"]
+typeCheckingMode = "basic"
+reportMissingImports = true
+reportMissingTypeStubs = false
+
+# -------------------------
+# Pytest configuration
+# -------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
 
 [project.scripts]
 ergon = "ergon.cli:ergon"

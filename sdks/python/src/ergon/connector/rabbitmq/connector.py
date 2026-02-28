@@ -1,14 +1,13 @@
 from typing import Dict, Generator, List, Optional
 
-from ergon_framework import Connector, Transaction
-
-from src.connectors.rabbitmq_connector.service import RabbitMQService
+from ergon.connector import Connector, Transaction
 
 from .models import RabbitmqClient
+from .service import RabbitMQService
 
 
 class RabbitMQConnector(Connector):
-    service = RabbitMQService
+    service: RabbitMQService
 
     def __init__(
         self,

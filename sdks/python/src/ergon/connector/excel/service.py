@@ -55,6 +55,9 @@ class ExcelService:
             else:
                 ws = wb.active
 
+            if ws is None:
+                return
+
             rows = ws.rows
 
             try:
@@ -81,7 +84,7 @@ class ExcelService:
                         continue
 
                 # Apply sharding after filtering
-                if sharding_enabled and (matched_index % total_shards != shard_id):
+                if sharding_enabled and total_shards is not None and (matched_index % total_shards != shard_id):
                     matched_index += 1
                     continue
 
