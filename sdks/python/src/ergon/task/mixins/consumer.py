@@ -255,7 +255,10 @@ class ConsumerMixin(ABC):
                 success, result = self._handle_fetch(conn, policy.fetch)
                 if not success:
                     logger.error(f"Fetch failed → {result}")
-                    break
+                    executor.shutdown(wait=False)
+                    if isinstance(result, futures.TimeoutError):
+                        raise exceptions.FetchTimeoutException(str(result))
+                    raise exceptions.FetchException(str(result))
 
                 transactions = result
 
@@ -359,16 +362,12 @@ class ConsumerMixin(ABC):
             return processed
 
         # For streaming mode, run without wrapping span (batches have their own spans)
-        # For non-streaming mode, wrap entire consume in a span
+        # For non-streaming mode, wrap entire consume in a spans
         if policy.loop.streaming:
             try:
                 return _consume()
             except futures.TimeoutError as e:
                 raise exceptions.ConsumerLoopTimeoutException(str(e))
-            except exceptions.TransactionException:
-                raise
-            except BaseException as e:
-                raise exceptions.ConsumerLoopException(str(e))
         else:
             success, result = helpers.run_fn(
                 fn=lambda: _consume(),
@@ -378,12 +377,8 @@ class ConsumerMixin(ABC):
             )
 
             if not success:
-                if isinstance(result, exceptions.TransactionException):
-                    result = result
-                elif isinstance(result, futures.TimeoutError):
-                    result = exceptions.ConsumerLoopTimeoutException(str(result))
-                else:
-                    result = exceptions.ConsumerLoopException(str(result))
+                if isinstance(result, futures.TimeoutError):
+                    raise exceptions.ConsumerLoopTimeoutException(str(result))
                 raise result
             return result
 
@@ -598,7 +593,9 @@ class AsyncConsumerMixin(ABC):
 
                 if not success:
                     logger.error(f"Fetch failed → {result}")
-                    break
+                    if isinstance(result, (asyncio.TimeoutError, futures.TimeoutError)):
+                        raise exceptions.FetchTimeoutException(str(result))
+                    raise exceptions.FetchException(str(result))
 
                 transactions = result
 
@@ -685,11 +682,6 @@ class AsyncConsumerMixin(ABC):
             except asyncio.TimeoutError as e:
                 logger.error(f"[Consume] Timeout: {e}")
                 raise exceptions.ConsumerLoopTimeoutException(str(e))
-            except exceptions.TransactionException:
-                raise
-            except BaseException as e:
-                logger.error(f"[Consume] Error: {e}")
-                raise exceptions.TransactionException(str(e), exceptions.ExceptionType.SYSTEM)
         else:
             try:
                 return await helpers.run_fn_async(
@@ -701,9 +693,6 @@ class AsyncConsumerMixin(ABC):
             except asyncio.TimeoutError as e:
                 logger.error(f"[Consume] Timeout: {e}")
                 raise exceptions.ConsumerLoopTimeoutException(str(e))
-            except BaseException as e:
-                logger.error(f"[Consume] Error: {e}")
-                raise exceptions.TransactionException(str(e), exceptions.ExceptionType.SYSTEM)
 
 
 class AsyncConsumerTask(AsyncConsumerMixin, base.BaseAsyncTask):
