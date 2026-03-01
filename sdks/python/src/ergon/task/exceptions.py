@@ -7,29 +7,6 @@ class ExceptionType(str, Enum):
     TIMEOUT = "TIMEOUT"
 
 
-class GeneralException(Exception):
-    """
-    Exception raised when a general error occurs.
-    """
-
-    message: str = "A general error occurred."
-    category: ExceptionType = ExceptionType.SYSTEM
-
-    def __init__(self, message: str | None = None):
-        self.message = message or self.message
-        super().__init__(self.message)
-
-    def __str__(self):
-        return self.message
-
-    def to_dict(self):
-        return {
-            "message": self.message,
-            "category": self.category.value,
-            "type": self.__class__.__name__,
-        }
-
-
 class ConsumerLoopTimeoutException(Exception):
     """
     Exception raised when a consumer loop times out.
@@ -53,29 +30,6 @@ class ConsumerLoopTimeoutException(Exception):
         }
 
 
-class ConsumerLoopException(Exception):
-    """
-    Exception raised when a consumer loop fails.
-    """
-
-    message: str = "A consumer loop failed."
-    category: ExceptionType = ExceptionType.SYSTEM
-
-    def __init__(self, message: str | None = None):
-        self.message = message or self.message
-        super().__init__(self.message)
-
-    def __str__(self):
-        return self.message
-
-    def to_dict(self):
-        return {
-            "message": self.message,
-            "category": self.category.value,
-            "type": self.__class__.__name__,
-        }
-
-
 class ProducerLoopTimeoutException(Exception):
     """
     Exception raised when a producer loop times out.
@@ -83,29 +37,6 @@ class ProducerLoopTimeoutException(Exception):
 
     message: str = "A producer loop timed out."
     category: ExceptionType = ExceptionType.TIMEOUT
-
-    def __init__(self, message: str | None = None):
-        self.message = message or self.message
-        super().__init__(self.message)
-
-    def __str__(self):
-        return self.message
-
-    def to_dict(self):
-        return {
-            "message": self.message,
-            "category": self.category.value,
-            "type": self.__class__.__name__,
-        }
-
-
-class ProducerLoopException(Exception):
-    """
-    Exception raised when a producer loop fails.
-    """
-
-    message: str = "A producer loop failed."
-    category: ExceptionType = ExceptionType.SYSTEM
 
     def __init__(self, message: str | None = None):
         self.message = message or self.message

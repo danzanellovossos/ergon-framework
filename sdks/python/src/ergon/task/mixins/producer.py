@@ -228,7 +228,7 @@ class ProducerMixin(ABC):
             executor.shutdown()
             elapsed_time = time.perf_counter() - start_time
             logger.info(f"[Produce] Finished. Processed={processed} in {elapsed_time:.2f} seconds")
-            return count
+            return processed
 
         success, result = helpers.run_fn(
             fn=lambda: _produce(),
@@ -238,12 +238,8 @@ class ProducerMixin(ABC):
         )
 
         if not success:
-            if isinstance(result, exceptions.TransactionException):
-                result = result
-            elif isinstance(result, futures.TimeoutError):
-                result = exceptions.ProducerLoopTimeoutException(str(result))
-            else:
-                result = exceptions.ProducerLoopException(str(result))
+            if isinstance(result, futures.TimeoutError):
+                raise exceptions.ProducerLoopTimeoutException(str(result))
             raise result
         return result
 
