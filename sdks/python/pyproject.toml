@@ -5,6 +5,7 @@ description = "Ergon internal task-oriented project bootstrapper"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "boto3>=1.35.0",
     "more-itertools>=10.8.0",
     "openpyxl>=3.1.5",
     "opentelemetry-api>=1.38.0",

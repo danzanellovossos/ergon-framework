@@ -54,3 +54,9 @@ class RabbitMQConnector(Connector):
         """
         for transaction_item in transaction:
             self.service.publish(transaction_item.payload)
+
+    def ack_message(self, delivery_tag: str) -> None:
+        """
+        Confirma a mensagem no RabbitMQ.
+        """
+        self.service.ack_msg(delivery_tag)
