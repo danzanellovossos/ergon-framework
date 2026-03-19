@@ -407,7 +407,7 @@ class HybridTask(producer.ProducerMixin, ConsumerMixin, base.BaseTask):
 
 class AsyncConsumerMixin(ABC):
     name: str
-    connectors: dict[str, connector.Connector]
+    connectors: dict[str, connector.AsyncConnector]
 
     # =====================================================================
     # HOOKS
@@ -416,17 +416,17 @@ class AsyncConsumerMixin(ABC):
     async def process_transaction(self, transaction: connector.Transaction) -> Any:
         raise NotImplementedError
 
-    async def handle_transaction_success(self, transaction, result):
+    async def handle_process_success(self, transaction, result):
         logger.debug(f"[{self.name}] SUCCESS → {transaction.id}")
 
-    async def handle_transaction_exception(self, transaction, exc):
+    async def handle_process_exception(self, transaction, exc):
         logger.error(f"[{self.name}] EXCEPTION → {transaction.id}: {exc}")
 
     # =====================================================================
-    #   FETCH WITH RETRIES (ASYNC)
+    #   FETCH HANDLER (ASYNC)
     # =====================================================================
-    async def _fetch_transactions(self, conn, policy: policies.FetchPolicy) -> tuple[bool, List[connector.Transaction]]:
-        logger.info(f"Fetching transactions with batch size {policy.batch.size}", extra=policy.extra)
+    async def _handle_fetch(self, conn, policy: policies.FetchPolicy) -> tuple[bool, List[connector.Transaction]]:
+        logger.info(f"Fetch handler started for batch size {policy.batch.size}", extra=policy.extra)
         fetch_start = time.perf_counter()
         success, result = await helpers.run_fn_async(
             fn=lambda: conn.fetch_transactions_async(policy.batch.size, **policy.extra),
@@ -444,19 +444,31 @@ class AsyncConsumerMixin(ABC):
             duration=time.perf_counter() - fetch_start,
             success=success,
         )
+        logger.info(f"Fetch handler completed with status: {'success' if success else 'error'}")
         return success, result
 
     # =====================================================================
     #   PROCESS OR ROUTE INTO SUCCESS / EXCEPTION
     # =====================================================================
     async def _start_processing(self, transaction, policy: policies.ConsumerPolicy):
+        """
+        PROCESS → SUCCESS or EXCEPTION
+        """
         tx_start = time.perf_counter()
         final_status = "success"
 
         try:
+            # -----------------------
+            # 1) PROCESS STEP
+            # -----------------------
+            logger.info(f"Transaction {transaction.id} processing started")
             process_ok, process_result = await self._handle_process(transaction, policy.process.retry)
 
+            # -----------------------
+            # 2) EXCEPTION HANDLER
+            # -----------------------
             if not process_ok:
+                logger.error(f"Transaction {transaction.id} process handler failed with outcome '{process_result}'")
                 final_status = "exception"
                 if isinstance(process_result, exceptions.TransactionException):
                     process_result = process_result
@@ -468,13 +480,19 @@ class AsyncConsumerMixin(ABC):
                     process_result = exceptions.TransactionException(
                         str(process_result), exceptions.ExceptionType.SYSTEM
                     )
+                logger.error(
+                    f"Invoking exception handler for transaction {transaction.id} with outcome: '{process_result}'"
+                )
                 return await self._handle_exception(transaction, process_result, policy.exception.retry)
 
-            success_ok, success_result = await self._handle_success(
-                transaction, process_result, policy.success.retry, policy.exception.retry
-            )
+            # -----------------------
+            # 3) SUCCESS HANDLER
+            # -----------------------
+            logger.info(f"Invoking success handler for transaction {transaction.id} with outcome: '{process_result}'")
+            success_ok, success_result = await self._handle_success(transaction, process_result, policy.success.retry)
 
             if not success_ok:
+                logger.error(f"Transaction {transaction.id} success handler failed with outcome '{success_result}'")
                 final_status = "exception"
                 if isinstance(success_result, exceptions.TransactionException):
                     success_result = success_result
@@ -486,6 +504,9 @@ class AsyncConsumerMixin(ABC):
                     success_result = exceptions.TransactionException(
                         str(success_result), exceptions.ExceptionType.SYSTEM
                     )
+                logger.error(
+                    f"Invoking exception handler for transaction {transaction.id} with outcome: '{success_result}'"
+                )
                 return await self._handle_exception(transaction, success_result, policy.exception.retry)
 
             return True, success_result
@@ -503,12 +524,12 @@ class AsyncConsumerMixin(ABC):
     #   PROCESS HANDLER WITH RETRIES
     # =====================================================================
     async def _handle_process(self, transaction, retry: policies.RetryPolicy):
-        logger.info(f"Transaction {transaction.id} processing started")
+        logger.info(f"Transaction {transaction.id} process handler started")
         stage_start = time.perf_counter()
         success, result = await helpers.run_fn_async(
             fn=lambda: self.process_transaction(transaction),
             retry=retry,
-            trace_name=f"{self.__class__.__name__}.handle_process",
+            trace_name=f"{self.__class__.__name__}.process",
             trace_attrs={"transaction_id": transaction.id},
         )
         # Record lifecycle metrics
@@ -518,18 +539,21 @@ class AsyncConsumerMixin(ABC):
             duration=time.perf_counter() - stage_start,
             outcome="ok" if success else "error",
         )
+        logger.info(
+            f"Transaction {transaction.id} process handler completed with status: {'success' if success else 'error'}"
+        )
         return success, result
 
     # =====================================================================
     #   SUCCESS HANDLER
     # =====================================================================
-    async def _handle_success(self, transaction, result, retry, exception_retry):
-        logger.info(f"Transaction {transaction.id} processed successfully")
+    async def _handle_success(self, transaction, result, retry: policies.RetryPolicy):
+        logger.info(f"Transaction {transaction.id} success handler started")
         stage_start = time.perf_counter()
         success, handler_result = await helpers.run_fn_async(
-            fn=lambda: self.handle_transaction_success(transaction, result),
+            fn=lambda: self.handle_process_success(transaction, result),
             retry=retry,
-            trace_name=f"{self.__class__.__name__}.handle_success",
+            trace_name=f"{self.__class__.__name__}.handle_process_success",
             trace_attrs={"transaction_id": transaction.id},
         )
         # Record lifecycle metrics
@@ -539,18 +563,21 @@ class AsyncConsumerMixin(ABC):
             duration=time.perf_counter() - stage_start,
             outcome="ok" if success else "error",
         )
+        logger.info(
+            f"Transaction {transaction.id} success handler completed with status: {'success' if success else 'error'}"
+        )
         return success, handler_result
 
     # =====================================================================
     #   EXCEPTION HANDLER
     # =====================================================================
     async def _handle_exception(self, transaction, exc, retry: policies.RetryPolicy):
-        logger.error(f"Transaction {transaction.id} processed with exception: {exc}")
+        logger.error(f"Transaction {transaction.id} exception handler started")
         stage_start = time.perf_counter()
         success, result = await helpers.run_fn_async(
-            fn=lambda: self.handle_transaction_exception(transaction, exc),
+            fn=lambda: self.handle_process_exception(transaction, exc),
             retry=retry,
-            trace_name=f"{self.__class__.__name__}.handle_exception",
+            trace_name=f"{self.__class__.__name__}.handle_process_exception",
             trace_attrs={"transaction_id": transaction.id},
         )
         # Record lifecycle metrics
@@ -560,25 +587,45 @@ class AsyncConsumerMixin(ABC):
             duration=time.perf_counter() - stage_start,
             outcome="ok" if success else "error",
         )
+        logger.info(
+            f"Transaction {transaction.id} exception handler completed with status: {'success' if success else 'error'}"
+        )
         return success, result
 
     # =====================================================================
-    #   ASYNC PUBLIC CONSUME LOOP (MIRRORS ASYNC PRODUCER)
+    # CONNECTOR RESOLUTION
     # =====================================================================
-    async def consume_transactions(self, conn, policy: policies.ConsumerPolicy | None = None):
+    def _resolve_connector(self, name: str | None):
+        if name:
+            return self.connectors[name]
+        if len(self.connectors) == 1:
+            return next(iter(self.connectors.values()))
+        raise ValueError("Multiple connectors configured; specify one in policy")
+
+    # =====================================================================
+    #   ASYNC PUBLIC CONSUME LOOP
+    # =====================================================================
+    async def consume_transactions(self, policy: policies.ConsumerPolicy | None = None):
         if policy is None:
             policy = policies.ConsumerPolicy()
 
         async def _consume():
+            start_time_iso = datetime.now().isoformat()
             start_time = time.perf_counter()
             processed = 0
             empty_count = 0
             batch_number = 0
 
+            logger.info(f"Consume loop started at {start_time_iso}")
+            logger.debug(f"Consume loop running with loop policy: {policy.loop.model_dump_json(indent=2)}")
+
+            conn = self._resolve_connector(policy.fetch.connector_name)
+
+            ctx = otel_context.Context()
+
             async def submit_start_processing(tr, pol):
                 return await helpers.run_fn_async(
                     fn=lambda: self._start_processing(tr, pol),
-                    retry=policy.process.retry,
                     trace_name=f"{self.__class__.__name__}.start_processing",
                     trace_attrs={"transaction_id": tr.id},
                 )
@@ -589,7 +636,8 @@ class AsyncConsumerMixin(ABC):
                 # ============================================================
                 #  FETCH
                 # ============================================================
-                success, result = await self._fetch_transactions(conn, policy.fetch)
+                logger.info(f"Fetching transactions batch with fetch policy: {policy.fetch.model_dump_json(indent=2)}")
+                success, result = await self._handle_fetch(conn, policy.fetch)
 
                 if not success:
                     logger.error(f"Fetch failed → {result}")
@@ -603,16 +651,18 @@ class AsyncConsumerMixin(ABC):
                 #  EMPTY QUEUE HANDLING
                 # ============================================================
                 if not transactions:
-                    logger.info(f"Empty queue detected for batch {batch_number}")
+                    logger.info(f"Empty fetch detected at {datetime.now().isoformat()}")
                     if not policy.loop.streaming:
                         logger.info("Non-streaming mode detected, breaking loop")
                         break
-                    logger.info(f"{empty_count} consecutive empty queue detections so far")
-                    # Record empty queue wait metric
+
+                    logger.debug(f"{empty_count} consecutive empty fetches so far")
+
                     mixin_metrics.record_consumer_empty_queue_wait(
                         task_name=getattr(self, "name", self.__class__.__name__),
                         wait_count=empty_count,
                     )
+
                     await utils.backoff_async(
                         backoff=policy.fetch.empty.backoff,
                         multiplier=policy.fetch.empty.backoff_multiplier,
@@ -623,6 +673,8 @@ class AsyncConsumerMixin(ABC):
                     continue
 
                 empty_count = 0
+
+                logger.info(f"{len(transactions)} transaction(s) fetched from fetch handler")
 
                 # Record batch metric
                 mixin_metrics.record_consumer_batch(
@@ -635,14 +687,17 @@ class AsyncConsumerMixin(ABC):
                 # ============================================================
                 #  RUN CONCURRENTLY WITH REFILL (with batch-level span)
                 # ============================================================
-                # For streaming mode, start each batch as a fresh root span (new trace)
-                # This prevents "root span not received" issues in long-running consumers
                 if policy.loop.streaming:
-                    # Create a fresh empty context with no active span
-                    # This forces the tracer to generate a new trace ID for each batch
-                    batch_context = otel_context.Context()
+                    batch_context = ctx
                 else:
                     batch_context = None  # Use current context
+
+                logger.info(
+                    f"Starting batch processing of "
+                    f"{len(transactions)} transaction(s) "
+                    f"from fetch handler with "
+                    f"with concurrency policy: {policy.loop.concurrency.model_dump_json(indent=2)}."
+                )
 
                 with tracer.start_as_current_span(
                     f"{self.__class__.__name__}.process_batch",
@@ -658,6 +713,11 @@ class AsyncConsumerMixin(ABC):
                         for tr in transactions:
                             yield lambda tr=tr: asyncio.create_task(submit_start_processing(tr, policy))
 
+                    logger.debug(
+                        f"Submitting {len(transactions)} transactions for processing "
+                        f"with concurrency policy: {policy.loop.concurrency.model_dump_json(indent=2)}."
+                    )
+
                     count = await helpers.async_execute(
                         submissions=submissions(),
                         concurrency=policy.loop.concurrency.value,
@@ -670,6 +730,15 @@ class AsyncConsumerMixin(ABC):
                 if policy.loop.limit and processed >= policy.loop.limit:
                     break
 
+                if policy.fetch.batch.interval and policy.fetch.batch.interval.backoff > 0:
+                    logger.info("Batch interval detected, triggering backoff")
+                    await utils.backoff_async(
+                        backoff=policy.fetch.batch.interval.backoff,
+                        multiplier=policy.fetch.batch.interval.backoff_multiplier,
+                        cap=policy.fetch.batch.interval.backoff_cap,
+                        attempt=0,
+                    )
+
             elapsed_time = time.perf_counter() - start_time
             logger.info(f"[Consume] Finished. Processed={processed} in {elapsed_time:.2f} seconds")
             return processed
@@ -680,20 +749,28 @@ class AsyncConsumerMixin(ABC):
             try:
                 return await _consume()
             except asyncio.TimeoutError as e:
-                logger.error(f"[Consume] Timeout: {e}")
                 raise exceptions.ConsumerLoopTimeoutException(str(e))
         else:
-            try:
-                return await helpers.run_fn_async(
-                    fn=_consume,
-                    retry=policies.RetryPolicy(timeout=policy.loop.timeout),
-                    trace_name=f"{self.__class__.__name__}.consume_transactions",
-                    trace_attrs={},
-                )
-            except asyncio.TimeoutError as e:
-                logger.error(f"[Consume] Timeout: {e}")
-                raise exceptions.ConsumerLoopTimeoutException(str(e))
+            success, result = await helpers.run_fn_async(
+                fn=_consume,
+                retry=policies.RetryPolicy(timeout=policy.loop.timeout),
+                trace_name=f"{self.__class__.__name__}.consume_transactions",
+                trace_attrs={},
+            )
+            if not success:
+                if isinstance(result, asyncio.TimeoutError):
+                    raise exceptions.ConsumerLoopTimeoutException(str(result))
+                raise result
+            return result
 
 
 class AsyncConsumerTask(AsyncConsumerMixin, base.BaseAsyncTask):
+    pass
+
+
+class AsyncHybridTask(producer.AsyncProducerMixin, AsyncConsumerMixin, base.BaseAsyncTask):
+    """
+    Async hybrid task that can consume and produce transactions.
+    """
+
     pass
