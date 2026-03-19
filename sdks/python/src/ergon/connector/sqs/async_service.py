@@ -68,13 +68,14 @@ class AsyncSQSService:
         collected: List[Dict[str, Any]] = []
         remaining = max_number_of_messages
 
+        first_call = True
         while remaining > 0:
             fetch_count = min(remaining, 10)
 
             params: Dict[str, Any] = {
                 "QueueUrl": url,
                 "MaxNumberOfMessages": fetch_count,
-                "WaitTimeSeconds": wait_time_seconds,
+                "WaitTimeSeconds": wait_time_seconds if first_call else 0,
                 "AttributeNames": attribute_names or ["All"],
                 "MessageAttributeNames": message_attribute_names or ["All"],
             }
@@ -83,6 +84,7 @@ class AsyncSQSService:
 
             response = await sqs.receive_message(**params)
             messages = response.get("Messages", [])
+            first_call = False
 
             if not messages:
                 break

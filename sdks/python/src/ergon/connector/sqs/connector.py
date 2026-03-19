@@ -102,8 +102,11 @@ class SQSConnector(Connector):
                 entry["MessageAttributes"] = resolved_msg_attrs
             if resolved_group_id:
                 entry["MessageGroupId"] = resolved_group_id
-            if resolved_dedup_id:
-                entry["MessageDeduplicationId"] = resolved_dedup_id
+
+            txn_dedup_id = txn.metadata.get("message_deduplication_id") if txn.metadata else None
+            dedup_id = txn_dedup_id or resolved_dedup_id
+            if dedup_id:
+                entry["MessageDeduplicationId"] = dedup_id
 
             entries.append(entry)
 
