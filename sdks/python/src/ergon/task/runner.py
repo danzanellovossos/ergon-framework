@@ -137,7 +137,7 @@ async def __run_task_async(
     instance = None
 
     try:
-        async with tracer.start_as_current_span(  # type: ignore[attr-defined]
+        with tracer.start_as_current_span(  # type: ignore[attr-defined]
             f"{config.task.__name__}.run",
             attributes={"task.execution.id": task_exec_metadata["execution_id"]},
         ):

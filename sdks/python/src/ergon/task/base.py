@@ -178,10 +178,13 @@ class BaseAsyncTask(ABC, metaclass=TaskMeta):
         connectors: Dict[str, Connector],
         services: Dict[str, Any],
         policies: List[Any],
+        worker_id: Optional[int] = None,
+        task_config: Optional["TaskConfig"] = None,
         *args,
         **kwargs,
     ):
-        super().__init__(*args, **kwargs)
+        # Don't pass args/kwargs to object.__init__()
+        super().__init__()
 
     @abstractmethod
     async def execute(self) -> Any:
