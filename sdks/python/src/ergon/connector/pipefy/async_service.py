@@ -846,3 +846,64 @@ class AsyncPipefyService:
             )
 
         return result
+
+    @run_fn_async(retry=default_retry)
+    async def update_card_labels(
+        self,
+        card_id: str,
+        label_ids: list[str],
+    ) -> bool:
+        mutation = """
+        mutation UpdateCard($input: UpdateCardInput!) {
+            updateCard(input: $input) {
+                card {
+                    id
+                }
+            }
+        }
+        """
+
+        variables = {
+            "input": {
+                "id": card_id,
+                "label_ids": label_ids,
+            }
+        }
+
+        response = await self._graphql(mutation, variables)
+
+        if not response:
+            return False
+
+        if "errors" in response:
+            raise Exception(f"Pipefy error: {response['errors']}")
+
+        return bool((response.get("updateCard") or {}).get("card"))
+
+    @run_fn_async(retry=default_retry)
+    async def add_label_to_card(
+        self,
+        card_id: str,
+        new_label_id: str,
+    ) -> bool:
+        query = """
+        query GetCardLabels($id: ID!) {
+            card(id: $id) {
+                labels {
+                    id
+                }
+            }
+        }
+        """
+
+        data = await self._graphql(query, {"id": card_id})
+
+        if not data or "errors" in data:
+            raise Exception(f"Pipefy error: {data.get('errors')}")
+
+        current_labels = [label["id"] for label in (data.get("card") or {}).get("labels", [])]
+
+        if new_label_id not in current_labels:
+            current_labels.append(new_label_id)
+
+        return await self.update_card_labels(card_id, current_labels)
