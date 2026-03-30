@@ -828,9 +828,7 @@ class AsyncPipefyService:
             parsed_url = await self._prepare_and_upload_file(presigned_url, file_path)
             parsed_urls.append(parsed_url)
 
-        result = await self.update_card_field_by_id(
-            card_id=card_id, field_id=field_id, new_value=json.dumps(parsed_urls)
-        )
+        result = await self.update_card_field_by_id(card_id=card_id, field_id=field_id, new_value=parsed_urls)
 
         if result:
             logger.info(
