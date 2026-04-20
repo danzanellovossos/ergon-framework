@@ -1,6 +1,7 @@
 import functools
 import json
 import logging
+import ssl as ssl_module
 import time
 from collections import deque
 from typing import Any, Dict, List, Optional
@@ -21,14 +22,19 @@ class RabbitMQService:
         self._channel: Any = None
         self._connect()
 
-    # ---------- Conexão / Canal ----------
+    # ---------- Connection / Channel ----------
 
     def _connect(self) -> None:
-        """
-        Garante que exista uma conexão e um canal abertos.
-        """
+        """Ensure an open connection and channel exist."""
         if self._connection and self._connection.is_open:
             return
+
+        ssl_options = None
+        if self.client.ssl_enabled:
+            ctx = ssl_module.create_default_context()
+            if self.client.ssl_ca_certs:
+                ctx.load_verify_locations(self.client.ssl_ca_certs)
+            ssl_options = pika.SSLOptions(ctx)
 
         params = pika.ConnectionParameters(
             host=self.client.host,
@@ -38,14 +44,13 @@ class RabbitMQService:
             connection_attempts=self.client.connection_attempts,
             socket_timeout=self.client.socket_timeout,
             heartbeat=int(self.client.heartbeat) if self.client.heartbeat is not None else None,
+            blocked_connection_timeout=self.client.blocked_connection_timeout,
+            ssl_options=ssl_options,
         )
         self._connection = pika.BlockingConnection(params)
         self._channel = self._connection.channel()
 
-        # Garante que a fila exista
         self._channel.queue_declare(queue=self.client.queue_name, durable=True)
-
-        # Controle de quantas mensagens o consumidor recebe sem dar ack
         self._channel.basic_qos(prefetch_count=self.client.prefetch_count)
 
     def close(self) -> None:
@@ -160,34 +165,35 @@ class RabbitMQService:
         ack = functools.partial(self.ack_msg, delivery_tag=delivery_tag)
         self._connection.add_callback_threadsafe(ack)
 
-    # ---------- Publicação ----------
+    # ---------- Publish ----------
 
-    def publish(self, message: RabbitmqProducerMessage) -> None:
-        logger.info("Publicando mensagem")
-
+    def publish(self, message: RabbitmqProducerMessage, exchange: str = "") -> None:
         if not (self._channel and self._channel.is_open):
-            logger.warning("Channel fechado; não foi possível publicar.")
-            return
+            logger.warning("Channel closed, attempting reconnect before publish")
+            self._connect()
+            if not (self._channel and self._channel.is_open):
+                raise ConnectionError("Unable to publish: RabbitMQ channel is closed after reconnect attempt")
 
-        if self._channel.is_open:
-            rk = message.payload.get("queue_name") or self.client.queue_name  # type: ignore[attr-defined]
+        rk = message.payload.get("queue_name") or self.client.queue_name  # type: ignore[attr-defined]
 
-            raw = message.payload.get("body")  # type: ignore[attr-defined]
-            if not isinstance(raw, (str, bytes)):
-                body = json.dumps(raw)
-            elif isinstance(raw, str):
-                body = raw.encode("utf-8")
-            else:
-                body = json.dumps(raw, ensure_ascii=False).encode("utf-8")
+        raw = message.payload.get("body")  # type: ignore[attr-defined]
+        if not isinstance(raw, (str, bytes)):
+            body = json.dumps(raw)
+        elif isinstance(raw, str):
+            body = raw.encode("utf-8")
+        else:
+            body = json.dumps(raw, ensure_ascii=False).encode("utf-8")
 
-            properties = pika.BasicProperties(
-                headers=headers_generator(id=message.id, source=message.payload.get("source"))  # type: ignore[attr-defined]
-            )
+        properties = pika.BasicProperties(
+            headers=headers_generator(id=message.id, source=message.payload.get("source")),  # type: ignore[attr-defined]
+            delivery_mode=message.delivery_mode,
+            content_type=message.content_type,
+        )
 
-            self._channel.basic_publish(
-                exchange="",
-                routing_key=rk,
-                body=body,
-                properties=properties,
-            )
-            logger.info("Mensagem publicada com sucesso.")
+        self._channel.basic_publish(
+            exchange=exchange,
+            routing_key=rk,
+            body=body,
+            properties=properties,
+        )
+        logger.info("Message published successfully")

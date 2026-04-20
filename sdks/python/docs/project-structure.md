@@ -546,7 +546,7 @@ class ProcessTransactionOutput(BaseModel):
 Exception classes that multiple tasks might raise.
 
 ```python
-from ergon_framework.task.exceptions import TransactionException, ExceptionCategory
+from ergon.task.exceptions import TransactionException, ExceptionCategory
 
 class ValidationError(TransactionException):
     """Payload failed validation."""
@@ -602,8 +602,8 @@ tasks/order_processing/
 This is where the actual work happens. Import a ready-to-use task class and implement the required methods:
 
 ```python
-from ergon_framework.task.mixins import AsyncConsumerTask
-from ergon_framework.connector import Transaction
+from ergon.task.mixins import AsyncConsumerTask
+from ergon.connector import Transaction
 from .schemas import OrderSchema
 
 class OrderProcessorTask(AsyncConsumerTask):
@@ -711,7 +711,7 @@ class OrderSchema(shared.BasePayload):
 Exceptions that only make sense for this task.
 
 ```python
-from ergon_framework.task.exceptions import TransactionException, ExceptionCategory
+from ergon.task.exceptions import TransactionException, ExceptionCategory
 
 class InvalidOrderError(TransactionException):
     """Order failed validation."""
@@ -844,7 +844,7 @@ my_order_pipeline/
 
 ### Using Built-in Connectors
 
-1. Import directly: `from ergon_framework.connector import RabbitMQConnector, ExcelConnector`
+1. Import directly: `from ergon.connector import RabbitMQConnector, ExcelConnector`
 2. Configure in `tasks/settings.py`
 3. Reference in your task's `config.py`
 

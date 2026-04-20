@@ -1,7 +1,7 @@
 from typing import Dict, Generator, List, Optional
 
-from ergon.connector import Connector, Transaction
-
+from ..connector import Connector
+from ..transaction import Transaction
 from .models import RabbitmqClient
 from .service import RabbitMQService
 
@@ -34,7 +34,7 @@ class RabbitMQConnector(Connector):
     ) -> List[Transaction]:
         """
         Busca até `batch_size` mensagens da fila indicada, transformando
-        cada uma em um Transaction do ergon_framework.
+        cada uma em um Transaction do ergon.
         """
         queue_items = self.service.consume(queue_name=queue_name, auto_ack=auto_ack, batch_size=batch_size)
 
@@ -45,12 +45,10 @@ class RabbitMQConnector(Connector):
 
     def dispatch_transactions(
         self,
-        transaction: List[Transaction],
+        transactions: List[Transaction],
         *args,
         **kwargs,
     ) -> None:
-        """
-        Publica um Transaction como mensagem no RabbitMQ.
-        """
-        for transaction_item in transaction:
-            self.service.publish(transaction_item.payload)
+        """Publish transactions as messages to RabbitMQ."""
+        for txn in transactions:
+            self.service.publish(txn.payload)
