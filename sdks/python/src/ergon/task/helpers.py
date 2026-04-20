@@ -270,21 +270,36 @@ def run_fn(
             except exceptions.NonRetryableException as e:
                 return False, e
             except futures.TimeoutError as e:
-                logger.error(f"Attempt {attempt_no} to run function {fn.__qualname__} failed with timeout: {e}")
+                logger.exception(
+                    "Attempt %d to run function %s failed with timeout: %r",
+                    attempt_no,
+                    fn.__qualname__,
+                    e,
+                )
                 last_exc = e
             except Exception as e:
-                logger.error(f"Attempt {attempt_no} to run function {fn.__qualname__} failed with exception: {e}")
+                logger.exception(
+                    "Attempt %d to run function %s failed with exception: %r",
+                    attempt_no,
+                    fn.__qualname__,
+                    e,
+                )
                 last_exc = e
 
             if attempt_no < retry.max_attempts:
                 logger.warning(
-                    f"Attempt {attempt_no} to run function {fn.__qualname__} failed with exception: {last_exc}."
-                    "Calling backoff."
+                    "Attempt %d to run function %s failed with exception: %r. Calling backoff.",
+                    attempt_no,
+                    fn.__qualname__,
+                    last_exc,
                 )
                 utils.backoff(retry.backoff, retry.backoff_multiplier, retry.backoff_cap, attempt_no - 1)
 
         logger.warning(
-            f"Attempt {retry.max_attempts} to run function {fn.__qualname__} failed with exception: {last_exc}"
+            "Attempt %d to run function %s failed with exception: %r",
+            retry.max_attempts,
+            fn.__qualname__,
+            last_exc,
         )
         return False, last_exc
 
@@ -569,11 +584,21 @@ def run_fn_async(
 
             except asyncio.TimeoutError as e:
                 last_exc = e
-                logger.error(f"[async] Timeout on attempt {attempt_no}")
+                logger.exception(
+                    "[async] Timeout on attempt %d for function %s: %r",
+                    attempt_no,
+                    fn.__qualname__,
+                    e,
+                )
 
             except Exception as e:
                 last_exc = e
-                logger.error(f"[async] Error on attempt {attempt_no}: {e}")
+                logger.exception(
+                    "[async] Error on attempt %d for function %s: %r",
+                    attempt_no,
+                    fn.__qualname__,
+                    e,
+                )
 
             if attempt_no < retry.max_attempts:
                 await utils.backoff_async(

@@ -167,7 +167,7 @@ class BaseAsyncTask(ABC, metaclass=TaskMeta):
     """
 
     name: str = "base_async"
-    connectors: Dict[str, Connector]
+    connectors: Dict[str, Any]
     services: Dict[str, Any]
     policies: List[Any]
     worker_id: Optional[int]
@@ -175,7 +175,7 @@ class BaseAsyncTask(ABC, metaclass=TaskMeta):
 
     def __init__(
         self,
-        connectors: Dict[str, Connector],
+        connectors: Dict[str, Any],
         services: Dict[str, Any],
         policies: List[Any],
         worker_id: Optional[int] = None,
