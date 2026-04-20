@@ -165,9 +165,9 @@ class TestEmptyExceptionDiagnostics:
         # next on-call sees the real stack instead of an empty-tail line.
         helper_errors = [r for r in caplog.records if r.name == "ergon.task.helpers"]
         assert helper_errors, "helpers.run_fn_async must log the failure"
-        assert any(
-            r.exc_info is not None for r in helper_errors
-        ), "helpers must attach exc_info so the traceback survives the swallow"
+        assert any(r.exc_info is not None for r in helper_errors), (
+            "helpers must attach exc_info so the traceback survives the swallow"
+        )
 
     async def test_transaction_exception_str_includes_cause(self):
         underlying = _EmptyStrException()
