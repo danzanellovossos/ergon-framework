@@ -1,5 +1,5 @@
 import time
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -71,6 +71,16 @@ class AsyncRabbitmqConsumerConfig(BaseModel):
     durable: bool = Field(default=True, description="Durable exchange and queue declarations")
     auto_ack: bool = Field(default=False, description="Automatically acknowledge messages on delivery")
     consume_timeout: float = Field(default=2.0, description="Max seconds to wait per fetch call")
+    queue_arguments: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Extra AMQP arguments forwarded to queue.declare (the AMQP `x-arguments` table). "
+            "Use for dead-lettering (`x-dead-letter-exchange`, `x-dead-letter-routing-key`), "
+            "TTL (`x-message-ttl`), max length, etc. Note: changing these on an existing queue "
+            "will cause RabbitMQ to reject re-declaration with PRECONDITION_FAILED; the queue "
+            "must be recreated or the args set via a broker-side Policy."
+        ),
+    )
 
 
 class AsyncRabbitmqProducerConfig(BaseModel):

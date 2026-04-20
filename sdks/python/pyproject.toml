@@ -1,6 +1,6 @@
 [project]
 name = "ergon-framework-python"
-version = "0.1.0"
+version = "0.1.1"
 description = "Ergon internal task-oriented project bootstrapper"
 readme = "README.md"
 license = "MIT"
@@ -94,6 +94,11 @@ reportMissingTypeStubs = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# ``auto`` mode auto-applies ``pytest.mark.asyncio`` to ``async def`` tests
+# and leaves sync tests alone, avoiding the spurious "marked async but not
+# async function" warnings that ``pytestmark`` at module level produced.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [project.urls]
 Homepage = "https://github.com/danzanellovossos/ergon-framework"

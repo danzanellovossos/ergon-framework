@@ -15,14 +15,9 @@ These cover the exact failure mode from the agents-processor incident:
 
 import logging
 
-import pytest
-
 from ergon.connector import Transaction
 from ergon.task import exceptions, policies
 from tests.task.mocks import MockAsyncConsumer, MockConsumer
-
-pytestmark = pytest.mark.asyncio(loop_scope="function")
-
 
 # ---------------------------------------------------------------------------
 # Async — production path that wedged in the incident
@@ -170,9 +165,9 @@ class TestEmptyExceptionDiagnostics:
         # next on-call sees the real stack instead of an empty-tail line.
         helper_errors = [r for r in caplog.records if r.name == "ergon.task.helpers"]
         assert helper_errors, "helpers.run_fn_async must log the failure"
-        assert any(r.exc_info is not None for r in helper_errors), (
-            "helpers must attach exc_info so the traceback survives the swallow"
-        )
+        assert any(
+            r.exc_info is not None for r in helper_errors
+        ), "helpers must attach exc_info so the traceback survives the swallow"
 
     async def test_transaction_exception_str_includes_cause(self):
         underlying = _EmptyStrException()

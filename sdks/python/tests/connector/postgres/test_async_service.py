@@ -3,12 +3,8 @@
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from ergon.connector.postgres.async_service import AsyncPostgresService
 from ergon.connector.postgres.models import PostgresClient
-
-pytestmark = pytest.mark.asyncio(loop_scope="function")
 
 
 def _make_client(**overrides) -> PostgresClient:

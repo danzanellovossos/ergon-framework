@@ -21,8 +21,6 @@ from ergon.task.exceptions import (
     NackOnDeadChannelError,
 )
 
-pytestmark = pytest.mark.asyncio(loop_scope="function")
-
 
 def _make_client(**overrides) -> AsyncRabbitmqClient:
     defaults = {"username": "guest", "password": "guest", "host": "localhost"}
@@ -148,6 +146,118 @@ class TestConsume:
         assert result[0]["body"] == {"key": "val"}
         assert result[0]["routing_key"] == "test.key"
         assert result[0]["delivery_tag"] == 1
+
+    @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
+    async def test_consume_forwards_queue_arguments(self, mock_connect):
+        """``queue_arguments`` must reach ``channel.declare_queue(arguments=...)``.
+
+        Regression: prior to 0.1.1 the field did not exist on the Pydantic
+        model and was silently dropped at validation, AND the service only
+        forwarded ``name`` and ``durable``. Together that made any DLX /
+        TTL configuration a no-op in production.
+        """
+
+        @asynccontextmanager
+        async def _iterator_cm(**kwargs):
+            async def _gen():
+                await asyncio.sleep(10)
+                return
+                yield  # make it an async generator
+
+            yield _gen()
+
+        mock_queue = MagicMock()
+        mock_queue.name = "test-queue"
+        mock_queue.iterator = _iterator_cm
+
+        mock_channel = _mock_channel()
+        mock_channel.declare_queue = AsyncMock(return_value=mock_queue)
+
+        mock_conn = AsyncMock()
+        mock_conn.is_closed = False
+        mock_conn.channel = AsyncMock(return_value=mock_channel)
+        mock_connect.return_value = mock_conn
+
+        service = AsyncRabbitMQService(_make_client())
+        config = AsyncRabbitmqConsumerConfig(
+            queue_name="test-queue",
+            consume_timeout=0.05,
+            queue_arguments={
+                "x-dead-letter-exchange": "dlx.events",
+                "x-dead-letter-routing-key": "events.failed",
+                "x-message-ttl": 60_000,
+            },
+        )
+
+        await service.consume(config, batch_size=1)
+
+        mock_channel.declare_queue.assert_awaited_once()
+        _, call_kwargs = mock_channel.declare_queue.call_args
+        assert call_kwargs.get("arguments") == {
+            "x-dead-letter-exchange": "dlx.events",
+            "x-dead-letter-routing-key": "events.failed",
+            "x-message-ttl": 60_000,
+        }
+        assert call_kwargs.get("durable") is True
+
+    @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
+    async def test_consume_with_empty_queue_arguments_passes_none(self, mock_connect):
+        """Empty/omitted ``queue_arguments`` must pass ``arguments=None`` so we
+        do not break re-declaration on existing queues that were declared
+        without an x-arguments table (RabbitMQ would otherwise reject with
+        PRECONDITION_FAILED on inequivalent args).
+        """
+
+        @asynccontextmanager
+        async def _iterator_cm(**kwargs):
+            async def _gen():
+                await asyncio.sleep(10)
+                return
+                yield
+
+            yield _gen()
+
+        mock_queue = MagicMock()
+        mock_queue.name = "test-queue"
+        mock_queue.iterator = _iterator_cm
+
+        mock_channel = _mock_channel()
+        mock_channel.declare_queue = AsyncMock(return_value=mock_queue)
+
+        mock_conn = AsyncMock()
+        mock_conn.is_closed = False
+        mock_conn.channel = AsyncMock(return_value=mock_channel)
+        mock_connect.return_value = mock_conn
+
+        service = AsyncRabbitMQService(_make_client())
+        config = AsyncRabbitmqConsumerConfig(
+            queue_name="test-queue",
+            consume_timeout=0.05,
+        )
+
+        await service.consume(config, batch_size=1)
+
+        mock_channel.declare_queue.assert_awaited_once()
+        _, call_kwargs = mock_channel.declare_queue.call_args
+        assert call_kwargs.get("arguments") is None
+
+    async def test_declare_queue_caches_per_arguments(self):
+        """Two configs with the same queue name but different ``arguments``
+        must NOT share a cached handle — otherwise misconfigured DLX wiring
+        would silently inherit the first declaration's args.
+        """
+        mock_channel = _mock_channel()
+        mock_channel.declare_queue = AsyncMock(side_effect=lambda name, **_: MagicMock(name=name))
+
+        service = AsyncRabbitMQService(_make_client())
+        service._consume_channel = mock_channel
+
+        await service.declare_queue("q", arguments={"x-dead-letter-exchange": "dlx.a"})
+        await service.declare_queue("q", arguments={"x-dead-letter-exchange": "dlx.b"})
+        await service.declare_queue("q", arguments={"x-dead-letter-exchange": "dlx.a"})
+
+        # Same args -> cache hit; different args -> separate declaration.
+        assert mock_channel.declare_queue.await_count == 2
 
     @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
     async def test_consume_empty_queue_timeout(self, mock_connect):

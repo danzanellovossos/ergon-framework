@@ -157,15 +157,37 @@ class AsyncRabbitMQService:
         self,
         name: str,
         durable: bool = True,
+        arguments: Optional[Dict[str, Any]] = None,
     ) -> AbstractQueue:
-        if name in self._queues:
-            return self._queues[name]
+        # Cache key includes ``arguments`` so two configs that target the same
+        # queue name but with different x-arguments (e.g. different DLX wiring)
+        # cannot silently share a cached handle. Without this, the second call
+        # would get the first declaration's queue object back regardless of its
+        # ``arguments`` payload — masking misconfiguration in tests and dev.
+        cache_key = self._queue_cache_key(name, arguments)
+        if cache_key in self._queues:
+            return self._queues[cache_key]
 
         channel = await self._get_consume_channel()
-        queue = await channel.declare_queue(name, durable=durable)
-        self._queues[name] = queue
-        logger.debug("Declared queue: name=%s durable=%s", name, durable)
+        queue = await channel.declare_queue(name, durable=durable, arguments=arguments)
+        self._queues[cache_key] = queue
+        logger.debug(
+            "Declared queue: name=%s durable=%s arguments=%s",
+            name,
+            durable,
+            arguments or {},
+        )
         return queue
+
+    @staticmethod
+    def _queue_cache_key(name: str, arguments: Optional[Dict[str, Any]]) -> str:
+        if not arguments:
+            return name
+        # Sort for stable hashing regardless of insertion order; values are
+        # rendered via repr to handle non-hashable values (lists, dicts) that
+        # AMQP allows in the x-arguments table.
+        rendered = ",".join(f"{k}={arguments[k]!r}" for k in sorted(arguments))
+        return f"{name}#{rendered}"
 
     async def bind_queue(
         self,
@@ -207,7 +229,11 @@ class AsyncRabbitMQService:
         else:
             exchange = None
 
-        queue = await self.declare_queue(config.queue_name, durable=config.durable)
+        queue = await self.declare_queue(
+            config.queue_name,
+            durable=config.durable,
+            arguments=config.queue_arguments or None,
+        )
 
         if exchange is not None:
             for key in config.binding_keys:
