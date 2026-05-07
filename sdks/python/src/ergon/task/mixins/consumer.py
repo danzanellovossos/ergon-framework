@@ -17,6 +17,34 @@ logger = logging.getLogger(__name__)
 tracer = telemetry.tracing.get_tracer(__name__)
 
 
+def _wrap_handler_failure(result: Any) -> exceptions.TransactionException:
+    """Normalise a handler failure value into a TransactionException.
+
+    Preserves the original exception (and its traceback) on ``__cause__`` so
+    downstream ``logger.exception`` can render the real stack instead of
+    ``NoneType: None``. Uses ``repr`` of the cause to derive a diagnostic
+    message when the cause has an empty ``str()``.
+    """
+    if isinstance(result, exceptions.TransactionException):
+        return result
+    if isinstance(result, futures.TimeoutError):
+        return exceptions.TransactionException(
+            message=repr(result),
+            category=exceptions.ExceptionType.TIMEOUT,
+            cause=result if isinstance(result, BaseException) else None,
+        )
+    if isinstance(result, BaseException):
+        return exceptions.TransactionException(
+            message=None,  # let constructor derive from cause via repr()
+            category=exceptions.ExceptionType.SYSTEM,
+            cause=result,
+        )
+    return exceptions.TransactionException(
+        message=repr(result),
+        category=exceptions.ExceptionType.SYSTEM,
+    )
+
+
 class ConsumerMixin(ABC):
     name: str
     connectors: dict[str, connector.Connector]
@@ -53,22 +81,28 @@ class ConsumerMixin(ABC):
             # 2) EXCEPTION HANDLER
             # -----------------------
             if not process_ok:
-                logger.error(f"Transaction {transaction.id} process handler failed with outcome '{process_result}'")
-                final_status = "exception"
-                if isinstance(process_result, exceptions.TransactionException):
-                    process_result = process_result
-                elif isinstance(process_result, futures.TimeoutError):
-                    process_result = exceptions.TransactionException(
-                        str(process_result), exceptions.ExceptionType.TIMEOUT
-                    )
-                else:
-                    process_result = exceptions.TransactionException(
-                        str(process_result), exceptions.ExceptionType.SYSTEM
-                    )
                 logger.error(
-                    f"Invoking exception handler for transaction {transaction.id} with outcome: '{process_result}'"
+                    "Transaction %s process handler failed with outcome %r",
+                    transaction.id,
+                    process_result,
                 )
-                return self._handle_exception(transaction, process_result, policy.exception.retry)
+                final_status = "exception"
+                process_exc = _wrap_handler_failure(process_result)
+                logger.error(
+                    "Invoking exception handler for transaction %s with outcome: %s",
+                    transaction.id,
+                    process_exc,
+                )
+                exc_ok, exc_result = self._handle_exception(transaction, process_exc, policy.exception.retry)
+                if not exc_ok and isinstance(exc_result, exceptions.DeadChannelError):
+                    logger.warning(
+                        "Transaction %s exception handler hit a dead channel "
+                        "(%s); broker will redeliver. Skipping further routing.",
+                        transaction.id,
+                        exc_result,
+                    )
+                    final_status = "redeliver"
+                return exc_ok, exc_result
 
             # -----------------------
             # 3) SUCCESS HANDLER
@@ -77,22 +111,43 @@ class ConsumerMixin(ABC):
             success_ok, success_result = self._handle_success(transaction, process_result, policy.success.retry)
 
             if not success_ok:
-                logger.error(f"Transaction {transaction.id} success handler failed with outcome '{success_result}'")
-                final_status = "exception"
-                if isinstance(success_result, exceptions.TransactionException):
-                    success_result = success_result
-                elif isinstance(success_result, futures.TimeoutError):
-                    success_result = exceptions.TransactionException(
-                        str(success_result), exceptions.ExceptionType.TIMEOUT
+                # ----------------------------------------------------------
+                # SHORT-CIRCUIT: ack/nack against a dead broker channel.
+                # Routing to the exception handler would only re-fail (it
+                # would nack on the same dead channel). The broker will
+                # redeliver the message to a fresh subscriber.
+                # ----------------------------------------------------------
+                if isinstance(success_result, exceptions.DeadChannelError):
+                    logger.warning(
+                        "Transaction %s success handler could not ack on a dead "
+                        "channel (%s); broker will redeliver. Skipping exception handler.",
+                        transaction.id,
+                        success_result,
                     )
-                else:
-                    success_result = exceptions.TransactionException(
-                        str(success_result), exceptions.ExceptionType.SYSTEM
-                    )
+                    final_status = "redeliver"
+                    return False, success_result
+
                 logger.error(
-                    f"Invoking exception handler for transaction {transaction.id} with outcome: '{success_result}'"
+                    "Transaction %s success handler failed with outcome %r",
+                    transaction.id,
+                    success_result,
                 )
-                return self._handle_exception(transaction, success_result, policy.exception.retry)
+                final_status = "exception"
+                success_exc = _wrap_handler_failure(success_result)
+                logger.error(
+                    "Invoking exception handler for transaction %s with outcome: %s",
+                    transaction.id,
+                    success_exc,
+                )
+                exc_ok, exc_result = self._handle_exception(transaction, success_exc, policy.exception.retry)
+                if not exc_ok and isinstance(exc_result, exceptions.DeadChannelError):
+                    logger.warning(
+                        "Transaction %s exception handler hit a dead channel (%s); broker will redeliver.",
+                        transaction.id,
+                        exc_result,
+                    )
+                    final_status = "redeliver"
+                return exc_ok, exc_result
 
             return True, success_result
         finally:
@@ -468,22 +523,28 @@ class AsyncConsumerMixin(ABC):
             # 2) EXCEPTION HANDLER
             # -----------------------
             if not process_ok:
-                logger.error(f"Transaction {transaction.id} process handler failed with outcome '{process_result}'")
-                final_status = "exception"
-                if isinstance(process_result, exceptions.TransactionException):
-                    process_result = process_result
-                elif isinstance(process_result, futures.TimeoutError):
-                    process_result = exceptions.TransactionException(
-                        str(process_result), exceptions.ExceptionType.TIMEOUT
-                    )
-                else:
-                    process_result = exceptions.TransactionException(
-                        str(process_result), exceptions.ExceptionType.SYSTEM
-                    )
                 logger.error(
-                    f"Invoking exception handler for transaction {transaction.id} with outcome: '{process_result}'"
+                    "Transaction %s process handler failed with outcome %r",
+                    transaction.id,
+                    process_result,
                 )
-                return await self._handle_exception(transaction, process_result, policy.exception.retry)
+                final_status = "exception"
+                process_exc = _wrap_handler_failure(process_result)
+                logger.error(
+                    "Invoking exception handler for transaction %s with outcome: %s",
+                    transaction.id,
+                    process_exc,
+                )
+                exc_ok, exc_result = await self._handle_exception(transaction, process_exc, policy.exception.retry)
+                if not exc_ok and isinstance(exc_result, exceptions.DeadChannelError):
+                    logger.warning(
+                        "Transaction %s exception handler hit a dead channel "
+                        "(%s); broker will redeliver. Skipping further routing.",
+                        transaction.id,
+                        exc_result,
+                    )
+                    final_status = "redeliver"
+                return exc_ok, exc_result
 
             # -----------------------
             # 3) SUCCESS HANDLER
@@ -492,22 +553,43 @@ class AsyncConsumerMixin(ABC):
             success_ok, success_result = await self._handle_success(transaction, process_result, policy.success.retry)
 
             if not success_ok:
-                logger.error(f"Transaction {transaction.id} success handler failed with outcome '{success_result}'")
-                final_status = "exception"
-                if isinstance(success_result, exceptions.TransactionException):
-                    success_result = success_result
-                elif isinstance(success_result, futures.TimeoutError):
-                    success_result = exceptions.TransactionException(
-                        str(success_result), exceptions.ExceptionType.TIMEOUT
+                # ----------------------------------------------------------
+                # SHORT-CIRCUIT: ack/nack against a dead broker channel.
+                # Routing to the exception handler would only re-fail (it
+                # would nack on the same dead channel). The broker will
+                # redeliver the message to a fresh subscriber.
+                # ----------------------------------------------------------
+                if isinstance(success_result, exceptions.DeadChannelError):
+                    logger.warning(
+                        "Transaction %s success handler could not ack on a dead "
+                        "channel (%s); broker will redeliver. Skipping exception handler.",
+                        transaction.id,
+                        success_result,
                     )
-                else:
-                    success_result = exceptions.TransactionException(
-                        str(success_result), exceptions.ExceptionType.SYSTEM
-                    )
+                    final_status = "redeliver"
+                    return False, success_result
+
                 logger.error(
-                    f"Invoking exception handler for transaction {transaction.id} with outcome: '{success_result}'"
+                    "Transaction %s success handler failed with outcome %r",
+                    transaction.id,
+                    success_result,
                 )
-                return await self._handle_exception(transaction, success_result, policy.exception.retry)
+                final_status = "exception"
+                success_exc = _wrap_handler_failure(success_result)
+                logger.error(
+                    "Invoking exception handler for transaction %s with outcome: %s",
+                    transaction.id,
+                    success_exc,
+                )
+                exc_ok, exc_result = await self._handle_exception(transaction, success_exc, policy.exception.retry)
+                if not exc_ok and isinstance(exc_result, exceptions.DeadChannelError):
+                    logger.warning(
+                        "Transaction %s exception handler hit a dead channel (%s); broker will redeliver.",
+                        transaction.id,
+                        exc_result,
+                    )
+                    final_status = "redeliver"
+                return exc_ok, exc_result
 
             return True, success_result
         finally:

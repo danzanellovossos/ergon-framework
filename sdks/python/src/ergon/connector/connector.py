@@ -52,6 +52,24 @@ class AsyncConnector(ABC):
         """Get the total number of transactions in the connector target system asynchronously."""
         raise NotImplementedError
 
+    async def ack_transaction(self, transaction: transaction.Transaction) -> None:
+        """Acknowledge a successfully processed transaction.
+
+        Default raises NotImplementedError so non-broker connectors (database,
+        HTTP, file-based, etc.) can ignore it. Broker connectors that have
+        per-message ack semantics (RabbitMQ, SQS, Kafka, ...) must override.
+        """
+        raise NotImplementedError
+
+    async def nack_transaction(self, transaction: transaction.Transaction, requeue: bool = True) -> None:
+        """Negatively acknowledge a transaction.
+
+        ``requeue=True`` asks the broker to redeliver; ``requeue=False`` routes
+        to the broker's dead-letter destination if one is configured. Default
+        raises NotImplementedError; broker connectors must override.
+        """
+        raise NotImplementedError
+
 
 # ---------------------------------------------------------
 # CONNECTOR CONFIG (supports both sync + async)

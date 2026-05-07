@@ -10,22 +10,17 @@
 
 ## Installation
 
-Ergon is not yet published to PyPI. Install as a local dependency:
+```bash
+pip install ergon-framework-python
+```
+
+For local development, install in editable mode:
 
 ```bash
 pip install -e /path/to/ergon-framework/sdks/python
 ```
 
-Or add to your `pyproject.toml`:
-
-```toml
-[project]
-dependencies = [
-    "ergon @ file:///path/to/ergon-framework/sdks/python",
-]
-```
-
-📖 **[Full Getting Started Guide](docs/getting-started.md)** — Complete setup, project configuration, and task registration
+📖 **[Full Getting Started Guide](https://github.com/danzanellovossos/ergon-framework/blob/main/sdks/python/docs/getting-started.md)** — Complete setup, project configuration, and task registration
 
 ---
 
@@ -37,8 +32,8 @@ Create a task by inheriting from `ConsumerTask` and implementing `process_transa
 
 ```python
 from typing import Any
-from ergon_framework.task.mixins import ConsumerTask
-from ergon_framework.connector import Transaction
+from ergon.task.mixins import ConsumerTask
+from ergon.connector import Transaction
 
 class OrderProcessor(ConsumerTask):
     """Consumes order transactions and processes them."""
@@ -66,7 +61,7 @@ Connectors bridge external systems to the transaction interface:
 
 ```python
 from typing import List
-from ergon_framework.connector import Connector, Transaction
+from ergon.connector import Connector, Transaction
 import uuid
 
 class RabbitMQConnector(Connector):
@@ -96,8 +91,8 @@ class RabbitMQConnector(Connector):
 Use `TaskConfig` to wire everything together:
 
 ```python
-from ergon_framework.task import TaskConfig, runner, policies
-from ergon_framework.connector import ConnectorConfig
+from ergon.task import TaskConfig, runner, policies
+from ergon.connector import ConnectorConfig
 
 # Configure the consumer policy
 consumer_policy = policies.ConsumerPolicy()
@@ -141,7 +136,7 @@ The framework handles the loop, retry logic, telemetry, and graceful shutdown au
 In the Python SDK, transactions are implemented as immutable Pydantic models:
 
 ```python
-from ergon_framework.connector import Transaction
+from ergon.connector import Transaction
 
 # Transactions are created by Connectors when fetching data
 tx = Transaction(
@@ -160,7 +155,7 @@ Transactions are **frozen** (immutable) once created via Pydantic's `frozen=True
 The Python SDK provides ready-to-use task classes:
 
 ```python
-from ergon_framework.task.mixins import (
+from ergon.task.mixins import (
     ConsumerTask,      # Sync consumer
     ProducerTask,      # Sync producer
     HybridTask,        # Sync consumer + producer
@@ -175,7 +170,7 @@ from ergon_framework.task.mixins import (
 Best for CPU-bound processing or legacy libraries:
 
 ```python
-from ergon_framework.task.mixins import ConsumerTask
+from ergon.task.mixins import ConsumerTask
 
 class SyncProcessor(ConsumerTask):
     def process_transaction(self, transaction):
@@ -192,7 +187,7 @@ class SyncProcessor(ConsumerTask):
 Best for I/O-bound workloads with high concurrency:
 
 ```python
-from ergon_framework.task.mixins import AsyncConsumerTask
+from ergon.task.mixins import AsyncConsumerTask
 
 class AsyncProcessor(AsyncConsumerTask):
     async def process_transaction(self, transaction):
@@ -229,7 +224,7 @@ class EnrichmentTask(ConsumerTask):
 Configure services in `TaskConfig`:
 
 ```python
-from ergon_framework.connector import ServiceConfig
+from ergon.connector import ServiceConfig
 
 config = TaskConfig(
     name="enrichment-task",
@@ -252,7 +247,7 @@ config = TaskConfig(
 Policies are created as instances and configured by setting properties directly:
 
 ```python
-from ergon_framework.task import policies
+from ergon.task import policies
 
 # Consumer policy with full configuration
 policy = policies.ConsumerPolicy()
@@ -290,7 +285,7 @@ policy.exception.retry.max_attempts = 2
 The Python SDK integrates **OpenTelemetry** natively:
 
 ```python
-from ergon_framework.telemetry import logging, tracing, metrics
+from ergon.telemetry import logging, tracing, metrics
 
 config = TaskConfig(
     name="observed-task",
@@ -389,7 +384,7 @@ my-project/
         └── helpers.py       # Task-specific utilities
 ```
 
-📖 **[Full Project Structure Guide](docs/project-structure.md)** — Detailed documentation on organizing connectors, tasks, and shared modules.
+📖 **[Full Project Structure Guide](https://github.com/danzanellovossos/ergon-framework/blob/main/sdks/python/docs/project-structure.md)** — Detailed documentation on organizing connectors, tasks, and shared modules.
 
 ---
 
@@ -397,23 +392,23 @@ my-project/
 
 ### Python SDK Guides
 
-- **[Getting Started](docs/getting-started.md)** — Installation, project setup, and running your first task
-- **[CLI Reference](docs/cli.md)** — Commands, options, and exit codes
-- **[Project Structure Guide](docs/project-structure.md)** — How to organize connectors, tasks, and shared modules
+- **[Getting Started](https://github.com/danzanellovossos/ergon-framework/blob/main/sdks/python/docs/getting-started.md)** — Installation, project setup, and running your first task
+- **[CLI Reference](https://github.com/danzanellovossos/ergon-framework/blob/main/sdks/python/docs/cli.md)** — Commands, options, and exit codes
+- **[Project Structure Guide](https://github.com/danzanellovossos/ergon-framework/blob/main/sdks/python/docs/project-structure.md)** — How to organize connectors, tasks, and shared modules
 
 ### Framework Concepts
 
-- **[Framework Architecture](../../docs/architecture.md)** — Full system specification and design philosophy
-- **[Transaction Abstraction](../../docs/modules/1.transaction.md)** — Understanding atomicity rules
-- **[Task Module](../../docs/modules/2.task.md)** — Mixins, lifecycles, and execution modes
-- **[Connector Module](../../docs/modules/3.connector.md)** — Building integration boundaries
-- **[Service Module](../../docs/modules/4.service.md)** — Protocol engineering and reliability
-- **[Telemetry Module](../../docs/modules/5.telemetry.md)** — Configuring OTel logs, metrics, and traces
+- **[Framework Architecture](https://github.com/danzanellovossos/ergon-framework/blob/main/docs/architecture.md)** — Full system specification and design philosophy
+- **[Transaction Abstraction](https://github.com/danzanellovossos/ergon-framework/blob/main/docs/modules/1.transaction.md)** — Understanding atomicity rules
+- **[Task Module](https://github.com/danzanellovossos/ergon-framework/blob/main/docs/modules/2.task.md)** — Mixins, lifecycles, and execution modes
+- **[Connector Module](https://github.com/danzanellovossos/ergon-framework/blob/main/docs/modules/3.connector.md)** — Building integration boundaries
+- **[Service Module](https://github.com/danzanellovossos/ergon-framework/blob/main/docs/modules/4.service.md)** — Protocol engineering and reliability
+- **[Telemetry Module](https://github.com/danzanellovossos/ergon-framework/blob/main/docs/modules/5.telemetry.md)** — Configuring OTel logs, metrics, and traces
 
 ---
 
 ## License
 
-This project is licensed under the [MIT License](../../LICENSE).
+This project is licensed under the [MIT License](https://github.com/danzanellovossos/ergon-framework/blob/main/LICENSE).
 
 <br/>
