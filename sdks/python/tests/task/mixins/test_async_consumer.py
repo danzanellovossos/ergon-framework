@@ -396,3 +396,59 @@ class TestConnectorResolution:
 
         with pytest.raises(ValueError):
             await consumer.consume_transactions(policy=policy)
+
+
+# =====================================================================
+#   Prefetch vs concurrency guardrail (#6)
+# =====================================================================
+
+
+class TestPrefetchGuardrail:
+    async def test_warns_when_prefetch_exceeds_concurrency(self, caplog):
+        import logging
+
+        from ergon.connector.rabbitmq.models import AsyncRabbitmqConsumerConfig
+        from ergon.task.mixins.consumer import _warn_if_prefetch_exceeds_concurrency
+
+        class _FakeConn:
+            _consumer_config = AsyncRabbitmqConsumerConfig(queue_name="agents.processor", prefetch_count=40)
+
+        policy = policies.ConsumerPolicy()
+        policy.loop.concurrency.value = 20
+
+        with caplog.at_level(logging.WARNING, logger="ergon.task.mixins.consumer"):
+            _warn_if_prefetch_exceeds_concurrency(_FakeConn(), policy, "EventWorkerTask")
+
+        assert any("exceeds loop concurrency" in r.getMessage() for r in caplog.records)
+
+    async def test_no_warning_when_aligned(self, caplog):
+        import logging
+
+        from ergon.connector.rabbitmq.models import AsyncRabbitmqConsumerConfig
+        from ergon.task.mixins.consumer import _warn_if_prefetch_exceeds_concurrency
+
+        class _FakeConn:
+            _consumer_config = AsyncRabbitmqConsumerConfig(queue_name="q", prefetch_count=20)
+
+        policy = policies.ConsumerPolicy()
+        policy.loop.concurrency.value = 20
+
+        with caplog.at_level(logging.WARNING, logger="ergon.task.mixins.consumer"):
+            _warn_if_prefetch_exceeds_concurrency(_FakeConn(), policy, "task")
+
+        assert not any("exceeds loop concurrency" in r.getMessage() for r in caplog.records)
+
+    async def test_skips_connector_without_consumer_config(self, caplog):
+        import logging
+
+        from ergon.task.mixins.consumer import _warn_if_prefetch_exceeds_concurrency
+
+        class _FakeConn:
+            pass
+
+        policy = policies.ConsumerPolicy()
+
+        with caplog.at_level(logging.WARNING, logger="ergon.task.mixins.consumer"):
+            _warn_if_prefetch_exceeds_concurrency(_FakeConn(), policy, "task")
+
+        assert not any("exceeds loop concurrency" in r.getMessage() for r in caplog.records)

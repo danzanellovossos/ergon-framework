@@ -51,7 +51,22 @@ class AsyncRabbitmqClient(BaseModel):
     username: str = Field(default="guest", description="RabbitMQ username")
     password: str = Field(default="guest", description="RabbitMQ password")
     virtual_host: str = Field(default="/", description="RabbitMQ virtual host")
-    heartbeat: int = Field(default=600, description="Heartbeat interval in seconds")
+    heartbeat: int = Field(
+        default=60,
+        description=(
+            "Heartbeat interval in seconds. Kept low (default 60) so a half-open "
+            "socket is detected within ~2x heartbeat instead of blocking for many "
+            "minutes. AmazonMQ/RabbitMQ negotiate the lower of client/server values."
+        ),
+    )
+    ack_timeout: float = Field(
+        default=30,
+        description=(
+            "Max seconds to wait for an ack/nack RPC before treating the channel as "
+            "dead. Bounds recovery so a stalled ack on a half-open connection fails "
+            "fast (broker redelivers) rather than wedging the consumer."
+        ),
+    )
     connection_attempts: int = Field(default=3, description="Connection retry attempts")
     ssl_enabled: bool = Field(default=False, description="Enable SSL/TLS")
     ssl_ca_certs: Optional[str] = Field(default=None, description="Path to CA certificate when using SSL")
@@ -67,7 +82,15 @@ class AsyncRabbitmqConsumerConfig(BaseModel):
     exchange_name: str = Field(default="", description="Exchange name (empty for default exchange)")
     exchange_type: str = Field(default="topic", description="Exchange type: topic, direct, fanout, headers")
     binding_keys: list[str] = Field(default=["#"], description="Routing key patterns for queue binding")
-    prefetch_count: int = Field(default=10, description="Number of unacknowledged messages allowed")
+    prefetch_count: int = Field(
+        default=10,
+        description=(
+            "Number of unacknowledged messages allowed. Recommended: set equal to the "
+            "consumer loop concurrency. A prefetch larger than concurrency lets idle "
+            "sibling messages sit unacked until they age past the broker "
+            "consumer_timeout, which triggers a Basic.Cancel and consumer recovery."
+        ),
+    )
     durable: bool = Field(default=True, description="Durable exchange and queue declarations")
     auto_ack: bool = Field(default=False, description="Automatically acknowledge messages on delivery")
     consume_timeout: float = Field(default=2.0, description="Max seconds to wait per fetch call")
