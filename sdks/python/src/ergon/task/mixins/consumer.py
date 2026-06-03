@@ -45,6 +45,34 @@ def _wrap_handler_failure(result: Any) -> exceptions.TransactionException:
     )
 
 
+def _warn_if_prefetch_exceeds_concurrency(conn: Any, policy: policies.ConsumerPolicy, task_name: str) -> None:
+    """Warn when a broker consumer holds more unacked messages than it can process.
+
+    A prefetch larger than the loop concurrency lets idle sibling messages sit
+    unacked until they age past the broker ``consumer_timeout``, which triggers
+    a ``Basic.Cancel`` and the whole consumer-recovery path. The connector
+    cannot see the loop concurrency and the policy cannot see the connector's
+    prefetch, so the check lives here where both are visible. Best-effort:
+    silently skips connectors that do not expose a consumer config.
+    """
+    consumer_config = getattr(conn, "_consumer_config", None)
+    prefetch = getattr(consumer_config, "prefetch_count", None)
+    if not isinstance(prefetch, int):
+        return
+    concurrency = policy.loop.concurrency.value
+    if prefetch > concurrency:
+        logger.warning(
+            "[%s] prefetch_count=%d exceeds loop concurrency=%d: up to %d messages will be "
+            "held unacked while only %d are processed concurrently. Idle siblings can age past "
+            "the broker consumer_timeout and trigger a Basic.Cancel. Set prefetch_count == concurrency.",
+            task_name,
+            prefetch,
+            concurrency,
+            prefetch,
+            concurrency,
+        )
+
+
 class ConsumerMixin(ABC):
     name: str
     connectors: dict[str, connector.Connector]
@@ -702,6 +730,7 @@ class AsyncConsumerMixin(ABC):
             logger.debug(f"Consume loop running with loop policy: {policy.loop.model_dump_json(indent=2)}")
 
             conn = self._resolve_connector(policy.fetch.connector_name)
+            _warn_if_prefetch_exceeds_concurrency(conn, policy, getattr(self, "name", self.__class__.__name__))
 
             ctx = otel_context.Context()
 

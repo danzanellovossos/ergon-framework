@@ -116,5 +116,14 @@ class AsyncRabbitMQConnector(AsyncConnector):
             raise ValueError(f"Cannot nack transaction {transaction.id}: no raw message in metadata")
         await self.service.nack(raw_message, requeue=requeue)
 
+    def health(self) -> Dict[str, Any]:
+        """Consumer liveness snapshot (last fetch/ack, active tag, channel state).
+
+        Intended for wiring a service-level health check that can detect a
+        wedged or zombie consumer rather than silently running after a broker
+        cancel.
+        """
+        return self.service.health()
+
     async def close(self) -> None:
         await self.service.close()

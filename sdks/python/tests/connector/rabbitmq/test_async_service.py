@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -61,6 +62,12 @@ class TestClientUrl:
     def test_explicit_url_takes_precedence(self):
         client = _make_client(url="amqp://other:other@rmq:5673/vhost")
         assert client.get_url() == "amqp://other:other@rmq:5673/vhost"
+
+    def test_heartbeat_and_ack_timeout_defaults_fail_fast(self):
+        """Defaults must be low enough to detect a half-open socket in seconds."""
+        client = _make_client()
+        assert client.heartbeat == 60
+        assert client.ack_timeout == 30
 
 
 class TestConnection:
@@ -414,6 +421,65 @@ class TestDeadChannelAckNack:
         assert service._queues == {}
         assert service._exchanges == {}
 
+    async def test_ack_on_dead_channel_closes_channel(self):
+        """Teardown must explicitly close the dead channel (kills zombie + leak)."""
+        msg = _mock_message(delivery_tag=7)
+        msg.ack = AsyncMock(side_effect=aio_pika.exceptions.MessageProcessError("dead", None))
+        service = AsyncRabbitMQService(_make_client())
+        dead_channel = _mock_channel()
+        dead_channel.close = AsyncMock()
+        service._consume_channel = dead_channel
+
+        with pytest.raises(AckOnDeadChannelError):
+            await service.ack(msg)
+
+        dead_channel.close.assert_awaited_once()
+        assert service._consume_channel is None
+        assert service._active_consumer_tag is None
+
+    async def test_ack_timeout_raises_dead_channel_and_tears_down(self):
+        """A stalled ack (half-open socket) must fail fast as a dead channel."""
+
+        async def _slow_ack():
+            await asyncio.sleep(1)
+
+        msg = _mock_message(delivery_tag=11)
+        msg.ack = _slow_ack
+        service = AsyncRabbitMQService(_make_client(ack_timeout=0.05))
+        dead_channel = _mock_channel()
+        dead_channel.close = AsyncMock()
+        service._consume_channel = dead_channel
+
+        with pytest.raises(AckOnDeadChannelError):
+            await service.ack(msg)
+
+        dead_channel.close.assert_awaited_once()
+        assert service._consume_channel is None
+
+    async def test_ack_success_records_liveness(self):
+        msg = _mock_message()
+        service = AsyncRabbitMQService(_make_client())
+        assert service._last_ack_ts is None
+        await service.ack(msg)
+        assert service._last_ack_ts is not None
+
+    async def test_teardown_consume_channel_closes_and_clears(self):
+        service = AsyncRabbitMQService(_make_client())
+        ch = _mock_channel()
+        ch.close = AsyncMock()
+        service._consume_channel = ch
+        service._queues["q"] = MagicMock()
+        service._exchanges["x"] = MagicMock()
+        service._active_consumer_tag = "ctag-1"
+
+        await service._teardown_consume_channel("test")
+
+        ch.close.assert_awaited_once()
+        assert service._consume_channel is None
+        assert service._queues == {}
+        assert service._exchanges == {}
+        assert service._active_consumer_tag is None
+
     async def test_nack_on_dead_channel_raises_typed_error(self):
         msg = _mock_message(delivery_tag=99)
         msg.nack = AsyncMock(side_effect=aio_pika.exceptions.MessageProcessError("dead", None))
@@ -458,6 +524,7 @@ class TestDeadChannelAckNack:
     async def test_channel_close_callback_invalidates_consume_channel_only(self):
         service = AsyncRabbitMQService(_make_client())
         consume_ch = _mock_channel()
+        consume_ch.close = AsyncMock()
         publish_ch = _mock_channel()
         service._consume_channel = consume_ch
         service._publish_channel = publish_ch
@@ -465,7 +532,8 @@ class TestDeadChannelAckNack:
         service._exchanges["x"] = MagicMock()
 
         # Simulate aio_pika invoking the close callback that we registered
-        # in ``_get_consume_channel``.
+        # in ``_get_consume_channel``. The cache must be invalidated
+        # synchronously; the explicit close is scheduled on the loop.
         service._on_consume_channel_close(consume_ch, ConnectionError("bye"))
 
         assert service._consume_channel is None
@@ -473,6 +541,11 @@ class TestDeadChannelAckNack:
         assert service._exchanges == {}
         # Publish channel and its state must survive a consume-side outage.
         assert service._publish_channel is publish_ch
+
+        # Let the scheduled teardown task run; it must close the dead channel
+        # so the broker drops its consumers and the channel does not leak.
+        await asyncio.sleep(0)
+        consume_ch.close.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -524,3 +597,29 @@ class TestChannelSplit:
         # Publish must have used a fresh, independent channel — never
         # reused the invalidated consume channel.
         assert service._publish_channel is publish_ch
+
+
+# ---------------------------------------------------------------------------
+# Liveness / health surface
+# ---------------------------------------------------------------------------
+
+
+class TestHealth:
+    async def test_health_reports_initial_state(self):
+        service = AsyncRabbitMQService(_make_client())
+        health = service.health()
+        assert health["connection_open"] is False
+        assert health["consume_channel_open"] is False
+        assert health["active_consumer_tag"] is None
+        assert health["last_fetch_ts"] is None
+        assert health["last_ack_ts"] is None
+        assert health["seconds_since_last_ack"] is None
+
+    async def test_health_reports_elapsed_since_ack(self):
+        service = AsyncRabbitMQService(_make_client())
+        service._last_ack_ts = time.time() - 5
+        service._active_consumer_tag = "ctag-9"
+        health = service.health()
+        assert health["active_consumer_tag"] == "ctag-9"
+        assert health["seconds_since_last_ack"] is not None
+        assert health["seconds_since_last_ack"] >= 5

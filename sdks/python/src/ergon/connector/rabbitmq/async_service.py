@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import ssl as ssl_module
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 import aio_pika
@@ -31,6 +32,15 @@ _DEAD_CHANNEL_EXCEPTIONS: tuple[type[BaseException], ...] = (
     aiormq.exceptions.ChannelInvalidStateError,
 )
 
+# Same as above plus ``TimeoutError`` (raised by ``asyncio.timeout`` when an
+# ack/nack stalls on a half-open socket). A stalled ack is functionally a dead
+# channel: we tear down and let the broker redeliver instead of blocking until
+# the heartbeat eventually fires.
+_DEAD_CHANNEL_TIMEOUT_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    *_DEAD_CHANNEL_EXCEPTIONS,
+    TimeoutError,
+)
+
 
 class AsyncRabbitMQService:
     def __init__(self, client: AsyncRabbitmqClient) -> None:
@@ -48,6 +58,13 @@ class AsyncRabbitMQService:
         # in-flight prefetch.
         self._exchanges: Dict[str, AbstractExchange] = {}
         self._queues: Dict[str, AbstractQueue] = {}
+
+        # Liveness signals so services can wire a real health check instead of
+        # silently running with a zombie/dead consumer. Updated on every
+        # successful fetch/ack and reset when the consume channel is torn down.
+        self._last_fetch_ts: Optional[float] = None
+        self._last_ack_ts: Optional[float] = None
+        self._active_consumer_tag: Optional[str] = None
 
     # ---------- Connection / Channel ----------
 
@@ -89,6 +106,61 @@ class AsyncRabbitMQService:
         self._queues.clear()
         self._exchanges.clear()
 
+    async def _teardown_consume_channel(self, reason: str = "explicit teardown") -> None:
+        """Deterministically tear down the consume channel.
+
+        Unlike :meth:`_invalidate_consume_channel` (which only drops Python
+        references), this snapshots the live channel, clears the cache, then
+        explicitly ``close()``-es the channel. Closing the channel:
+
+        * drops every consumer registered on it at the broker — this is what
+          eliminates the *zombie consumer* left behind by a broker-initiated
+          ``Basic.Cancel`` that the per-fetch iterator could not cancel
+          cleanly; and
+        * for a ``RobustChannel`` removes it from aio_pika's reconnection set,
+          so the robust layer does not silently restore the dead consumer on
+          the next reconnect.
+
+        It also prevents the channel leak: previously the dropped channel
+        object was orphaned without ever being closed, so its broker-side
+        channel lingered and ``ChannelCount`` climbed over time.
+        """
+        channel = self._consume_channel
+        self._invalidate_consume_channel(reason)
+        self._active_consumer_tag = None
+        await self._close_channel_safely(channel, reason)
+
+    async def _close_channel_safely(self, channel: Optional[AbstractChannel], reason: str) -> None:
+        """Best-effort close of a (possibly already-dead) channel."""
+        if channel is None:
+            return
+        try:
+            if not channel.is_closed:
+                await channel.close()
+                logger.info("Closed dead consume channel (%s)", reason)
+        except Exception as exc:  # noqa: BLE001 - best-effort teardown
+            logger.warning("Error closing consume channel during teardown (%s): %r", reason, exc)
+
+    def _schedule_teardown(self, reason: str) -> None:
+        """Tear down the consume channel from a sync callback context.
+
+        ``add_close_callback`` / consumer-cancel callbacks are synchronous, so
+        we cannot ``await``. We invalidate the cache synchronously (so the next
+        consume never sees a stale channel) and, when a running event loop is
+        available, schedule the explicit ``close()`` as a task to drop the dead
+        channel's consumers at the broker and avoid the channel leak.
+        """
+        channel = self._consume_channel
+        self._invalidate_consume_channel(reason)
+        self._active_consumer_tag = None
+        if channel is None or channel.is_closed:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._close_channel_safely(channel, reason))
+
     def _on_consume_channel_close(self, *args: Any, **kwargs: Any) -> None:
         """Callback registered with ``channel.add_close_callback``.
 
@@ -97,7 +169,7 @@ class AsyncRabbitMQService:
         """
         exc = args[1] if len(args) >= 2 else kwargs.get("exc")
         reason = f"channel closed: {exc!r}" if exc is not None else "channel closed"
-        self._invalidate_consume_channel(reason)
+        self._schedule_teardown(reason)
 
     async def _get_consume_channel(self, prefetch_count: Optional[int] = None) -> AbstractChannel:
         if self._consume_channel is None or self._consume_channel.is_closed:
@@ -246,24 +318,32 @@ class AsyncRabbitMQService:
             async with asyncio.timeout(timeout):  # type: ignore[attr-defined]
                 async with queue.iterator(no_ack=config.auto_ack) as iterator:
                     self._register_consumer_cancel_callback(iterator)
+                    # Surface the active consumer tag for liveness diagnostics;
+                    # attribute name varies across aio_pika versions.
+                    self._active_consumer_tag = getattr(iterator, "_consumer_tag", None) or getattr(
+                        iterator, "consumer_tag", None
+                    )
                     async for message in iterator:
                         msg_dict = self._message_to_dict(message)
                         buffer.append(msg_dict)
+                        self._last_fetch_ts = time.time()
                         if len(buffer) >= batch_size:
                             break
         except TimeoutError:
             pass
         except _DEAD_CHANNEL_EXCEPTIONS as exc:
-            # Broker cancelled this subscription mid-iteration; invalidate
-            # the cached channel so the next call rebuilds against a fresh
-            # consumer and the broker redelivers what we had prefetched.
-            self._invalidate_consume_channel(f"consume aborted: {exc!r}")
+            # Broker cancelled this subscription mid-iteration; deterministically
+            # tear down (cancel consumers + close) the dead channel so the next
+            # call rebuilds against a fresh consumer, the broker redelivers what
+            # we had prefetched, and no zombie consumer / leaked channel is left
+            # behind.
+            await self._teardown_consume_channel(f"consume aborted: {exc!r}")
             return buffer
         finally:
             # If the channel was closed during iteration, make sure we don't
             # hand back a stale cache to the next caller.
             if self._consume_channel is not None and self._consume_channel.is_closed:
-                self._invalidate_consume_channel("consume channel observed closed after iteration")
+                await self._teardown_consume_channel("consume channel observed closed after iteration")
 
         return buffer
 
@@ -290,7 +370,7 @@ class AsyncRabbitMQService:
             return
 
         def _on_cancel(*_args: Any, **_kwargs: Any) -> None:
-            self._invalidate_consume_channel("consumer cancelled by broker (Basic.Cancel)")
+            self._schedule_teardown("consumer cancelled by broker (Basic.Cancel)")
 
         try:
             candidate(_on_cancel)
@@ -373,9 +453,13 @@ class AsyncRabbitMQService:
         from ...task import exceptions as task_exceptions
 
         try:
-            await message.ack()
-        except _DEAD_CHANNEL_EXCEPTIONS as exc:
-            self._invalidate_consume_channel(f"ack failed: {exc!r}")
+            # Bound the ack so a half-open socket is detected in seconds rather
+            # than blocking until the (much longer) heartbeat timeout fires.
+            async with asyncio.timeout(self.client.ack_timeout):  # type: ignore[attr-defined]
+                await message.ack()
+            self._last_ack_ts = time.time()
+        except _DEAD_CHANNEL_TIMEOUT_EXCEPTIONS as exc:
+            await self._teardown_consume_channel(f"ack failed: {exc!r}")
             raise task_exceptions.AckOnDeadChannelError(
                 delivery_tag=getattr(message, "delivery_tag", None),
                 queue=getattr(message, "routing_key", None),
@@ -386,14 +470,38 @@ class AsyncRabbitMQService:
         from ...task import exceptions as task_exceptions
 
         try:
-            await message.nack(requeue=requeue)
-        except _DEAD_CHANNEL_EXCEPTIONS as exc:
-            self._invalidate_consume_channel(f"nack failed: {exc!r}")
+            async with asyncio.timeout(self.client.ack_timeout):  # type: ignore[attr-defined]
+                await message.nack(requeue=requeue)
+        except _DEAD_CHANNEL_TIMEOUT_EXCEPTIONS as exc:
+            await self._teardown_consume_channel(f"nack failed: {exc!r}")
             raise task_exceptions.NackOnDeadChannelError(
                 delivery_tag=getattr(message, "delivery_tag", None),
                 queue=getattr(message, "routing_key", None),
                 cause=exc,
             ) from exc
+
+    # ---------- Health / Liveness ----------
+
+    def health(self) -> Dict[str, Any]:
+        """Snapshot of consumer liveness for external health checks.
+
+        Exposes the timestamps of the last successful fetch and ack, the active
+        consumer tag, and connection/channel state so a service can detect a
+        wedged or zombie consumer (e.g. no successful ack within N seconds)
+        instead of silently running for hours after a broker cancel.
+        """
+        now = time.time()
+        connection_open = self._connection is not None and not self._connection.is_closed
+        consume_channel_open = self._consume_channel is not None and not self._consume_channel.is_closed
+        return {
+            "connection_open": connection_open,
+            "consume_channel_open": consume_channel_open,
+            "active_consumer_tag": self._active_consumer_tag,
+            "last_fetch_ts": self._last_fetch_ts,
+            "last_ack_ts": self._last_ack_ts,
+            "seconds_since_last_fetch": (now - self._last_fetch_ts) if self._last_fetch_ts is not None else None,
+            "seconds_since_last_ack": (now - self._last_ack_ts) if self._last_ack_ts is not None else None,
+        }
 
     # ---------- Lifecycle ----------
 
