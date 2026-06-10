@@ -23,6 +23,7 @@ from ergon.connector import ConnectorConfig, Transaction
 from ergon.connector.nylas import (
     AckActionConfig,
     AsyncNylasConnector,
+    ClientSideFilter,
     NylasClient,
     NylasConsumerConfig,
 )
@@ -55,6 +56,7 @@ def _build_consumer_config() -> NylasConsumerConfig:
     processed_folder_id = _optional_env("NYLAS_PROCESSED_FOLDER_ID")
     subject_filter = _optional_env("NYLAS_SUBJECT_FILTER")
     inbox_folder_id = _optional_env("NYLAS_INBOX_FOLDER_ID")
+    attachment_filename_filter = _optional_env("NYLAS_ATTACHMENT_FILENAME_FILTER")
 
     kwargs: Dict[str, Any] = {
         "unread": True,
@@ -70,6 +72,10 @@ def _build_consumer_config() -> NylasConsumerConfig:
         kwargs["subject"] = subject_filter
     if inbox_folder_id:
         kwargs["in_"] = inbox_folder_id
+    if attachment_filename_filter:
+        kwargs["client_side_filter"] = ClientSideFilter(
+            attachment_filename_contains=attachment_filename_filter,
+        )
 
     return NylasConsumerConfig(**kwargs)
 
@@ -83,8 +89,8 @@ def _build_task_config() -> TaskConfig:
     consumer_policy.name = "consumer"
     consumer_policy.fetch.connector_name = "inbox"
     consumer_policy.fetch.batch.size = 5
-    consumer_policy.loop.limit = 10
-    consumer_policy.loop.streaming = False
+    consumer_policy.loop.limit = None
+    consumer_policy.loop.streaming = True
 
     return TaskConfig(
         name="email-processor",

@@ -50,7 +50,7 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/sdks/python/examples/nylas/auth_flow.py",
-            "args": ["--exchange-code", "DHvf8zEujTHW_ih_LqkmF7LuKawfEDwYcFI50d4h1YsS4ItKpgV8X3-DstggdyMkwH5Wn21qNrEMWD4xVPAVBYGFtxDYA7A7"],
+            "args": ["--exchange-code", "bKh2oJKj7Y2KVfwOtexl-3jtJeN8gxI8_2_4OMyxkJrgIO0dIBAr0A_Toqjn2bm0nCGZLdoob5DbHAlZ-N1YbT0vhYSzJTpA"],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/sdks/python",
             "python": "${workspaceFolder}/sdks/python/.venv/Scripts/python",

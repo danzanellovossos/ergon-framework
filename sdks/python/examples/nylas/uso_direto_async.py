@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 from ergon.connector.nylas import (
     AckActionConfig,
     AsyncNylasConnector,
+    ClientSideFilter,
     NylasClient,
     NylasConsumerConfig,
 )
@@ -76,6 +77,7 @@ async def main() -> None:
     inbox_folder_id = _optional_env("NYLAS_INBOX_FOLDER_ID")
     processed_folder_id = _optional_env("NYLAS_PROCESSED_FOLDER_ID")
     subject_filter = _optional_env("NYLAS_SUBJECT_FILTER")
+    attachment_filename_filter = _optional_env("NYLAS_ATTACHMENT_FILENAME_FILTER")
 
     client = NylasClient(
         api_key=api_key,
@@ -86,8 +88,8 @@ async def main() -> None:
     consumer_kwargs: Dict[str, Any] = {
         "unread": True,
         "has_attachment": True,
-        "batch_size": 5,
-        "download_attachments": False,
+        "batch_size": 200,
+        "download_attachments": True,
         "ack_config": AckActionConfig(
             mark_as_read=True,
             move_to_folder_id=processed_folder_id,
@@ -97,7 +99,10 @@ async def main() -> None:
         consumer_kwargs["subject"] = subject_filter
     if inbox_folder_id:
         consumer_kwargs["in_"] = inbox_folder_id
-
+    if attachment_filename_filter:
+        consumer_kwargs["client_side_filter"] = ClientSideFilter(
+            attachment_filename_contains=attachment_filename_filter,
+        )
     connector = AsyncNylasConnector(
         client=client,
         consumer_config=NylasConsumerConfig(**consumer_kwargs),
@@ -108,7 +113,13 @@ async def main() -> None:
             logger.info("NYLAS_INBOX_FOLDER_ID não definido — listando pastas:")
             await list_folders(connector)
 
-        logger.info("Buscando mensagens não lidas com anexos...")
+        if attachment_filename_filter:
+            logger.info(
+                "Buscando mensagens não lidas com anexos (filename contém: %s)...",
+                attachment_filename_filter,
+            )
+        else:
+            logger.info("Buscando mensagens não lidas com anexos...")
         transactions = await connector.fetch_transactions_async()
 
         if not transactions:
