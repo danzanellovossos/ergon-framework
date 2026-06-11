@@ -1,5 +1,13 @@
 {
     "version": "0.2.0",
+    "inputs": [
+        {
+            "id": "nylasExchangeCode",
+            "type": "promptString",
+            "description": "Cole o code OAuth do redirect Nylas (uso único, expira em minutos)",
+            "default": ""
+        }
+    ],
     "configurations": [
         {
             "name": "Python Debugger: Current File (Windows)",
@@ -20,6 +28,44 @@
             "cwd": "${workspaceFolder}",
             "python": "${workspaceFolder}/.venv/bin/python",
             "env": {"PYTHONPATH": "${workspaceFolder}/src"},
+        },
+        {
+            "name": "Examples (Windows)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "python": "${workspaceFolder}/sdks/python/.venv/Scripts/python",
+            "env": {"PYTHONPATH": "${workspaceFolder}/src"},
+        },
+        {
+            "name": "Nylas: auth_flow (generate-url)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/sdks/python/examples/nylas/auth_flow.py",
+            "args": ["--generate-url"],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/sdks/python",
+            "python": "${workspaceFolder}/sdks/python/.venv/Scripts/python",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/sdks/python/src"
+            },
+            "envFile": "${workspaceFolder}/sdks/python/examples/nylas/.env"
+        },
+        {
+            "name": "Nylas: auth_flow (exchange-code — prompt)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/sdks/python/examples/nylas/auth_flow.py",
+            "args": ["--exchange-code", "${input:nylasExchangeCode}"],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/sdks/python",
+            "python": "${workspaceFolder}/sdks/python/.venv/Scripts/python",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/sdks/python/src"
+            },
+            "envFile": "${workspaceFolder}/sdks/python/examples/nylas/.env"
         },
     ],
 }
