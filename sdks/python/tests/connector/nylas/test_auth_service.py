@@ -97,9 +97,7 @@ class TestExchangeCodeForToken:
             "email": "other@example.com",
         }
 
-        result = service.exchange_code_for_token(
-            CodeExchangeInput(code="code-1", redirect_uri="http://localhost/cb")
-        )
+        result = service.exchange_code_for_token(CodeExchangeInput(code="code-1", redirect_uri="http://localhost/cb"))
 
         assert result.grant_id == "grant-dict-456"
         assert result.email == "other@example.com"

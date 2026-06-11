@@ -103,3 +103,82 @@ class TestGetMessagesCount:
             count = service.get_messages_count(query)
 
         assert count == 3
+
+
+class TestResolveAttachments:
+    def test_returns_metadata_when_download_disabled(self):
+        service = _make_service()
+        message = {"id": "m1", "attachments": [{"id": "a1", "filename": "doc.pdf"}]}
+
+        result = service.resolve_attachments(message, download=False)
+
+        assert result == [{"id": "a1", "filename": "doc.pdf"}]
+
+    def test_downloads_attachment_content(self):
+        service = _make_service()
+        message = {"id": "m1", "attachments": [{"id": "a1", "filename": "doc.pdf"}]}
+
+        with patch.object(service, "download_attachment", return_value=b"pdf-bytes") as mock_download:
+            result = service.resolve_attachments(message, download=True)
+
+        assert result == [{"id": "a1", "filename": "doc.pdf", "content": b"pdf-bytes"}]
+        mock_download.assert_called_once_with("m1", "a1")
+
+
+class TestFetchItems:
+    def test_fetch_messages_maps_to_transactions(self):
+        service = _make_service()
+        query = MessageQueryFilter(unread=True)
+
+        with patch.object(
+            service,
+            "list_messages",
+            return_value={
+                "data": [
+                    {
+                        "id": "msg-1",
+                        "subject": "Hello",
+                        "thread_id": "t1",
+                        "unread": True,
+                        "attachments": [{"id": "att-1"}],
+                    }
+                ],
+                "next_cursor": None,
+            },
+        ):
+            txns = service.fetch_items(query, limit=10, download_attachments=False)
+
+        assert len(txns) == 1
+        assert txns[0].id == "msg-1"
+        assert txns[0].metadata["grant_id"] == "grant-1"
+        assert txns[0].metadata["has_attachment"] is True
+
+    def test_fetch_threads_maps_to_transactions(self):
+        service = _make_service()
+        query = MessageQueryFilter()
+
+        with patch.object(
+            service,
+            "list_threads",
+            return_value={"data": [{"id": "thread-1", "unread": False}], "next_cursor": None},
+        ):
+            txns = service.fetch_items(query, limit=5, fetch_unit="thread")
+
+        assert len(txns) == 1
+        assert txns[0].id == "thread-1"
+        assert txns[0].metadata["fetch_unit"] == "thread"
+
+
+class TestFindMessageTransaction:
+    def test_returns_transaction(self):
+        service = _make_service()
+
+        with patch.object(
+            service,
+            "find_message",
+            return_value={"id": "msg-42", "subject": "Test", "attachments": []},
+        ):
+            tx = service.find_message_transaction("msg-42")
+
+        assert tx.id == "msg-42"
+        assert tx.payload["subject"] == "Test"

@@ -11,12 +11,7 @@ from .models import (
     NylasProducerConfig,
 )
 from .service import NylasService
-from .utils import (
-    apply_client_side_filter,
-    build_ack_request_body,
-    merge_query_filter,
-    message_to_transaction,
-)
+from .utils import build_ack_request_body, merge_query_filter
 
 logger = logging.getLogger(__name__)
 
@@ -34,59 +29,6 @@ class NylasConnector(Connector):
         self._consumer_config = consumer_config
         self._producer_config = producer_config or NylasProducerConfig()
 
-    def _resolve_attachments(self, message: dict) -> list:
-        config = self._consumer_config
-        if config is None or not config.download_attachments:
-            return message.get("attachments") or []
-
-        enriched = []
-        for att in message.get("attachments") or []:
-            att_id = att.get("id")
-            if not att_id:
-                enriched.append(att)
-                continue
-            content = self.service.download_attachment(str(message.get("id", "")), str(att_id))
-            enriched.append({**att, "content": content})
-        return enriched
-
-    def _fetch_items(
-        self,
-        query: MessageQueryFilter,
-        limit: int,
-        client_side_filter=None,
-        fetch_unit: str = "message",
-    ) -> List[Transaction]:
-        if fetch_unit == "thread":
-            result = self.service.list_threads(query, limit)
-            items = result.get("data") or []
-            items = apply_client_side_filter(items, client_side_filter)
-            return [
-                Transaction(
-                    id=str(item.get("id", "")),
-                    payload=item,
-                    metadata={
-                        "grant_id": self.service.grant_id,
-                        "thread_id": item.get("id"),
-                        "fetch_unit": "thread",
-                        "has_attachment": bool(item.get("attachments")),
-                        "unread": item.get("unread"),
-                    },
-                )
-                for item in items
-            ]
-
-        result = self.service.list_messages(query, limit)
-        messages = result.get("data") or []
-        messages = apply_client_side_filter(messages, client_side_filter)
-
-        transactions: List[Transaction] = []
-        for message in messages:
-            attachments_meta = self._resolve_attachments(message)
-            transactions.append(
-                message_to_transaction(message, self.service.grant_id, attachments_meta=attachments_meta)
-            )
-        return transactions
-
     def fetch_transactions(
         self,
         batch_size: Optional[int] = None,
@@ -101,11 +43,12 @@ class NylasConnector(Connector):
         limit = batch_size or config.batch_size
         query = merge_query_filter(config, query_overrides, **kwargs)
 
-        return self._fetch_items(
+        return self.service.fetch_items(
             query=query,
             limit=limit,
             client_side_filter=config.client_side_filter,
             fetch_unit=config.fetch_unit,
+            download_attachments=config.download_attachments,
         )
 
     def dispatch_transactions(self, transactions: List[Transaction], *args, **kwargs) -> List[str]:
@@ -137,9 +80,12 @@ class NylasConnector(Connector):
 
     def fetch_transaction_by_id(self, transaction_id: str, *args, **kwargs) -> Transaction:
         fields = kwargs.get("fields")
-        message = self.service.find_message(transaction_id, fields=fields)
-        attachments_meta = self._resolve_attachments(message)
-        return message_to_transaction(message, self.service.grant_id, attachments_meta=attachments_meta)
+        download = self._consumer_config.download_attachments if self._consumer_config else False
+        return self.service.find_message_transaction(
+            transaction_id,
+            fields=fields,
+            download_attachments=download,
+        )
 
     def get_transactions_count(self, *args, **kwargs) -> int:
         if self._consumer_config is None:

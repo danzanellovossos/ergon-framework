@@ -63,11 +63,7 @@ def merge_query_filter(
     merged: Dict[str, Any] = {}
     if base is not None:
         merged.update(
-            {
-                k: v
-                for k, v in base.model_dump(exclude_none=True, by_alias=True).items()
-                if k in query_field_names
-            }
+            {k: v for k, v in base.model_dump(exclude_none=True, by_alias=True).items() if k in query_field_names}
         )
     if overrides is not None:
         merged.update(overrides.model_dump(exclude_none=True, by_alias=True))

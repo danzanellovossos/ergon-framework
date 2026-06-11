@@ -70,16 +70,14 @@ def generate_url() -> None:
     print("\n1. Abra a URL acima no navegador")
     print("2. Autentique a caixa de e-mail")
     print("3. Copie o parâmetro 'code' da URL de redirect")
-    print("4. Execute: python examples/nylas/auth_flow.py --exchange-code \"SEU_CODE\"\n")
+    print('4. Execute: python examples/nylas/auth_flow.py --exchange-code "SEU_CODE"\n')
 
 
 def exchange_code(code: str) -> None:
     redirect_uri = _require_env("NYLAS_REDIRECT_URI")
 
     service = NylasAuthService(_build_auth_client())
-    result = service.exchange_code_for_token(
-        CodeExchangeInput(code=code, redirect_uri=redirect_uri)
-    )
+    result = service.exchange_code_for_token(CodeExchangeInput(code=code, redirect_uri=redirect_uri))
 
     print("\n=== Grant obtido com sucesso ===\n")
     print(f"NYLAS_GRANT_ID={result.grant_id}")

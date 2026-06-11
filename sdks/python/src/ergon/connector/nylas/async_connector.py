@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from ..connector import AsyncConnector
 from ..transaction import Transaction
@@ -11,12 +11,7 @@ from .models import (
     NylasConsumerConfig,
     NylasProducerConfig,
 )
-from .utils import (
-    apply_client_side_filter,
-    build_ack_request_body,
-    merge_query_filter,
-    message_to_transaction,
-)
+from .utils import build_ack_request_body, merge_query_filter
 
 logger = logging.getLogger(__name__)
 
@@ -34,59 +29,6 @@ class AsyncNylasConnector(AsyncConnector):
         self._consumer_config = consumer_config
         self._producer_config = producer_config or NylasProducerConfig()
 
-    async def _resolve_attachments(self, message: Dict[str, Any]) -> List[Dict[str, Any]]:
-        config = self._consumer_config
-        if config is None or not config.download_attachments:
-            return message.get("attachments") or []
-
-        enriched: List[Dict[str, Any]] = []
-        for att in message.get("attachments") or []:
-            att_id = att.get("id")
-            if not att_id:
-                enriched.append(att)
-                continue
-            content = await self.service.download_attachment(str(message.get("id", "")), str(att_id))
-            enriched.append({**att, "content": content})
-        return enriched
-
-    async def _fetch_items(
-        self,
-        query: MessageQueryFilter,
-        limit: int,
-        client_side_filter=None,
-        fetch_unit: str = "message",
-    ) -> List[Transaction]:
-        if fetch_unit == "thread":
-            result = await self.service.list_threads(query, limit)
-            items = result.get("data") or []
-            items = apply_client_side_filter(items, client_side_filter)
-            return [
-                Transaction(
-                    id=str(item.get("id", "")),
-                    payload=item,
-                    metadata={
-                        "grant_id": self.service.grant_id,
-                        "thread_id": item.get("id"),
-                        "fetch_unit": "thread",
-                        "has_attachment": bool(item.get("attachments")),
-                        "unread": item.get("unread"),
-                    },
-                )
-                for item in items
-            ]
-
-        result = await self.service.list_messages(query, limit)
-        messages = result.get("data") or []
-        messages = apply_client_side_filter(messages, client_side_filter)
-
-        transactions: List[Transaction] = []
-        for message in messages:
-            attachments_meta = await self._resolve_attachments(message)
-            transactions.append(
-                message_to_transaction(message, self.service.grant_id, attachments_meta=attachments_meta)
-            )
-        return transactions
-
     async def fetch_transactions_async(
         self,
         batch_size: Optional[int] = None,
@@ -101,11 +43,12 @@ class AsyncNylasConnector(AsyncConnector):
         limit = batch_size or config.batch_size
         query = merge_query_filter(config, query_overrides, **kwargs)
 
-        return await self._fetch_items(
+        return await self.service.fetch_items(
             query=query,
             limit=limit,
             client_side_filter=config.client_side_filter,
             fetch_unit=config.fetch_unit,
+            download_attachments=config.download_attachments,
         )
 
     async def dispatch_transactions_async(
@@ -147,9 +90,12 @@ class AsyncNylasConnector(AsyncConnector):
         **kwargs,
     ) -> Transaction:
         fields = kwargs.get("fields")
-        message = await self.service.find_message(transaction_id, fields=fields)
-        attachments_meta = await self._resolve_attachments(message)
-        return message_to_transaction(message, self.service.grant_id, attachments_meta=attachments_meta)
+        download = self._consumer_config.download_attachments if self._consumer_config else False
+        return await self.service.find_message_transaction(
+            transaction_id,
+            fields=fields,
+            download_attachments=download,
+        )
 
     async def get_transactions_count_async(self, *args, **kwargs) -> int:
         if self._consumer_config is None:

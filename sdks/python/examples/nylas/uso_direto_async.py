@@ -109,6 +109,10 @@ async def main() -> None:
     )
 
     try:
+        # -----------------------------------------------------------------
+        # Envio de e-mail
+        # -----------------------------------------------------------------
+
         if not inbox_folder_id:
             logger.info("NYLAS_INBOX_FOLDER_ID não definido — listando pastas:")
             await list_folders(connector)

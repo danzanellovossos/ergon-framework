@@ -30,43 +30,32 @@ def _make_connector(consumer_config=None, producer_config=None) -> AsyncNylasCon
 
 
 class TestFetchTransactions:
-    async def test_fetch_maps_to_transactions(self):
+    async def test_fetch_delegates_to_service(self):
         config = NylasConsumerConfig(subject="Invoice", has_attachment=True, batch_size=5)
         connector = _make_connector(consumer_config=config)
 
-        service_result = {
-            "data": [
-                {
-                    "id": "msg-1",
-                    "subject": "Invoice March",
-                    "thread_id": "thread-1",
-                    "folders": ["inbox-id"],
-                    "unread": True,
-                    "attachments": [{"id": "att-1", "filename": "invoice.pdf"}],
-                }
-            ],
-            "next_cursor": "cursor-abc",
-        }
+        expected_tx = Transaction(
+            id="msg-1",
+            payload={"id": "msg-1", "subject": "Invoice March"},
+            metadata={"grant_id": "grant-123", "has_attachment": True},
+        )
 
-        with patch.object(connector.service, "list_messages", new_callable=AsyncMock, return_value=service_result):
+        with patch.object(
+            connector.service, "fetch_items", new_callable=AsyncMock, return_value=[expected_tx]
+        ) as mock_fetch:
             txns = await connector.fetch_transactions_async(batch_size=5)
 
-        assert len(txns) == 1
-        tx = txns[0]
-        assert tx.id == "msg-1"
-        assert tx.metadata["grant_id"] == "grant-123"
-        assert tx.metadata["has_attachment"] is True
+        assert txns == [expected_tx]
+        mock_fetch.assert_awaited_once()
+        call_kwargs = mock_fetch.call_args.kwargs
+        assert call_kwargs["limit"] == 5
+        assert call_kwargs["query"].subject == "Invoice"
 
     async def test_fetch_empty_returns_empty_list(self):
         config = NylasConsumerConfig()
         connector = _make_connector(consumer_config=config)
 
-        with patch.object(
-            connector.service,
-            "list_messages",
-            new_callable=AsyncMock,
-            return_value={"data": [], "next_cursor": None},
-        ):
+        with patch.object(connector.service, "fetch_items", new_callable=AsyncMock, return_value=[]):
             txns = await connector.fetch_transactions_async(batch_size=10)
 
         assert txns == []

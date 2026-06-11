@@ -33,9 +33,7 @@ class MessageQueryFilter(BaseModel):
     received_after: Optional[int] = Field(default=None, description="Unix timestamp lower bound")
     has_attachment: Optional[bool] = Field(default=None, description="Filter messages with attachments")
     fields: Optional[MessageFields] = Field(default=None, description="Fields to include in response")
-    search_query_native: Optional[str] = Field(
-        default=None, description="Provider-specific search query (URL-encoded)"
-    )
+    search_query_native: Optional[str] = Field(default=None, description="Provider-specific search query (URL-encoded)")
     metadata_pair: Optional[str] = Field(default=None, description="Metadata key-value filter")
     select: Optional[str] = Field(default=None, description="Comma-separated fields to return")
 
@@ -205,9 +203,7 @@ class SendMessageInput(BaseModel):
         if self.tracking_options:
             body["tracking_options"] = self.tracking_options
         if self.attachments:
-            body["attachments"] = [
-                att.model_dump(exclude_none=True, exclude={"file_path"}) for att in self.attachments
-            ]
+            body["attachments"] = [att.model_dump(exclude_none=True, exclude={"file_path"}) for att in self.attachments]
         return body
 
 

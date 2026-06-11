@@ -2,6 +2,8 @@
 
 Exemplos executáveis de uso do connector Nylas no Ergon Framework.
 
+Documentação de referência do módulo: [`src/ergon/connector/nylas/README.md`](../../src/ergon/connector/nylas/README.md)
+
 ## Pré-requisitos
 
 1. Conta [Nylas](https://www.nylas.com/) com API key
@@ -33,6 +35,20 @@ cp examples/nylas/.env.example examples/nylas/.env
 | `NYLAS_INBOX_FOLDER_ID` | Não | ID da pasta inbox |
 | `NYLAS_PROCESSED_FOLDER_ID` | Não | Pasta destino após ack |
 | `NYLAS_SUBJECT_FILTER` | Não | Filtro de assunto na API (case-sensitive) |
+
+## Configuração do connector (resumo)
+
+Filtros mais usados em `NylasConsumerConfig`:
+
+- `unread=True` — apenas mensagens não lidas
+- `has_attachment=True` — mensagens com anexos
+- `in_="<FOLDER_ID>"` — pasta ou label (use `service.list_folders()` para descobrir IDs)
+- `download_attachments=True` — baixa bytes dos anexos no fetch
+- `ack_config=AckActionConfig(mark_as_read=True, move_to_folder_id="...")` — ações pós-processamento
+
+Envio via `NylasProducerConfig(send_mode="send")` ou `"draft"`. O framework **não** faz ack automático para Nylas — chame `ack_transaction` em `handle_process_success`.
+
+Detalhes de filtros, fluxo fetch→ack e limitações: [README do módulo](../../src/ergon/connector/nylas/README.md).
 
 ## Scripts
 
@@ -100,6 +116,8 @@ print(result.grant_id)
 ```
 
 ## Limitações
+
+Ver a seção completa em [README do módulo](../../src/ergon/connector/nylas/README.md). Em resumo:
 
 - O filtro `subject` da API Nylas é **case-sensitive**
 - `auth_flow.py` não inclui servidor HTTP — copie o `code` manualmente da URL de redirect

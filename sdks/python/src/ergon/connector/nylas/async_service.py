@@ -2,7 +2,8 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
-from .models import MessageFields, MessageQueryFilter, NylasClient, SendMessagePayload
+from ..transaction import Transaction
+from .models import ClientSideFilter, MessageFields, MessageQueryFilter, NylasClient, SendMessagePayload
 from .service import NylasService
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,41 @@ class AsyncNylasService:
         fields: Optional[MessageFields] = None,
     ) -> Dict[str, Any]:
         return await asyncio.to_thread(self._sync.find_message, message_id, fields)
+
+    async def resolve_attachments(self, message: Dict[str, Any], *, download: bool) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(self._sync.resolve_attachments, message, download=download)
+
+    async def fetch_items(
+        self,
+        query: MessageQueryFilter,
+        limit: int,
+        *,
+        client_side_filter: Optional[ClientSideFilter] = None,
+        fetch_unit: str = "message",
+        download_attachments: bool = False,
+    ) -> List[Transaction]:
+        return await asyncio.to_thread(
+            self._sync.fetch_items,
+            query,
+            limit,
+            client_side_filter=client_side_filter,
+            fetch_unit=fetch_unit,
+            download_attachments=download_attachments,
+        )
+
+    async def find_message_transaction(
+        self,
+        message_id: str,
+        *,
+        fields: Optional[MessageFields] = None,
+        download_attachments: bool = False,
+    ) -> Transaction:
+        return await asyncio.to_thread(
+            self._sync.find_message_transaction,
+            message_id,
+            fields=fields,
+            download_attachments=download_attachments,
+        )
 
     async def get_messages_count(self, query: MessageQueryFilter, max_pages: Optional[int] = None) -> int:
         return await asyncio.to_thread(self._sync.get_messages_count, query, max_pages)

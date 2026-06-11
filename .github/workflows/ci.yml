@@ -52,7 +52,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: sdks/python
-        run: uv sync --dev
+        run: uv sync --dev --extra nylas
 
       - name: Pyright
         working-directory: sdks/python
