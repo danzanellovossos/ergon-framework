@@ -3,10 +3,10 @@
 from ergon.connector.nylas.models import (
     AckActionConfig,
     ClientSideFilter,
+    EmailAddress,
     MessageQueryFilter,
     NylasConsumerConfig,
     SendMessageInput,
-    EmailAddress,
 )
 from ergon.connector.nylas.utils import (
     apply_client_side_filter,

@@ -2,8 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from ergon.connector.nylas.models import MessageQueryFilter, NylasClient
 from ergon.connector.nylas.service import NylasService
 

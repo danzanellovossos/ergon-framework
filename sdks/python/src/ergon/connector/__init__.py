@@ -1,5 +1,23 @@
 from .connector import AsyncConnector, Connector, ConnectorConfig
 from .excel import ExcelConnector, ExcelFetchConfig, ExcelRow, ExcelService
+from .nylas import (
+    AckActionConfig,
+    AsyncNylasAuthService,
+    AsyncNylasConnector,
+    AsyncNylasService,
+    AuthUrlConfig,
+    CodeExchangeInput,
+    GrantAuthResult,
+    MessageQueryFilter,
+    NylasAuthClient,
+    NylasAuthService,
+    NylasClient,
+    NylasConnector,
+    NylasConsumerConfig,
+    NylasProducerConfig,
+    NylasService,
+    SendMessageInput,
+)
 from .postgres import (
     AsyncPostgresConnector,
     AsyncPostgresService,
@@ -18,24 +36,6 @@ from .rabbitmq import (
     RabbitmqConsumerMessage,
     RabbitmqProducerMessage,
     RabbitMQService,
-)
-from .nylas import (
-    AckActionConfig,
-    AsyncNylasAuthService,
-    AsyncNylasConnector,
-    AsyncNylasService,
-    AuthUrlConfig,
-    CodeExchangeInput,
-    GrantAuthResult,
-    MessageQueryFilter,
-    NylasAuthClient,
-    NylasAuthService,
-    NylasClient,
-    NylasConnector,
-    NylasConsumerConfig,
-    NylasProducerConfig,
-    NylasService,
-    SendMessageInput,
 )
 from .sqs import (
     AsyncSQSConnector,
