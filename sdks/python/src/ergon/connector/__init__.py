@@ -1,4 +1,14 @@
 from .connector import AsyncConnector, Connector, ConnectorConfig
+from .ergon_platform import (
+    AsyncErgonPlatformConnector,
+    AsyncErgonPlatformService,
+    CreateItemInput,
+    ErgonPlatformClient,
+    ErgonPlatformConnector,
+    ErgonPlatformConsumerConfig,
+    ErgonPlatformProducerConfig,
+    ErgonPlatformService,
+)
 from .excel import ExcelConnector, ExcelFetchConfig, ExcelRow, ExcelService
 from .postgres import (
     AsyncPostgresConnector,
@@ -51,6 +61,8 @@ from .transaction import Transaction
 __all__ = [
     "AckActionConfig",
     "AsyncConnector",
+    "AsyncErgonPlatformConnector",
+    "AsyncErgonPlatformService",
     "AsyncNylasAuthService",
     "AsyncNylasConnector",
     "AsyncNylasService",
@@ -68,6 +80,12 @@ __all__ = [
     "AsyncSQSService",
     "Connector",
     "ConnectorConfig",
+    "CreateItemInput",
+    "ErgonPlatformClient",
+    "ErgonPlatformConnector",
+    "ErgonPlatformConsumerConfig",
+    "ErgonPlatformProducerConfig",
+    "ErgonPlatformService",
     "ExcelConnector",
     "ExcelFetchConfig",
     "ExcelRow",

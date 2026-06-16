@@ -1,6 +1,6 @@
 [project]
 name = "ergon-framework-python"
-version = "0.1.2"
+version = "0.1.3"
 description = "Ergon internal task-oriented project bootstrapper"
 readme = "README.md"
 license = "MIT"
@@ -37,6 +37,7 @@ dependencies = [
 
 [project.optional-dependencies]
 nylas = ["nylas>=6.0.0"]
+ergon_platform = ["ergon-platform-sdk>=0.1.0"]
 
 [dependency-groups]
 dev = [
@@ -97,6 +98,10 @@ reportMissingTypeStubs = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# ``importlib`` import mode lets test modules across connector folders share the
+# same basename (e.g. test_connector.py, test_async_connector.py) without needing
+# __init__.py files or triggering "import file mismatch" collection errors.
+addopts = "--import-mode=importlib"
 # ``auto`` mode auto-applies ``pytest.mark.asyncio`` to ``async def`` tests
 # and leaves sync tests alone, avoiding the spurious "marked async but not
 # async function" warnings that ``pytestmark`` at module level produced.
