@@ -15,7 +15,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from dotenv import load_dotenv
 
@@ -96,7 +96,7 @@ def _build_task_config() -> TaskConfig:
         name="email-processor",
         task=EmailProcessorTask,
         max_workers=1,
-        connectors={    
+        connectors={
             "inbox": ConnectorConfig(
                 connector=AsyncNylasConnector,
                 kwargs={
