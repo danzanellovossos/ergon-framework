@@ -52,6 +52,10 @@ class ErgonPlatformProducerConfig(BaseModel):
         default=None,
         description="Fallback MIME type when it cannot be guessed from the filename",
     )
+    parent_item_id: Optional[str] = Field(
+        default=None,
+        description="Default parent item ID used to create child items via dispatch",
+    )
 
 
 class CreateItemInput(BaseModel):
@@ -60,6 +64,10 @@ class CreateItemInput(BaseModel):
     title: str = Field(description="Item title")
     workflow_id: Optional[str] = Field(default=None, description="Workflow ID; falls back to producer config")
     phase_id: Optional[str] = Field(default=None, description="Target phase ID; falls back to producer config")
+    parent_item_id: Optional[str] = Field(
+        default=None,
+        description="Optional parent item ID to create this item as a child",
+    )
     field_values: Optional[Dict[str, Any]] = Field(default=None, description="Field values keyed by field ID")
     attachment: Optional[str] = Field(default=None, description="Local file path to upload after creation")
     attachment_field_id: Optional[str] = Field(

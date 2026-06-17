@@ -55,6 +55,14 @@ class ErgonPlatformConnector(Connector):
             created_ids.append(self._created_item_id(result))
         return created_ids
 
+    def fetch_child_transactions(
+        self,
+        parent_item_id: str,
+        *args,
+        **kwargs,
+    ) -> List[Transaction]:
+        return self.service.fetch_child_items(parent_item_id, **kwargs)
+
     def fetch_transaction_by_id(self, transaction_id: str, *args, **kwargs) -> Transaction:
         workflow_id = self._consumer_config.workflow_id if self._consumer_config else ""
         return self.service.get_item_transaction(transaction_id, workflow_id, **kwargs)
@@ -70,6 +78,18 @@ class ErgonPlatformConnector(Connector):
 
     def move_item_to_phase(self, item_id: str, phase_id: str) -> Any:
         return self.service.move_item_to_phase(item_id, phase_id)
+
+    def list_item_children(self, item_id: str, **params: Any) -> Any:
+        return self.service.list_item_children(item_id, **params)
+
+    def list_item_child_targets(self, item_id: str, **params: Any) -> Any:
+        return self.service.list_item_child_targets(item_id, **params)
+
+    def get_item_child_capabilities(self, item_id: str, **params: Any) -> Any:
+        return self.service.get_item_child_capabilities(item_id, **params)
+
+    def unlink_item_child(self, item_id: str, child_item_id: str) -> None:
+        self.service.unlink_item_child(item_id, child_item_id)
 
     def get_pipeline_result(
         self,
@@ -111,11 +131,13 @@ class ErgonPlatformConnector(Connector):
         attachment = data.get("attachment")
         attachment_field_id = data.get("attachment_field_id") or producer.attachment_field_id
         content_type = data.get("content_type") or producer.default_content_type
+        parent_item_id = data.get("parent_item_id") or producer.parent_item_id
 
         return self.service.create_item(
             workflow_id,
             phase_id,
             data["title"],
+            parent_item_id=parent_item_id,
             field_values=data.get("field_values"),
             attachment=attachment,
             attachment_field_id=attachment_field_id,

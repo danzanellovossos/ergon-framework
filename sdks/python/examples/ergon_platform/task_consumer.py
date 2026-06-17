@@ -63,8 +63,7 @@ def _build_task_config() -> TaskConfig:
     client = ErgonPlatformClient(
         client_id=_require_env("ERGON_CLIENT_ID"),
         client_secret=_require_env("ERGON_CLIENT_SECRET"),
-        base_url=os.getenv("ERGON_BASE_URL", "http://localhost").strip(),
-        company_id=_optional_env("ERGON_COMPANY_ID"),
+        base_url=os.getenv("ERGON_BASE_URL", "http://localhost").strip()
     )
 
     consumer_policy = policies.ConsumerPolicy()

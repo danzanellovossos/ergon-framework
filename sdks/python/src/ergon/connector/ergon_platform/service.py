@@ -68,6 +68,7 @@ class ErgonPlatformService:
         phase_id: str,
         title: str,
         *,
+        parent_item_id: Optional[str] = None,
         field_values: Optional[Dict[str, Any]] = None,
         attachment: Optional[Any] = None,
         attachment_field_id: Optional[str] = None,
@@ -78,6 +79,7 @@ class ErgonPlatformService:
         item = wf.create_item(
             title=title,
             phase_id=phase_id,
+            parent_item_id=parent_item_id,
             field_values=field_values,
             **fields,
         )
@@ -128,6 +130,30 @@ class ErgonPlatformService:
 
     def move_item_to_phase(self, item_id: str, phase_id: str) -> Any:
         return self.client.workflows.items.route(item_id, to_phase_id=phase_id)
+
+    def list_item_children(self, item_id: str, **params: Any) -> Any:
+        return self.client.workflows.items.children(item_id, **params)
+
+    def list_item_child_targets(self, item_id: str, **params: Any) -> Any:
+        return self.client.workflows.items.child_targets(item_id, **params)
+
+    def get_item_child_capabilities(self, item_id: str, **params: Any) -> Any:
+        return self.client.workflows.items.child_capabilities(item_id, **params)
+
+    def unlink_item_child(self, item_id: str, child_item_id: str) -> None:
+        self.client.workflows.items.remove_child(item_id, child_item_id)
+
+    def fetch_child_items(self, parent_item_id: str, **params: Any) -> List[Transaction]:
+        links = self.list_item_children(parent_item_id, **params) or []
+        transactions: List[Transaction] = []
+        for link in links:
+            child_item_id = str(get_value(link, "child_item_id", ""))
+            if not child_item_id:
+                continue
+            child_item = self.get_item(child_item_id)
+            child_workflow_id = str(get_value(child_item, "workflow_id", ""))
+            transactions.append(item_to_transaction(child_item, child_workflow_id))
+        return transactions
 
     def get_pipeline_result(
         self,

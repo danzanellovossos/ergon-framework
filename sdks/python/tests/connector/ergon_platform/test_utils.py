@@ -93,6 +93,7 @@ class TestNormalizeCreatePayload:
             title="T",
             workflow_id="wf",
             phase_id="ph",
+            parent_item_id="parent-1",
             field_values={"a": 1},
             extra_fields={"priority": "high"},
         )
@@ -100,6 +101,7 @@ class TestNormalizeCreatePayload:
         assert data["title"] == "T"
         assert data["workflow_id"] == "wf"
         assert data["phase_id"] == "ph"
+        assert data["parent_item_id"] == "parent-1"
         assert data["field_values"] == {"a": 1}
         assert data["fields"] == {"priority": "high"}
 

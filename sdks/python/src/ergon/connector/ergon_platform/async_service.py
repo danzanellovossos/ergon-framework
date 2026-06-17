@@ -43,6 +43,7 @@ class AsyncErgonPlatformService:
         phase_id: str,
         title: str,
         *,
+        parent_item_id: Optional[str] = None,
         field_values: Optional[Dict[str, Any]] = None,
         attachment: Optional[Any] = None,
         attachment_field_id: Optional[str] = None,
@@ -54,6 +55,7 @@ class AsyncErgonPlatformService:
                 workflow_id,
                 phase_id,
                 title,
+                parent_item_id=parent_item_id,
                 field_values=field_values,
                 attachment=attachment,
                 attachment_field_id=attachment_field_id,
@@ -64,6 +66,23 @@ class AsyncErgonPlatformService:
 
     async def move_item_to_phase(self, item_id: str, phase_id: str) -> Any:
         return await asyncio.to_thread(self._sync.move_item_to_phase, item_id, phase_id)
+
+    async def list_item_children(self, item_id: str, **params: Any) -> Any:
+        return await asyncio.to_thread(lambda: self._sync.list_item_children(item_id, **params))
+
+    async def list_item_child_targets(self, item_id: str, **params: Any) -> Any:
+        return await asyncio.to_thread(lambda: self._sync.list_item_child_targets(item_id, **params))
+
+    async def get_item_child_capabilities(self, item_id: str, **params: Any) -> Any:
+        return await asyncio.to_thread(lambda: self._sync.get_item_child_capabilities(item_id, **params))
+
+    async def unlink_item_child(self, item_id: str, child_item_id: str) -> None:
+        await asyncio.to_thread(self._sync.unlink_item_child, item_id, child_item_id)
+
+    async def fetch_child_items(self, parent_item_id: str, **params: Any) -> List[Transaction]:
+        return await asyncio.to_thread(
+            lambda: self._sync.fetch_child_items(parent_item_id, **params)
+        )
 
     async def get_pipeline_result(
         self,

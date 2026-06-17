@@ -88,6 +88,84 @@ class TestDispatchTransactions:
         with pytest.raises(ValueError, match="workflow_id"):
             connector.dispatch_transactions([tx])
 
+    def test_dispatch_passes_parent_item_id_from_payload(self):
+        producer = ErgonPlatformProducerConfig(workflow_id="wf-1", phase_id="ph-1")
+        connector = _make_connector(producer_config=producer)
+        tx = Transaction(id="new", payload=CreateItemInput(title="Child", parent_item_id="parent-123"))
+
+        with patch.object(connector.service, "create_item", return_value={"id": "item-77"}) as mock_create:
+            created = connector.dispatch_transactions([tx])
+
+        assert created == ["item-77"]
+        _, kwargs = mock_create.call_args
+        assert kwargs["parent_item_id"] == "parent-123"
+
+    def test_dispatch_passes_parent_item_id_from_producer_default(self):
+        producer = ErgonPlatformProducerConfig(
+            workflow_id="wf-1",
+            phase_id="ph-1",
+            parent_item_id="parent-default",
+        )
+        connector = _make_connector(producer_config=producer)
+        tx = Transaction(id="new", payload=CreateItemInput(title="Child"))
+
+        with patch.object(connector.service, "create_item", return_value={"id": "item-88"}) as mock_create:
+            created = connector.dispatch_transactions([tx])
+
+        assert created == ["item-88"]
+        _, kwargs = mock_create.call_args
+        assert kwargs["parent_item_id"] == "parent-default"
+
+
+class TestChildItems:
+    def test_fetch_child_transactions_delegates_to_service(self):
+        connector = _make_connector()
+        expected_tx = Transaction(id="child-1", payload={"id": "child-1"}, metadata={})
+        with patch.object(
+            connector.service,
+            "fetch_child_items",
+            return_value=[expected_tx],
+        ) as mock_fetch:
+            txns = connector.fetch_child_transactions("parent-1", include_archived=True)
+
+        assert txns == [expected_tx]
+        mock_fetch.assert_called_once_with("parent-1", include_archived=True)
+
+    def test_child_surface_methods_delegate_to_service(self):
+        connector = _make_connector()
+
+        with (
+            patch.object(
+                connector.service,
+                "list_item_children",
+                return_value=[{"child_item_id": "child-1"}],
+            ) as mock_children,
+            patch.object(
+                connector.service,
+                "list_item_child_targets",
+                return_value={"folders": []},
+            ) as mock_targets,
+            patch.object(
+                connector.service,
+                "get_item_child_capabilities",
+                return_value={"can_create": True, "can_view": True, "can_unlink": False},
+            ) as mock_caps,
+            patch.object(connector.service, "unlink_item_child", return_value=None) as mock_unlink,
+        ):
+            assert connector.list_item_children("parent-1") == [{"child_item_id": "child-1"}]
+            assert connector.list_item_child_targets("parent-1") == {"folders": []}
+            assert connector.get_item_child_capabilities("parent-1") == {
+                "can_create": True,
+                "can_view": True,
+                "can_unlink": False,
+            }
+            connector.unlink_item_child("parent-1", "child-1")
+
+        mock_children.assert_called_once_with("parent-1")
+        mock_targets.assert_called_once_with("parent-1")
+        mock_caps.assert_called_once_with("parent-1")
+        mock_unlink.assert_called_once_with("parent-1", "child-1")
+
 
 class TestAckTransaction:
     def test_ack_moves_to_configured_phase(self):

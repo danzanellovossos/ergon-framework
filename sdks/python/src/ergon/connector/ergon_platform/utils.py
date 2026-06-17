@@ -97,6 +97,7 @@ def normalize_create_payload(payload: CreateItemPayload) -> Dict[str, Any]:
             "title": payload.title,
             "workflow_id": payload.workflow_id,
             "phase_id": payload.phase_id,
+            "parent_item_id": payload.parent_item_id,
             "field_values": payload.field_values,
             "attachment": payload.attachment,
             "attachment_field_id": payload.attachment_field_id,
