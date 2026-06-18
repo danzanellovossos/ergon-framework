@@ -26,7 +26,7 @@ _ERGON_PLATFORM_IMPORT_ERROR = "Install with: pip install ergon-framework-python
 
 def _get_ergon_client():
     try:
-        from ergon_platform import ErgonClient
+        from ergon_platform import ErgonClient  # type: ignore[reportMissingImports]
     except ImportError as exc:
         raise ImportError(_ERGON_PLATFORM_IMPORT_ERROR) from exc
     return ErgonClient

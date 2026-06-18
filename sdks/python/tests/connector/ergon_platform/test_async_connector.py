@@ -55,7 +55,11 @@ class TestDispatchTransactions:
 
         tx = Transaction(id="new", payload=CreateItemInput(title="Ticket"))
 
-        with patch.object(connector.service, "create_item", new=AsyncMock(return_value={"id": "item-99"})) as mock_create:
+        with patch.object(
+            connector.service,
+            "create_item",
+            new=AsyncMock(return_value={"id": "item-99"}),
+        ) as mock_create:
             created = await connector.dispatch_transactions_async([tx])
 
         assert created == ["item-99"]

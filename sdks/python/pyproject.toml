@@ -43,7 +43,7 @@ ergon_platform = ["ergon-platform-sdk>=0.1.0"]
 # sibling checkout so ``uv sync`` can resolve the ``ergon_platform`` extra
 # without a package registry. Adjust the path if your checkout layout differs.
 [tool.uv.sources]
-ergon-platform-sdk = { path = "../../../ergon-platform-sdks/python", editable = true }
+ergon-platform-sdk = { path = "../../../ergon-platform-sdks/python", editable = true, extra = "ergon_platform" }
 
 [dependency-groups]
 dev = [
