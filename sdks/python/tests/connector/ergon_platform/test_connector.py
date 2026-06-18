@@ -191,9 +191,7 @@ class TestItemOperations:
     def test_fetch_items_by_query_delegates(self):
         connector = _make_connector()
         expected_tx = Transaction(id="i1", payload={"id": "i1"}, metadata={})
-        with patch.object(
-            connector.service, "fetch_items_by_query", return_value=[expected_tx]
-        ) as mock_fetch:
+        with patch.object(connector.service, "fetch_items_by_query", return_value=[expected_tx]) as mock_fetch:
             txns = connector.fetch_items_by_query("wf-1", {"search": "abc"})
 
         assert txns == [expected_tx]
@@ -202,12 +200,8 @@ class TestItemOperations:
     def test_comments_delegate(self):
         connector = _make_connector()
         with (
-            patch.object(
-                connector.service, "list_item_comments", return_value=[{"id": "c1"}]
-            ) as mock_list,
-            patch.object(
-                connector.service, "add_item_comment", return_value={"id": "c2"}
-            ) as mock_add,
+            patch.object(connector.service, "list_item_comments", return_value=[{"id": "c1"}]) as mock_list,
+            patch.object(connector.service, "add_item_comment", return_value={"id": "c2"}) as mock_add,
         ):
             assert connector.list_item_comments("i1") == [{"id": "c1"}]
             assert connector.add_item_comment("i1", {"body": "hi"}) == {"id": "c2"}
@@ -220,12 +214,8 @@ class TestItemOperations:
         with (
             patch.object(connector.service, "claim_item", return_value={"ok": True}) as mock_claim,
             patch.object(connector.service, "assign_item", return_value={"ok": True}) as mock_assign,
-            patch.object(
-                connector.service, "assign_item_group", return_value={"ok": True}
-            ) as mock_group,
-            patch.object(
-                connector.service, "release_item", return_value={"ok": True}
-            ) as mock_release,
+            patch.object(connector.service, "assign_item_group", return_value={"ok": True}) as mock_group,
+            patch.object(connector.service, "release_item", return_value={"ok": True}) as mock_release,
         ):
             connector.claim_item("i1")
             connector.assign_item("i1", "principal-1")
@@ -240,12 +230,8 @@ class TestItemOperations:
     def test_route_to_global_target_and_events_delegate(self):
         connector = _make_connector()
         with (
-            patch.object(
-                connector.service, "route_item_to_global_target", return_value={"ok": True}
-            ) as mock_route,
-            patch.object(
-                connector.service, "list_item_events", return_value=[{"id": "e1"}]
-            ) as mock_events,
+            patch.object(connector.service, "route_item_to_global_target", return_value={"ok": True}) as mock_route,
+            patch.object(connector.service, "list_item_events", return_value=[{"id": "e1"}]) as mock_events,
         ):
             connector.route_item_to_global_target("i1")
             assert connector.list_item_events("i1") == [{"id": "e1"}]

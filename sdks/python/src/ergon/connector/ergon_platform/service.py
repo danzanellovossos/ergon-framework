@@ -94,9 +94,7 @@ class ErgonPlatformService:
 
         item_id = str(get_value(item, "id"))
         file_path = Path(attachment)
-        resolved_content_type = (
-            content_type or mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
-        )
+        resolved_content_type = content_type or mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
         file_size = file_path.stat().st_size
 
         upload = wf.item_attachment_upload_url(
@@ -174,9 +172,7 @@ class ErgonPlatformService:
             }
         )
 
-    def query_items(
-        self, workflow_id: str, query: Optional[Dict[str, Any]] = None, **fields: Any
-    ) -> Any:
+    def query_items(self, workflow_id: str, query: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
         return self.client.workflows.workflow(workflow_id).query_items({**(query or {}), **fields})
 
     def fetch_items_by_query(
@@ -189,14 +185,10 @@ class ErgonPlatformService:
     def list_item_comments(self, item_id: str, **params: Any) -> Any:
         return self.client.workflows.items.list_comments(item_id, **params)
 
-    def add_item_comment(
-        self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any
-    ) -> Any:
+    def add_item_comment(self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
         return self.client.workflows.items.add_comment(item_id, {**(data or {}), **fields})
 
-    def claim_item(
-        self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any
-    ) -> Any:
+    def claim_item(self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
         return self.client.workflows.items.claim(item_id, {**(data or {}), **fields})
 
     def assign_item(self, item_id: str, principal_id: str) -> Any:
@@ -205,17 +197,11 @@ class ErgonPlatformService:
     def assign_item_group(self, item_id: str, group_id: str) -> Any:
         return self.client.workflows.items.assign_group(item_id, {"group_id": group_id})
 
-    def release_item(
-        self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any
-    ) -> Any:
+    def release_item(self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
         return self.client.workflows.items.release(item_id, {**(data or {}), **fields})
 
-    def route_item_to_global_target(
-        self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any
-    ) -> Any:
-        return self.client.workflows.items.route_to_global_target(
-            item_id, {**(data or {}), **fields}
-        )
+    def route_item_to_global_target(self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
+        return self.client.workflows.items.route_to_global_target(item_id, {**(data or {}), **fields})
 
     def list_item_events(self, item_id: str, **params: Any) -> Any:
         return self.client.workflows.items.events(item_id, **params)
@@ -232,9 +218,7 @@ class ErgonPlatformService:
         statuses = wf.item_attachment_status(item_id, field_id=field_id)
 
         status_entry = (
-            find_status_entry(statuses, resolved_file_id)
-            if resolved_file_id
-            else latest_status_entry(statuses)
+            find_status_entry(statuses, resolved_file_id) if resolved_file_id else latest_status_entry(statuses)
         )
         resolved_file_id = resolved_file_id or extract_status_file_id(status_entry)
         raw_status = str(get_value(status_entry, "status", "unknown")).lower()

@@ -99,13 +99,9 @@ class ErgonPlatformConnector(Connector):
         response_format: str = "full",
         **fields: Any,
     ) -> Any:
-        return self.service.bulk_create_items(
-            workflow_id, items, response_format=response_format, **fields
-        )
+        return self.service.bulk_create_items(workflow_id, items, response_format=response_format, **fields)
 
-    def query_items(
-        self, workflow_id: str, query: Optional[Dict[str, Any]] = None, **fields: Any
-    ) -> Any:
+    def query_items(self, workflow_id: str, query: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
         return self.service.query_items(workflow_id, query, **fields)
 
     def fetch_items_by_query(
@@ -116,14 +112,10 @@ class ErgonPlatformConnector(Connector):
     def list_item_comments(self, item_id: str, **params: Any) -> Any:
         return self.service.list_item_comments(item_id, **params)
 
-    def add_item_comment(
-        self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any
-    ) -> Any:
+    def add_item_comment(self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
         return self.service.add_item_comment(item_id, data, **fields)
 
-    def claim_item(
-        self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any
-    ) -> Any:
+    def claim_item(self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
         return self.service.claim_item(item_id, data, **fields)
 
     def assign_item(self, item_id: str, principal_id: str) -> Any:
@@ -132,14 +124,10 @@ class ErgonPlatformConnector(Connector):
     def assign_item_group(self, item_id: str, group_id: str) -> Any:
         return self.service.assign_item_group(item_id, group_id)
 
-    def release_item(
-        self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any
-    ) -> Any:
+    def release_item(self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
         return self.service.release_item(item_id, data, **fields)
 
-    def route_item_to_global_target(
-        self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any
-    ) -> Any:
+    def route_item_to_global_target(self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
         return self.service.route_item_to_global_target(item_id, data, **fields)
 
     def list_item_events(self, item_id: str, **params: Any) -> Any:

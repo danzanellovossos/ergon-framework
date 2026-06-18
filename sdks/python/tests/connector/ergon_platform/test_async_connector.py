@@ -150,9 +150,7 @@ class TestItemOperations:
     async def test_query_items_delegates(self):
         connector = _make_connector()
         query = {"search": "abc"}
-        with patch.object(
-            connector.service, "query_items", new=AsyncMock(return_value={"items": []})
-        ) as mock_q:
+        with patch.object(connector.service, "query_items", new=AsyncMock(return_value={"items": []})) as mock_q:
             result = await connector.query_items("wf-1", query)
 
         assert result == {"items": []}
@@ -174,18 +172,12 @@ class TestItemOperations:
     async def test_item_action_methods_delegate(self):
         connector = _make_connector()
         with (
-            patch.object(
-                connector.service, "claim_item", new=AsyncMock(return_value={"ok": True})
-            ) as mock_claim,
-            patch.object(
-                connector.service, "assign_item", new=AsyncMock(return_value={"ok": True})
-            ) as mock_assign,
+            patch.object(connector.service, "claim_item", new=AsyncMock(return_value={"ok": True})) as mock_claim,
+            patch.object(connector.service, "assign_item", new=AsyncMock(return_value={"ok": True})) as mock_assign,
             patch.object(
                 connector.service, "assign_item_group", new=AsyncMock(return_value={"ok": True})
             ) as mock_group,
-            patch.object(
-                connector.service, "release_item", new=AsyncMock(return_value={"ok": True})
-            ) as mock_release,
+            patch.object(connector.service, "release_item", new=AsyncMock(return_value={"ok": True})) as mock_release,
             patch.object(
                 connector.service,
                 "route_item_to_global_target",
@@ -194,9 +186,7 @@ class TestItemOperations:
             patch.object(
                 connector.service, "list_item_comments", new=AsyncMock(return_value=[{"id": "c1"}])
             ) as mock_comments,
-            patch.object(
-                connector.service, "add_item_comment", new=AsyncMock(return_value={"id": "c2"})
-            ) as mock_add,
+            patch.object(connector.service, "add_item_comment", new=AsyncMock(return_value={"id": "c2"})) as mock_add,
             patch.object(
                 connector.service, "list_item_events", new=AsyncMock(return_value=[{"id": "e1"}])
             ) as mock_events,
