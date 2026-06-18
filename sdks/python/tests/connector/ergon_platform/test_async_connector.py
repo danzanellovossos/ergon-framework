@@ -129,6 +129,93 @@ class TestChildItems:
         mock_unlink.assert_awaited_once_with("parent-1", "child-1")
 
 
+class TestItemOperations:
+    async def test_bulk_create_items_delegates(self):
+        connector = _make_connector()
+        items = [{"title": "A"}, {"title": "B"}]
+        with patch.object(
+            connector.service,
+            "bulk_create_items",
+            new=AsyncMock(return_value={"succeeded": ["i1", "i2"]}),
+        ) as mock_bulk:
+            result = await connector.bulk_create_items("wf-1", items)
+
+        assert result == {"succeeded": ["i1", "i2"]}
+        mock_bulk.assert_awaited_once_with("wf-1", items, response_format="full")
+
+    async def test_query_items_delegates(self):
+        connector = _make_connector()
+        query = {"search": "abc"}
+        with patch.object(
+            connector.service, "query_items", new=AsyncMock(return_value={"items": []})
+        ) as mock_q:
+            result = await connector.query_items("wf-1", query)
+
+        assert result == {"items": []}
+        mock_q.assert_awaited_once_with("wf-1", query)
+
+    async def test_fetch_items_by_query_delegates(self):
+        connector = _make_connector()
+        expected_tx = Transaction(id="i1", payload={"id": "i1"}, metadata={})
+        with patch.object(
+            connector.service,
+            "fetch_items_by_query",
+            new=AsyncMock(return_value=[expected_tx]),
+        ) as mock_fetch:
+            txns = await connector.fetch_items_by_query("wf-1", {"search": "abc"})
+
+        assert txns == [expected_tx]
+        mock_fetch.assert_awaited_once_with("wf-1", {"search": "abc"})
+
+    async def test_item_action_methods_delegate(self):
+        connector = _make_connector()
+        with (
+            patch.object(
+                connector.service, "claim_item", new=AsyncMock(return_value={"ok": True})
+            ) as mock_claim,
+            patch.object(
+                connector.service, "assign_item", new=AsyncMock(return_value={"ok": True})
+            ) as mock_assign,
+            patch.object(
+                connector.service, "assign_item_group", new=AsyncMock(return_value={"ok": True})
+            ) as mock_group,
+            patch.object(
+                connector.service, "release_item", new=AsyncMock(return_value={"ok": True})
+            ) as mock_release,
+            patch.object(
+                connector.service,
+                "route_item_to_global_target",
+                new=AsyncMock(return_value={"ok": True}),
+            ) as mock_route,
+            patch.object(
+                connector.service, "list_item_comments", new=AsyncMock(return_value=[{"id": "c1"}])
+            ) as mock_comments,
+            patch.object(
+                connector.service, "add_item_comment", new=AsyncMock(return_value={"id": "c2"})
+            ) as mock_add,
+            patch.object(
+                connector.service, "list_item_events", new=AsyncMock(return_value=[{"id": "e1"}])
+            ) as mock_events,
+        ):
+            await connector.claim_item("i1")
+            await connector.assign_item("i1", "principal-1")
+            await connector.assign_item_group("i1", "group-1")
+            await connector.release_item("i1")
+            await connector.route_item_to_global_target("i1")
+            assert await connector.list_item_comments("i1") == [{"id": "c1"}]
+            assert await connector.add_item_comment("i1", {"body": "hi"}) == {"id": "c2"}
+            assert await connector.list_item_events("i1") == [{"id": "e1"}]
+
+        mock_claim.assert_awaited_once_with("i1", None)
+        mock_assign.assert_awaited_once_with("i1", "principal-1")
+        mock_group.assert_awaited_once_with("i1", "group-1")
+        mock_release.assert_awaited_once_with("i1", None)
+        mock_route.assert_awaited_once_with("i1", None)
+        mock_comments.assert_awaited_once_with("i1")
+        mock_add.assert_awaited_once_with("i1", {"body": "hi"})
+        mock_events.assert_awaited_once_with("i1")
+
+
 class TestAckTransaction:
     async def test_ack_moves_to_configured_phase(self):
         config = ErgonPlatformConsumerConfig(workflow_id="wf", phase_id="ph", ack_phase_id="done")

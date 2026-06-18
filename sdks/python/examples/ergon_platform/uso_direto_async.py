@@ -20,8 +20,10 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+from ergon.connector import Transaction
 from ergon.connector.ergon_platform import (
     AsyncErgonPlatformConnector,
+    CreateItemInput,
     ErgonPlatformClient,
     ErgonPlatformConsumerConfig,
 )
@@ -50,7 +52,6 @@ async def main() -> None:
     client = ErgonPlatformClient(
         client_id=_require_env("ERGON_CLIENT_ID"),
         client_secret=_require_env("ERGON_CLIENT_SECRET"),
-        base_url=os.getenv("ERGON_BASE_URL", "http://localhost").strip(),
         company_id=_optional_env("ERGON_COMPANY_ID"),
     )
 
@@ -61,21 +62,28 @@ async def main() -> None:
         ack_phase_id=_optional_env("ERGON_ACK_PHASE_ID"),
     )
 
-    connector = AsyncErgonPlatformConnector(client=client) #, consumer_config=consumer_config)
+    connector = AsyncErgonPlatformConnector(client=client, consumer_config=consumer_config)
+    create_phase_id = os.getenv("ERGON_CREATE_PHASE_ID", consumer_config.phase_id)
 
     try:
         workflows = await connector.list_workflows()
+        logger.info("%d workflow(s) encontrado(s).", len(workflows))
+
         phases = await connector.list_workflow_phases(workflow_id=_require_env("ERGON_WORKFLOW_ID"))
-        fields = await connector.list_phase_fields(phase_id=phases[0]['id'])
+
+        fields = await connector.list_phase_fields(phase_id=phases[0]["id"])
+
         cards = await connector.service.fetch_items(
-            workflow_id=_require_env("ERGON_WORKFLOW_ID"), 
-            phase_id=phases[0]['id']
+            workflow_id=_require_env("ERGON_WORKFLOW_ID"),
+            phase_id=phases[0]["id"],
         )
+
         pipeline_result = await connector.get_pipeline_result(
             workflow_id=_require_env("ERGON_WORKFLOW_ID"),
-            field_id=fields[0]['id'],
-            item_id=cards[0].__dict__['id']
+            field_id=fields[0]["id"],
+            item_id=cards[0].__dict__["id"],
         )
+        logger.info("Status do pipeline: %s", pipeline_result["state"])
 
         logger.info("Buscando itens da fase %s...", consumer_config.phase_id)
         transactions = await connector.fetch_transactions_async()
@@ -98,21 +106,58 @@ async def main() -> None:
         # -----------------------------------------------------------------
         # Criação de item (descomente para testar dispatch)
         # -----------------------------------------------------------------
-        # from ergon.connector import Transaction
-        # from ergon.connector.ergon_platform import CreateItemInput
-        #
-        # outbound = Transaction(
-        #     id="novo-item",
-        #     payload=CreateItemInput(
-        #         title="Item criado pelo exemplo",
-        #         workflow_id=consumer_config.workflow_id,
-        #         phase_id=os.getenv("ERGON_CREATE_PHASE_ID", consumer_config.phase_id),
-        #         attachment="/caminho/para/arquivo.pdf",
-        #         attachment_field_id=os.getenv("ERGON_ATTACHMENT_FIELD_ID"),
-        #     ),
-        # )
-        # created_ids = await connector.dispatch_transactions_async([outbound])
-        # logger.info("Item criado. IDs: %s", created_ids)
+        outbound = Transaction(
+            id="novo-item-teste-connector",
+            payload=CreateItemInput(
+                title="Item criado pelo exemplo",
+                workflow_id=consumer_config.workflow_id,
+                phase_id=create_phase_id,
+                attachment=r"L:\TRAMPO\JSL\Florestal\FE_SP_RDZ_20260301_20260315_2001663.pdf",
+                attachment_field_id=os.getenv("ERGON_ATTACHMENT_FIELD_ID"),
+            ),
+        )
+        created_ids = await connector.dispatch_transactions_async([outbound])
+        logger.info("Item criado. IDs: %s", created_ids)
+
+        # -----------------------------------------------------------------
+        # Dispatch em bulk (vários cards em uma chamada do connector)
+        # -----------------------------------------------------------------
+        bulk_transactions = [
+            Transaction(
+                id="bulk-item-1",
+                payload=CreateItemInput(
+                    title="Item bulk 1 criado pelo exemplo",
+                    workflow_id=consumer_config.workflow_id,
+                    phase_id=create_phase_id,
+                ),
+            ),
+            Transaction(
+                id="bulk-item-2",
+                payload=CreateItemInput(
+                    title="Item bulk 2 criado pelo exemplo",
+                    workflow_id=consumer_config.workflow_id,
+                    phase_id=create_phase_id,
+                ),
+            ),
+        ]
+        bulk_created_ids = await connector.dispatch_transactions_async(bulk_transactions)
+        logger.info("Itens criados em bulk. IDs: %s", bulk_created_ids)
+
+        # -----------------------------------------------------------------
+        # Criação de card filho
+        # -----------------------------------------------------------------
+        parent_item_id = _optional_env("ERGON_PARENT_ITEM_ID") or transactions[0].id
+        child = Transaction(
+            id="card-filho-teste-connector",
+            payload=CreateItemInput(
+                title="Card filho criado pelo exemplo",
+                workflow_id=consumer_config.workflow_id,
+                phase_id=create_phase_id,
+                parent_item_id=parent_item_id,
+            ),
+        )
+        child_created_ids = await connector.dispatch_transactions_async([child])
+        logger.info("Card filho criado. Parent: %s. IDs: %s", parent_item_id, child_created_ids)
 
     finally:
         await connector.close()

@@ -55,23 +55,80 @@ def classify_status(raw_status: str) -> str:
 
 
 def find_status_entry(statuses: Any, buckets_file_id: str) -> Any:
-    for status in statuses or []:
-        if str(get_value(status, "buckets_file_id")) == str(buckets_file_id):
+    for status in extract_status_entries(statuses):
+        if extract_status_file_id(status) == str(buckets_file_id):
             return status
     return {}
 
 
+def extract_status_entries(statuses: Any) -> List[Any]:
+    """Normalize SDK attachment status responses to a list of status entries."""
+    if statuses is None:
+        return []
+    if isinstance(statuses, list):
+        return statuses
+    if isinstance(statuses, tuple):
+        return list(statuses)
+    if isinstance(statuses, dict):
+        for key in ("items", "data", "results", "statuses", "attachments", "files"):
+            value = statuses.get(key)
+            if isinstance(value, list):
+                return value
+        if get_value(statuses, "status") is not None or extract_status_file_id(statuses):
+            return [statuses]
+        return []
+    for key in ("items", "data", "results", "statuses", "attachments", "files"):
+        value = getattr(statuses, key, None)
+        if isinstance(value, (list, tuple)):
+            return list(value)
+    if get_value(statuses, "status") is not None or extract_status_file_id(statuses):
+        return [statuses]
+    return []
+
+
+def extract_status_file_id(status: Any) -> Optional[str]:
+    for key in ("buckets_file_id", "bucketsFileId", "file_id", "fileId"):
+        value = get_value(status, key)
+        if value:
+            return str(value)
+    return None
+
+
+def latest_status_entry(statuses: Any) -> Any:
+    entries = extract_status_entries(statuses)
+    return entries[-1] if entries else {}
+
+
 def extract_buckets_file_id(item: Any, field_id: str) -> Optional[str]:
-    for field_value in get_value(item, "field_values", []) or []:
+    field_values = get_value(item, "field_values", []) or []
+    if isinstance(field_values, dict):
+        return extract_buckets_file_id_from_attachments(field_values.get(field_id))
+
+    for field_value in field_values:
         if str(get_value(field_value, "field_id")) != str(field_id):
             continue
-        attachments = get_value(field_value, "value", []) or []
-        if not isinstance(attachments, list):
-            return None
-        for attachment in reversed(attachments):
-            buckets_file_id = get_value(attachment, "buckets_file_id")
-            if buckets_file_id:
-                return str(buckets_file_id)
+        buckets_file_id = extract_buckets_file_id_from_attachments(get_value(field_value, "value", []))
+        if buckets_file_id:
+            return buckets_file_id
+    return None
+
+
+def extract_buckets_file_id_from_attachments(value: Any) -> Optional[str]:
+    attachments = value or []
+    if isinstance(attachments, dict):
+        for key in ("attachments", "files", "items", "data", "results", "value"):
+            nested = attachments.get(key)
+            if isinstance(nested, list):
+                attachments = nested
+                break
+        else:
+            attachments = [attachments]
+    if not isinstance(attachments, list):
+        return None
+    for attachment in reversed(attachments):
+        buckets_file_id = get_value(attachment, "buckets_file_id")
+        if buckets_file_id:
+            return str(buckets_file_id)
     return None
 
 

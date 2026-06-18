@@ -5,6 +5,8 @@ from ergon.connector.ergon_platform.utils import (
     classify_status,
     extract_buckets_file_id,
     extract_items,
+    extract_status_entries,
+    extract_status_file_id,
     find_status_entry,
     get_value,
     item_to_transaction,
@@ -36,6 +38,7 @@ class TestClassifyStatus:
 
     def test_processing(self):
         assert classify_status("queued") == "processing"
+        assert classify_status("in_progress") == "processing"
 
     def test_unknown(self):
         assert classify_status("weird") == "unknown"
@@ -53,6 +56,26 @@ class TestFindStatusEntry:
 
     def test_returns_empty_when_missing(self):
         assert find_status_entry([], "x") == {}
+
+    def test_finds_matching_entry_from_dict_response(self):
+        statuses = {"items": [{"file_id": "a", "status": "processing"}]}
+
+        entry = find_status_entry(statuses, "a")
+
+        assert entry["status"] == "processing"
+
+
+class TestExtractStatusEntries:
+    def test_from_dict_list_fields(self):
+        assert extract_status_entries({"statuses": [{"status": "queued"}]}) == [{"status": "queued"}]
+
+    def test_from_single_status_dict(self):
+        assert extract_status_entries({"status": "queued", "file_id": "file-1"}) == [
+            {"status": "queued", "file_id": "file-1"}
+        ]
+
+    def test_extracts_status_file_id_alias(self):
+        assert extract_status_file_id({"fileId": "file-1"}) == "file-1"
 
 
 class TestExtractBucketsFileId:
@@ -74,6 +97,20 @@ class TestExtractBucketsFileId:
     def test_returns_none_when_absent(self):
         item = {"field_values": [{"field_id": "f1", "value": []}]}
         assert extract_buckets_file_id(item, "f1") is None
+
+    def test_returns_buckets_file_id_from_dict_field_values(self):
+        item = {
+            "field_values": {
+                "f1": {
+                    "files": [
+                        {"buckets_file_id": "first"},
+                        {"buckets_file_id": "second"},
+                    ]
+                }
+            }
+        }
+
+        assert extract_buckets_file_id(item, "f1") == "second"
 
 
 class TestItemToTransaction:

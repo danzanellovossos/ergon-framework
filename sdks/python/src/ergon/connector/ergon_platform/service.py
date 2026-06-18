@@ -12,9 +12,11 @@ from .utils import (
     classify_status,
     extract_buckets_file_id,
     extract_items,
+    extract_status_file_id,
     find_status_entry,
     get_value,
     item_to_transaction,
+    latest_status_entry,
 )
 
 logger = logging.getLogger(__name__)
@@ -155,6 +157,69 @@ class ErgonPlatformService:
             transactions.append(item_to_transaction(child_item, child_workflow_id))
         return transactions
 
+    def bulk_create_items(
+        self,
+        workflow_id: str,
+        items: List[Dict[str, Any]],
+        *,
+        response_format: str = "full",
+        **fields: Any,
+    ) -> Any:
+        return self.client.workflows.items.bulk_create(
+            {
+                "workflow_id": workflow_id,
+                "items": items,
+                "response_format": response_format,
+                **fields,
+            }
+        )
+
+    def query_items(
+        self, workflow_id: str, query: Optional[Dict[str, Any]] = None, **fields: Any
+    ) -> Any:
+        return self.client.workflows.workflow(workflow_id).query_items({**(query or {}), **fields})
+
+    def fetch_items_by_query(
+        self, workflow_id: str, query: Optional[Dict[str, Any]] = None, **fields: Any
+    ) -> List[Transaction]:
+        response = self.query_items(workflow_id, query, **fields)
+        items = extract_items(response)
+        return [item_to_transaction(item, workflow_id) for item in items]
+
+    def list_item_comments(self, item_id: str, **params: Any) -> Any:
+        return self.client.workflows.items.list_comments(item_id, **params)
+
+    def add_item_comment(
+        self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any
+    ) -> Any:
+        return self.client.workflows.items.add_comment(item_id, {**(data or {}), **fields})
+
+    def claim_item(
+        self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any
+    ) -> Any:
+        return self.client.workflows.items.claim(item_id, {**(data or {}), **fields})
+
+    def assign_item(self, item_id: str, principal_id: str) -> Any:
+        return self.client.workflows.items.assign(item_id, {"principal_id": principal_id})
+
+    def assign_item_group(self, item_id: str, group_id: str) -> Any:
+        return self.client.workflows.items.assign_group(item_id, {"group_id": group_id})
+
+    def release_item(
+        self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any
+    ) -> Any:
+        return self.client.workflows.items.release(item_id, {**(data or {}), **fields})
+
+    def route_item_to_global_target(
+        self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any
+    ) -> Any:
+        return self.client.workflows.items.route_to_global_target(
+            item_id, {**(data or {}), **fields}
+        )
+
+    def list_item_events(self, item_id: str, **params: Any) -> Any:
+        return self.client.workflows.items.events(item_id, **params)
+
     def get_pipeline_result(
         self,
         workflow_id: str,
@@ -164,15 +229,20 @@ class ErgonPlatformService:
     ) -> Dict[str, Any]:
         wf = self.client.workflows.workflow(workflow_id)
         resolved_file_id = buckets_file_id or self._extract_buckets_file_id(item_id, field_id)
-        if not resolved_file_id:
-            raise ValueError("buckets_file_id not found for the given item and field")
-
         statuses = wf.item_attachment_status(item_id, field_id=field_id)
-        status_entry = find_status_entry(statuses, resolved_file_id)
+
+        status_entry = (
+            find_status_entry(statuses, resolved_file_id)
+            if resolved_file_id
+            else latest_status_entry(statuses)
+        )
+        resolved_file_id = resolved_file_id or extract_status_file_id(status_entry)
         raw_status = str(get_value(status_entry, "status", "unknown")).lower()
         state = classify_status(raw_status)
 
         if state == "success":
+            if not resolved_file_id:
+                raise ValueError("buckets_file_id not found for the given item and field")
             return {
                 "status": raw_status,
                 "state": "success",

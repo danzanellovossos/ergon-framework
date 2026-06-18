@@ -24,7 +24,7 @@ async_connector.py -> Adapter Ergon async (AsyncErgonPlatformConnector)
 
 | Modelo | Propósito |
 |--------|-----------|
-| `ErgonPlatformClient` | Credenciais e conexão (`client_id`, `client_secret`, `base_url`, `company_id?`, `timeout`, `max_retries`) |
+| `ErgonPlatformClient` | Credenciais e conexão (`client_id`, `client_secret`, `base_url` (default `https://platform.ergondata.ai`), `company_id?`, `timeout`, `max_retries`) |
 | `ErgonPlatformConsumerConfig` | Origem do fetch (`workflow_id`, `phase_id`, `batch_size`, `offset`, `ack_phase_id?`, `list_params`) |
 | `ErgonPlatformProducerConfig` | Defaults de criação (`workflow_id?`, `phase_id?`, `attachment_field_id?`, `default_content_type?`, `parent_item_id?`) |
 | `CreateItemInput` | Payload de criação de item, com upload opcional de anexo e suporte a `parent_item_id` |
@@ -42,6 +42,13 @@ A autenticação usa a API key (M2M): na primeira requisição o SDK troca `clie
 | `ack_transaction` | Move o item para `ack_phase_id` (no-op se não configurado) |
 | `nack_transaction` | No-op (o item permanece na fase atual) |
 | `move_item_to_phase` | Roteia um item para outra fase |
+| `route_item_to_global_target` | Move o item para a fase de global-timeout do workflow (bypass do grafo de rotas) |
+| `bulk_create_items` | Cria itens em lote (`/items/bulk-create`) |
+| `query_items` | Listagem filtrada/paginada de itens (`POST /workflows/{id}/items/query`) |
+| `fetch_items_by_query` | Igual a `query_items`, mas converte o resultado em `Transaction` |
+| `claim_item` / `assign_item` / `assign_item_group` / `release_item` | Ciclo de atribuição de item (claim/assign/assign-group/release) |
+| `list_item_comments` / `add_item_comment` | Comentários do item |
+| `list_item_events` | Histórico de atividade do item |
 | `get_pipeline_result` | Consulta o status/resultado do pipeline de anexos |
 | `list_item_children` / `list_item_child_targets` / `get_item_child_capabilities` / `unlink_item_child` | Superfície de linhagem de child-items |
 | `list_workflows` / `list_workflow_phases` / `list_phase_fields` | Métodos de leitura auxiliares |
@@ -79,7 +86,7 @@ from ergon.connector.ergon_platform import (
 client = ErgonPlatformClient(
     client_id="ek_xxx",
     client_secret="eks_xxx",
-    base_url="https://api.seu-dominio.com",
+    # base_url default = https://platform.ergondata.ai (origem do gateway)
 )
 
 producer = ErgonPlatformProducerConfig(
@@ -148,6 +155,27 @@ dedicada de child-items:
 
 Observação: `fetch_child_transactions` resolve os filhos via leitura por item ID
 (um lookup por filho), priorizando simplicidade da API do connector.
+
+## Operações de item
+
+Além do fetch por fase e da linhagem de child-items, o connector expõe operações
+de alto valor já cobertas pelo SDK/API (todas com versão `async` equivalente):
+
+- Criação em lote: `bulk_create_items(workflow_id, items, response_format="full")`.
+- Listagem filtrada: `query_items(workflow_id, query)` e `fetch_items_by_query(workflow_id, query)` (este último converte em `Transaction`, no mesmo padrão de `fetch_transactions`).
+- Atribuição: `claim_item(item_id)`, `assign_item(item_id, principal_id)`, `assign_item_group(item_id, group_id)`, `release_item(item_id)`.
+- Roteamento especial: `route_item_to_global_target(item_id)`.
+- Comentários: `list_item_comments(item_id)`, `add_item_comment(item_id, data)`.
+- Atividade: `list_item_events(item_id)`.
+
+Exemplo (consumo filtrado por `query`):
+
+```python
+txns = connector.fetch_items_by_query(
+    "wf-1",
+    {"filters": [{"field_id": "campo-status", "operator": "eq", "value": "novo"}]},
+)
+```
 
 ## Pipeline de anexos
 

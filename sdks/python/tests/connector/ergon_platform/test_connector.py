@@ -167,6 +167,93 @@ class TestChildItems:
         mock_unlink.assert_called_once_with("parent-1", "child-1")
 
 
+class TestItemOperations:
+    def test_bulk_create_items_delegates(self):
+        connector = _make_connector()
+        items = [{"title": "A"}, {"title": "B"}]
+        with patch.object(
+            connector.service, "bulk_create_items", return_value={"succeeded": ["i1", "i2"]}
+        ) as mock_bulk:
+            result = connector.bulk_create_items("wf-1", items)
+
+        assert result == {"succeeded": ["i1", "i2"]}
+        mock_bulk.assert_called_once_with("wf-1", items, response_format="full")
+
+    def test_query_items_delegates(self):
+        connector = _make_connector()
+        query = {"filters": [{"field_id": "f1", "operator": "eq", "value": "x"}]}
+        with patch.object(connector.service, "query_items", return_value={"items": []}) as mock_q:
+            result = connector.query_items("wf-1", query)
+
+        assert result == {"items": []}
+        mock_q.assert_called_once_with("wf-1", query)
+
+    def test_fetch_items_by_query_delegates(self):
+        connector = _make_connector()
+        expected_tx = Transaction(id="i1", payload={"id": "i1"}, metadata={})
+        with patch.object(
+            connector.service, "fetch_items_by_query", return_value=[expected_tx]
+        ) as mock_fetch:
+            txns = connector.fetch_items_by_query("wf-1", {"search": "abc"})
+
+        assert txns == [expected_tx]
+        mock_fetch.assert_called_once_with("wf-1", {"search": "abc"})
+
+    def test_comments_delegate(self):
+        connector = _make_connector()
+        with (
+            patch.object(
+                connector.service, "list_item_comments", return_value=[{"id": "c1"}]
+            ) as mock_list,
+            patch.object(
+                connector.service, "add_item_comment", return_value={"id": "c2"}
+            ) as mock_add,
+        ):
+            assert connector.list_item_comments("i1") == [{"id": "c1"}]
+            assert connector.add_item_comment("i1", {"body": "hi"}) == {"id": "c2"}
+
+        mock_list.assert_called_once_with("i1")
+        mock_add.assert_called_once_with("i1", {"body": "hi"})
+
+    def test_assignment_lifecycle_delegates(self):
+        connector = _make_connector()
+        with (
+            patch.object(connector.service, "claim_item", return_value={"ok": True}) as mock_claim,
+            patch.object(connector.service, "assign_item", return_value={"ok": True}) as mock_assign,
+            patch.object(
+                connector.service, "assign_item_group", return_value={"ok": True}
+            ) as mock_group,
+            patch.object(
+                connector.service, "release_item", return_value={"ok": True}
+            ) as mock_release,
+        ):
+            connector.claim_item("i1")
+            connector.assign_item("i1", "principal-1")
+            connector.assign_item_group("i1", "group-1")
+            connector.release_item("i1")
+
+        mock_claim.assert_called_once_with("i1", None)
+        mock_assign.assert_called_once_with("i1", "principal-1")
+        mock_group.assert_called_once_with("i1", "group-1")
+        mock_release.assert_called_once_with("i1", None)
+
+    def test_route_to_global_target_and_events_delegate(self):
+        connector = _make_connector()
+        with (
+            patch.object(
+                connector.service, "route_item_to_global_target", return_value={"ok": True}
+            ) as mock_route,
+            patch.object(
+                connector.service, "list_item_events", return_value=[{"id": "e1"}]
+            ) as mock_events,
+        ):
+            connector.route_item_to_global_target("i1")
+            assert connector.list_item_events("i1") == [{"id": "e1"}]
+
+        mock_route.assert_called_once_with("i1", None)
+        mock_events.assert_called_once_with("i1")
+
+
 class TestAckTransaction:
     def test_ack_moves_to_configured_phase(self):
         config = ErgonPlatformConsumerConfig(workflow_id="wf", phase_id="ph", ack_phase_id="done")
