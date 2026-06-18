@@ -37,13 +37,7 @@ dependencies = [
 
 [project.optional-dependencies]
 nylas = ["nylas>=6.0.0"]
-ergon_platform = ["ergon-platform-sdk>=0.1.0"]
-
-# ``ergon-platform-sdk`` is an internal, unpublished package. Point uv at the
-# sibling checkout so ``uv sync`` can resolve the ``ergon_platform`` extra
-# without a package registry. Adjust the path if your checkout layout differs.
-[tool.uv.sources]
-ergon-platform-sdk = { path = "../../../ergon-platform-sdks/python", editable = true, extra = "ergon_platform" }
+ergon_platform = []
 
 [dependency-groups]
 dev = [

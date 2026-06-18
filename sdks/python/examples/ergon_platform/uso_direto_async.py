@@ -3,7 +3,8 @@ Exemplo direto do AsyncErgonPlatformConnector — sem runner do framework.
 
 Uso:
     cd sdks/python
-    pip install -e ".[ergon_platform]"
+    pip install -e .
+    # instale/disponibilize o pacote ergon-platform-sdk no mesmo ambiente
     cp examples/ergon_platform/.env.example examples/ergon_platform/.env
     # preencha ERGON_CLIENT_ID, ERGON_CLIENT_SECRET, ERGON_WORKFLOW_ID, ERGON_PHASE_ID
     py examples/ergon_platform/uso_direto_async.py

@@ -5,7 +5,8 @@ Connector que integra o framework Ergon com a **Ergon Platform** (API de workflo
 ## Instalação
 
 ```bash
-pip install ergon-framework-python[ergon_platform]
+pip install ergon-framework-python
+# instale/disponibilize o pacote ergon-platform-sdk no mesmo ambiente
 ```
 
 ## Arquitetura

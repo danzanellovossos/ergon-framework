@@ -21,7 +21,7 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 
-_ERGON_PLATFORM_IMPORT_ERROR = "Install with: pip install ergon-framework-python[ergon_platform]"
+_ERGON_PLATFORM_IMPORT_ERROR = "Install the ergon-platform-sdk package in the same environment"
 
 
 def _get_ergon_client():

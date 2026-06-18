@@ -6,7 +6,8 @@ Exemplos de uso do `ErgonPlatformConnector` / `AsyncErgonPlatformConnector`, que
 
 ```bash
 cd sdks/python
-pip install -e ".[ergon_platform]"
+pip install -e .
+# instale/disponibilize o pacote ergon-platform-sdk no mesmo ambiente
 cp examples/ergon_platform/.env.example examples/ergon_platform/.env
 # preencha as credenciais e IDs de workflow/fase no .env
 ```
@@ -17,7 +18,6 @@ cp examples/ergon_platform/.env.example examples/ergon_platform/.env
 |----------|-------------|-----------|
 | `ERGON_CLIENT_ID` | sim | API key id (`ek_...`) |
 | `ERGON_CLIENT_SECRET` | sim | API key secret (`eks_...`) |
-| `ERGON_BASE_URL` | sim | Base URL da plataforma |
 | `ERGON_COMPANY_ID` | não | Inferido do token quando omitido |
 | `ERGON_WORKFLOW_ID` | sim | Workflow consumido |
 | `ERGON_PHASE_ID` | sim | Fase de onde os itens são lidos |
