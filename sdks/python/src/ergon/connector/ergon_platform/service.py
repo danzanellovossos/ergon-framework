@@ -12,6 +12,7 @@ from .utils import (
     classify_status,
     extract_buckets_file_id,
     extract_items,
+    extract_total,
     extract_status_file_id,
     find_status_entry,
     get_value,
@@ -55,8 +56,26 @@ class ErgonPlatformService:
     def list_workflow_phases(self, workflow_id: str, **params: Any) -> Any:
         return self.client.workflows.workflow(workflow_id).phases(**params)
 
-    def list_phase_fields(self, phase_id: str, **params: Any) -> Any:
-        return self.client.workflows.phases.list_fields(phase_id, **params)
+    def list_phase_fields(
+        self,
+        phase_id: str,
+        *,
+        workflow_id: Optional[str] = None,
+        include_workflow_fields: bool = True,
+        **params: Any,
+    ) -> Any:
+        phase_fields = self.client.workflows.phases.list_fields(phase_id, **params)
+        if not include_workflow_fields:
+            return phase_fields
+
+        if not workflow_id:
+            raise ValueError(
+                "workflow_id is required when include_workflow_fields=True "
+                "(the platform API does not support GET /workflows/phases/{id})"
+            )
+
+        workflow_fields = self.client.workflows.workflow(workflow_id).fields(**params)
+        return self._merge_unique_fields(phase_fields, workflow_fields)
 
     def list_phase_items(self, workflow_id: str, phase_id: str, **params: Any) -> Any:
         return self.client.workflows.workflow(workflow_id).items(phase_id=phase_id, **params)
@@ -242,6 +261,10 @@ class ErgonPlatformService:
             "results": None,
         }
 
+    def get_phase_items_count(self, workflow_id: str, phase_id: str, **params: Any) -> int:
+        response = self.list_phase_items(workflow_id, phase_id, limit=1, offset=0, **params)
+        return extract_total(response)
+
     def fetch_items(
         self,
         workflow_id: str,
@@ -263,3 +286,21 @@ class ErgonPlatformService:
     def _extract_buckets_file_id(self, item_id: str, field_id: str) -> Optional[str]:
         item = self.get_item(item_id)
         return extract_buckets_file_id(item, field_id)
+
+    @staticmethod
+    def _merge_unique_fields(phase_fields: Any, workflow_fields: Any) -> Any:
+        """Merge two field collections by id while preserving order."""
+        if not isinstance(phase_fields, list) or not isinstance(workflow_fields, list):
+            return phase_fields
+
+        merged: list[Any] = []
+        seen_ids: set[str] = set()
+
+        for field in [*phase_fields, *workflow_fields]:
+            field_id = str(get_value(field, "id", ""))
+            if field_id and field_id in seen_ids:
+                continue
+            if field_id:
+                seen_ids.add(field_id)
+            merged.append(field)
+        return merged

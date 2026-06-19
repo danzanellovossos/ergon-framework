@@ -5,6 +5,7 @@ from ergon.connector.ergon_platform.utils import (
     classify_status,
     extract_buckets_file_id,
     extract_items,
+    extract_total,
     extract_status_entries,
     extract_status_file_id,
     find_status_entry,
@@ -165,3 +166,21 @@ class TestExtractItems:
 
     def test_empty(self):
         assert extract_items(None) == []
+
+
+class TestExtractTotal:
+    def test_from_dict(self):
+        assert extract_total({"total": 10, "items": []}) == 10
+        assert extract_total({"total_count": 5}) == 5
+        assert extract_total({"count": 3}) == 3
+
+    def test_from_page_like(self):
+        class Page:
+            total = 42
+            items = []
+
+        assert extract_total(Page()) == 42
+
+    def test_returns_zero_when_absent(self):
+        assert extract_total({"items": [1]}) == 0
+        assert extract_total(None) == 0

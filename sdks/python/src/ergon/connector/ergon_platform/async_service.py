@@ -26,8 +26,22 @@ class AsyncErgonPlatformService:
     async def list_workflow_phases(self, workflow_id: str, **params: Any) -> Any:
         return await asyncio.to_thread(lambda: self._sync.list_workflow_phases(workflow_id, **params))
 
-    async def list_phase_fields(self, phase_id: str, **params: Any) -> Any:
-        return await asyncio.to_thread(lambda: self._sync.list_phase_fields(phase_id, **params))
+    async def list_phase_fields(
+        self,
+        phase_id: str,
+        *,
+        workflow_id: Optional[str] = None,
+        include_workflow_fields: bool = True,
+        **params: Any,
+    ) -> Any:
+        return await asyncio.to_thread(
+            lambda: self._sync.list_phase_fields(
+                phase_id,
+                workflow_id=workflow_id,
+                include_workflow_fields=include_workflow_fields,
+                **params,
+            )
+        )
 
     async def list_phase_items(self, workflow_id: str, phase_id: str, **params: Any) -> Any:
         return await asyncio.to_thread(lambda: self._sync.list_phase_items(workflow_id, phase_id, **params))
@@ -139,6 +153,11 @@ class AsyncErgonPlatformService:
             item_id,
             field_id,
             buckets_file_id,
+        )
+
+    async def get_phase_items_count(self, workflow_id: str, phase_id: str, **params: Any) -> int:
+        return await asyncio.to_thread(
+            lambda: self._sync.get_phase_items_count(workflow_id, phase_id, **params)
         )
 
     async def fetch_items(

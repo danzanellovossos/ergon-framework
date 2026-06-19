@@ -1,4 +1,4 @@
-"""Tests for ErgonPlatformConnector — fetch/dispatch mapping, ack, pipeline."""
+"""Tests for ErgonPlatformConnector — fetch/dispatch mapping, ack, count."""
 
 from unittest.mock import patch
 
@@ -131,63 +131,8 @@ class TestChildItems:
         assert txns == [expected_tx]
         mock_fetch.assert_called_once_with("parent-1", include_archived=True)
 
-    def test_child_surface_methods_delegate_to_service(self):
-        connector = _make_connector()
 
-        with (
-            patch.object(
-                connector.service,
-                "list_item_children",
-                return_value=[{"child_item_id": "child-1"}],
-            ) as mock_children,
-            patch.object(
-                connector.service,
-                "list_item_child_targets",
-                return_value={"folders": []},
-            ) as mock_targets,
-            patch.object(
-                connector.service,
-                "get_item_child_capabilities",
-                return_value={"can_create": True, "can_view": True, "can_unlink": False},
-            ) as mock_caps,
-            patch.object(connector.service, "unlink_item_child", return_value=None) as mock_unlink,
-        ):
-            assert connector.list_item_children("parent-1") == [{"child_item_id": "child-1"}]
-            assert connector.list_item_child_targets("parent-1") == {"folders": []}
-            assert connector.get_item_child_capabilities("parent-1") == {
-                "can_create": True,
-                "can_view": True,
-                "can_unlink": False,
-            }
-            connector.unlink_item_child("parent-1", "child-1")
-
-        mock_children.assert_called_once_with("parent-1")
-        mock_targets.assert_called_once_with("parent-1")
-        mock_caps.assert_called_once_with("parent-1")
-        mock_unlink.assert_called_once_with("parent-1", "child-1")
-
-
-class TestItemOperations:
-    def test_bulk_create_items_delegates(self):
-        connector = _make_connector()
-        items = [{"title": "A"}, {"title": "B"}]
-        with patch.object(
-            connector.service, "bulk_create_items", return_value={"succeeded": ["i1", "i2"]}
-        ) as mock_bulk:
-            result = connector.bulk_create_items("wf-1", items)
-
-        assert result == {"succeeded": ["i1", "i2"]}
-        mock_bulk.assert_called_once_with("wf-1", items, response_format="full")
-
-    def test_query_items_delegates(self):
-        connector = _make_connector()
-        query = {"filters": [{"field_id": "f1", "operator": "eq", "value": "x"}]}
-        with patch.object(connector.service, "query_items", return_value={"items": []}) as mock_q:
-            result = connector.query_items("wf-1", query)
-
-        assert result == {"items": []}
-        mock_q.assert_called_once_with("wf-1", query)
-
+class TestFetchItemsByQuery:
     def test_fetch_items_by_query_delegates(self):
         connector = _make_connector()
         expected_tx = Transaction(id="i1", payload={"id": "i1"}, metadata={})
@@ -197,47 +142,22 @@ class TestItemOperations:
         assert txns == [expected_tx]
         mock_fetch.assert_called_once_with("wf-1", {"search": "abc"})
 
-    def test_comments_delegate(self):
+
+class TestGetTransactionsCount:
+    def test_count_delegates_to_service(self):
+        config = ErgonPlatformConsumerConfig(workflow_id="wf-1", phase_id="ph-1")
+        connector = _make_connector(consumer_config=config)
+
+        with patch.object(connector.service, "get_phase_items_count", return_value=42) as mock_count:
+            count = connector.get_transactions_count()
+
+        assert count == 42
+        mock_count.assert_called_once_with("wf-1", "ph-1")
+
+    def test_count_requires_consumer_config(self):
         connector = _make_connector()
-        with (
-            patch.object(connector.service, "list_item_comments", return_value=[{"id": "c1"}]) as mock_list,
-            patch.object(connector.service, "add_item_comment", return_value={"id": "c2"}) as mock_add,
-        ):
-            assert connector.list_item_comments("i1") == [{"id": "c1"}]
-            assert connector.add_item_comment("i1", {"body": "hi"}) == {"id": "c2"}
-
-        mock_list.assert_called_once_with("i1")
-        mock_add.assert_called_once_with("i1", {"body": "hi"})
-
-    def test_assignment_lifecycle_delegates(self):
-        connector = _make_connector()
-        with (
-            patch.object(connector.service, "claim_item", return_value={"ok": True}) as mock_claim,
-            patch.object(connector.service, "assign_item", return_value={"ok": True}) as mock_assign,
-            patch.object(connector.service, "assign_item_group", return_value={"ok": True}) as mock_group,
-            patch.object(connector.service, "release_item", return_value={"ok": True}) as mock_release,
-        ):
-            connector.claim_item("i1")
-            connector.assign_item("i1", "principal-1")
-            connector.assign_item_group("i1", "group-1")
-            connector.release_item("i1")
-
-        mock_claim.assert_called_once_with("i1", None)
-        mock_assign.assert_called_once_with("i1", "principal-1")
-        mock_group.assert_called_once_with("i1", "group-1")
-        mock_release.assert_called_once_with("i1", None)
-
-    def test_route_to_global_target_and_events_delegate(self):
-        connector = _make_connector()
-        with (
-            patch.object(connector.service, "route_item_to_global_target", return_value={"ok": True}) as mock_route,
-            patch.object(connector.service, "list_item_events", return_value=[{"id": "e1"}]) as mock_events,
-        ):
-            connector.route_item_to_global_target("i1")
-            assert connector.list_item_events("i1") == [{"id": "e1"}]
-
-        mock_route.assert_called_once_with("i1", None)
-        mock_events.assert_called_once_with("i1")
+        with pytest.raises(ValueError, match="consumer_config"):
+            connector.get_transactions_count()
 
 
 class TestAckTransaction:
@@ -260,14 +180,3 @@ class TestAckTransaction:
             connector.ack_transaction(tx)
 
         mock_move.assert_not_called()
-
-
-class TestPipelineResult:
-    def test_get_pipeline_result_delegates(self):
-        connector = _make_connector()
-        expected = {"state": "success", "results": {}}
-        with patch.object(connector.service, "get_pipeline_result", return_value=expected) as mock_pr:
-            result = connector.get_pipeline_result("wf", "item", "field", "bfid")
-
-        assert result == expected
-        mock_pr.assert_called_once_with("wf", "item", "field", "bfid")

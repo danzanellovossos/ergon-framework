@@ -67,80 +67,22 @@ class ErgonPlatformConnector(Connector):
         workflow_id = self._consumer_config.workflow_id if self._consumer_config else ""
         return self.service.get_item_transaction(transaction_id, workflow_id, **kwargs)
 
-    def list_workflows(self, *, limit: int = 50, offset: int = 0, **params: Any) -> Any:
-        return self.service.list_workflows(limit=limit, offset=offset, **params)
-
-    def list_workflow_phases(self, workflow_id: str, **params: Any) -> Any:
-        return self.service.list_workflow_phases(workflow_id, **params)
-
-    def list_phase_fields(self, phase_id: str, **params: Any) -> Any:
-        return self.service.list_phase_fields(phase_id, **params)
-
-    def move_item_to_phase(self, item_id: str, phase_id: str) -> Any:
-        return self.service.move_item_to_phase(item_id, phase_id)
-
-    def list_item_children(self, item_id: str, **params: Any) -> Any:
-        return self.service.list_item_children(item_id, **params)
-
-    def list_item_child_targets(self, item_id: str, **params: Any) -> Any:
-        return self.service.list_item_child_targets(item_id, **params)
-
-    def get_item_child_capabilities(self, item_id: str, **params: Any) -> Any:
-        return self.service.get_item_child_capabilities(item_id, **params)
-
-    def unlink_item_child(self, item_id: str, child_item_id: str) -> None:
-        self.service.unlink_item_child(item_id, child_item_id)
-
-    def bulk_create_items(
-        self,
-        workflow_id: str,
-        items: List[Dict[str, Any]],
-        *,
-        response_format: str = "full",
-        **fields: Any,
-    ) -> Any:
-        return self.service.bulk_create_items(workflow_id, items, response_format=response_format, **fields)
-
-    def query_items(self, workflow_id: str, query: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
-        return self.service.query_items(workflow_id, query, **fields)
-
     def fetch_items_by_query(
         self, workflow_id: str, query: Optional[Dict[str, Any]] = None, **fields: Any
     ) -> List[Transaction]:
         return self.service.fetch_items_by_query(workflow_id, query, **fields)
 
-    def list_item_comments(self, item_id: str, **params: Any) -> Any:
-        return self.service.list_item_comments(item_id, **params)
+    def get_transactions_count(self, *args, **kwargs) -> int:
+        if self._consumer_config is None:
+            raise ValueError("ErgonPlatformConnector requires a consumer_config to count transactions")
 
-    def add_item_comment(self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
-        return self.service.add_item_comment(item_id, data, **fields)
-
-    def claim_item(self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
-        return self.service.claim_item(item_id, data, **fields)
-
-    def assign_item(self, item_id: str, principal_id: str) -> Any:
-        return self.service.assign_item(item_id, principal_id)
-
-    def assign_item_group(self, item_id: str, group_id: str) -> Any:
-        return self.service.assign_item_group(item_id, group_id)
-
-    def release_item(self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
-        return self.service.release_item(item_id, data, **fields)
-
-    def route_item_to_global_target(self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
-        return self.service.route_item_to_global_target(item_id, data, **fields)
-
-    def list_item_events(self, item_id: str, **params: Any) -> Any:
-        return self.service.list_item_events(item_id, **params)
-
-    def get_pipeline_result(
-        self,
-        workflow_id: str,
-        item_id: str,
-        field_id: str,
-        buckets_file_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        return self.service.get_pipeline_result(workflow_id, item_id, field_id, buckets_file_id)
+        config = self._consumer_config
+        params: Dict[str, Any] = {**config.list_params, **kwargs}
+        return self.service.get_phase_items_count(
+            config.workflow_id,
+            config.phase_id,
+            **params,
+        )
 
     def ack_transaction(self, transaction: Transaction, phase_id: Optional[str] = None) -> None:
         target_phase = phase_id

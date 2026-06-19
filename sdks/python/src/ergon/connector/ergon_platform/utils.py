@@ -183,3 +183,12 @@ def extract_items(response: Any) -> List[Any]:
     if isinstance(items, (list, tuple)):
         return list(items)
     return []
+
+
+def extract_total(response: Any) -> int:
+    """Read total count from a paginated Page, dict, or SDK response."""
+    for key in ("total", "total_count", "count"):
+        value = get_value(response, key)
+        if value is not None:
+            return int(value)
+    return 0
