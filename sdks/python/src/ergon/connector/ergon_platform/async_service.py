@@ -156,9 +156,7 @@ class AsyncErgonPlatformService:
         )
 
     async def get_phase_items_count(self, workflow_id: str, phase_id: str, **params: Any) -> int:
-        return await asyncio.to_thread(
-            lambda: self._sync.get_phase_items_count(workflow_id, phase_id, **params)
-        )
+        return await asyncio.to_thread(lambda: self._sync.get_phase_items_count(workflow_id, phase_id, **params))
 
     async def fetch_items(
         self,
