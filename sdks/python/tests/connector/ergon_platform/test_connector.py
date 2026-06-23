@@ -74,11 +74,11 @@ class TestFetchTransactions:
         listed_tx = Transaction(id="item-1", payload={"id": "item-1"}, metadata={"workflow_id": "wf-1"})
         claimed_tx = Transaction(id="item-1", payload={"id": "item-1", "assigned_to": "worker"}, metadata={})
 
-        with patch.object(connector.service, "fetch_items", return_value=[listed_tx]) as mock_fetch, patch.object(
-            connector.service, "claim_item", return_value={}
-        ) as mock_claim, patch.object(
-            connector, "fetch_transaction_by_id", return_value=claimed_tx
-        ) as mock_refresh:
+        with (
+            patch.object(connector.service, "fetch_items", return_value=[listed_tx]) as mock_fetch,
+            patch.object(connector.service, "claim_item", return_value={}) as mock_claim,
+            patch.object(connector, "fetch_transaction_by_id", return_value=claimed_tx) as mock_refresh,
+        ):
             txns = connector.fetch_transactions()
 
         assert txns == [claimed_tx]
@@ -93,9 +93,11 @@ class TestFetchTransactions:
         connector = _make_connector(consumer_config=config)
         listed_tx = Transaction(id="item-1", payload={"id": "item-1"}, metadata={"workflow_id": "wf-1"})
 
-        with patch.object(connector.service, "fetch_items", return_value=[listed_tx]), patch.object(
-            connector.service, "claim_item", side_effect=RuntimeError("race")
-        ), patch.object(connector, "fetch_transaction_by_id") as mock_refresh:
+        with (
+            patch.object(connector.service, "fetch_items", return_value=[listed_tx]),
+            patch.object(connector.service, "claim_item", side_effect=RuntimeError("race")),
+            patch.object(connector, "fetch_transaction_by_id") as mock_refresh,
+        ):
             txns = connector.fetch_transactions()
 
         assert txns == []
@@ -274,9 +276,10 @@ class TestNackTransaction:
         connector = _make_connector(consumer_config=config)
         tx = Transaction(id="item-1", payload={})
 
-        with patch.object(connector.service, "release_item", return_value={}) as mock_release, patch.object(
-            connector.service, "move_item_to_phase", return_value={}
-        ) as mock_move:
+        with (
+            patch.object(connector.service, "release_item", return_value={}) as mock_release,
+            patch.object(connector.service, "move_item_to_phase", return_value={}) as mock_move,
+        ):
             connector.nack_transaction(tx, requeue=False)
 
         mock_release.assert_not_called()
