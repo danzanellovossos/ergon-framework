@@ -1,4 +1,5 @@
 import logging
+import math
 import mimetypes
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -10,10 +11,11 @@ from .models import ErgonPlatformClient
 from .utils import (
     as_payload,
     classify_status,
+    decode_jwt_claims,
     extract_buckets_file_id,
     extract_items,
-    extract_total,
     extract_status_file_id,
+    extract_total,
     find_status_entry,
     get_value,
     item_to_transaction,
@@ -37,6 +39,7 @@ class ErgonPlatformService:
     def __init__(self, config: ErgonPlatformClient) -> None:
         logger.info("Initializing ErgonPlatformService")
         self.config = config
+        self._m2m_principal_id: Optional[str] = None
         ErgonClient = _get_ergon_client()
         self.client = ErgonClient(
             client_id=config.client_id,
@@ -216,7 +219,23 @@ class ErgonPlatformService:
     def assign_item_group(self, item_id: str, group_id: str) -> Any:
         return self.client.workflows.items.assign_group(item_id, {"group_id": group_id})
 
-    def release_item(self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
+    def release_item(
+        self,
+        item_id: str,
+        data: Optional[Dict[str, Any]] = None,
+        *,
+        delay_seconds: Optional[int] = None,
+        **fields: Any,
+    ) -> Any:
+        if delay_seconds is not None:
+            if delay_seconds < 0:
+                raise ValueError("delay_seconds must be a non-negative integer")
+            if delay_seconds > 0:
+                release_minutes = math.ceil(delay_seconds / 60)
+                self.client.workflows.items.update(
+                    item_id,
+                    visibility_timeout_on_release_minutes=release_minutes,
+                )
         return self.client.workflows.items.release(item_id, {**(data or {}), **fields})
 
     def route_item_to_global_target(self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
@@ -274,7 +293,16 @@ class ErgonPlatformService:
         offset: int = 0,
         **params: Any,
     ) -> List[Transaction]:
-        response = self.list_phase_items(workflow_id, phase_id, limit=limit, offset=offset, **params)
+        query_params = dict(params)
+        if "assigned" not in query_params and not query_params.get("assigned_to"):
+            query_params["assigned_to"] = self._get_m2m_principal_id()
+        response = self.list_phase_items(
+            workflow_id,
+            phase_id,
+            limit=limit,
+            offset=offset,
+            **query_params,
+        )
         items = extract_items(response)
         return [item_to_transaction(item, workflow_id) for item in items]
 
@@ -286,6 +314,31 @@ class ErgonPlatformService:
     def _extract_buckets_file_id(self, item_id: str, field_id: str) -> Optional[str]:
         item = self.get_item(item_id)
         return extract_buckets_file_id(item, field_id)
+
+    def _get_m2m_principal_id(self) -> str:
+        if self._m2m_principal_id:
+            return self._m2m_principal_id
+
+        response = httpx.post(
+            f"{self.config.base_url.rstrip('/')}/v1/auth/token",
+            json={
+                "client_id": self.config.client_id,
+                "client_secret": self.config.client_secret,
+            },
+            timeout=self.config.timeout,
+        )
+        response.raise_for_status()
+        token = response.json().get("access_token")
+        if not token:
+            raise ValueError("IAM token exchange did not return access_token")
+
+        claims = decode_jwt_claims(str(token))
+        principal_id = claims.get("sub")
+        if not isinstance(principal_id, str) or not principal_id.strip():
+            raise ValueError("M2M token does not contain principal id in 'sub' claim")
+
+        self._m2m_principal_id = principal_id
+        return principal_id
 
     @staticmethod
     def _merge_unique_fields(phase_fields: Any, workflow_fields: Any) -> Any:

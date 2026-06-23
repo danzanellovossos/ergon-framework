@@ -46,6 +46,14 @@ class ErgonPlatformConsumerConfig(BaseModel):
         default=None,
         description="Phase to route an item to on ack; ack is a no-op when omitted",
     )
+    nack_phase_id: Optional[str] = Field(
+        default=None,
+        description="Phase to route an item to on nack when requeue=False",
+    )
+    unassigned: bool = Field(
+        default=False,
+        description="When true, fetch only unassigned cards and claim them during fetch",
+    )
     list_params: Dict[str, Any] = Field(
         default_factory=dict,
         description="Extra query params forwarded to the items listing endpoint",

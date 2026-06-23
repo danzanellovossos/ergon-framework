@@ -7,6 +7,7 @@ Uso:
     # instale/disponibilize o pacote ergon-platform-sdk no mesmo ambiente
     cp examples/ergon_platform/.env.example examples/ergon_platform/.env
     # preencha ERGON_CLIENT_ID, ERGON_CLIENT_SECRET, ERGON_WORKFLOW_ID, ERGON_PHASE_ID
+    # opcional: ERGON_UNASSIGNED=true|false e ERGON_ASSIGNED_TO=<uuid>
     py examples/ergon_platform/task_consumer.py
 """
 
@@ -51,20 +52,34 @@ def _optional_env(name: str) -> Optional[str]:
     return value or None
 
 
+def _bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def _build_consumer_config() -> ErgonPlatformConsumerConfig:
+    unassigned = _bool_env("ERGON_UNASSIGNED", default=False)
+    assigned_to = _optional_env("ERGON_ASSIGNED_TO")
+    list_params: Dict[str, Any] = {}
+    if not unassigned and assigned_to:
+        list_params["assigned_to"] = assigned_to
+
     return ErgonPlatformConsumerConfig(
         workflow_id=_require_env("ERGON_WORKFLOW_ID"),
         phase_id=_require_env("ERGON_PHASE_ID"),
-        batch_size=5,
+        batch_size=3,
         ack_phase_id=_optional_env("ERGON_ACK_PHASE_ID"),
+        nack_phase_id=_optional_env("ERGON_NACK_PHASE_ID"),
+        unassigned=unassigned,
+        list_params=list_params,
     )
 
 
 def _build_task_config() -> TaskConfig:
     client = ErgonPlatformClient(
-        client_id=_require_env("ERGON_CLIENT_ID"),
-        client_secret=_require_env("ERGON_CLIENT_SECRET"),
-        base_url=os.getenv("ERGON_BASE_URL", "http://localhost").strip(),
+        client_id=_require_env("ERGON_CLIENT_ID"), client_secret=_require_env("ERGON_CLIENT_SECRET")
     )
 
     consumer_policy = policies.ConsumerPolicy()
@@ -95,6 +110,9 @@ class WorkflowItemTask(AsyncConsumerTask):
     """Consome itens de uma fase do workflow e faz ack (move de fase) após sucesso."""
 
     name = "workflow-item-processor"
+    # Injetado dinamicamente pelo framework via ConnectorConfig("workflow")
+    workflow_connector: AsyncErgonPlatformConnector
+    consumer_policy: policies.ConsumerPolicy
 
     async def execute(self) -> Any:
         return await self.consume_transactions(self.consumer_policy)
@@ -103,15 +121,21 @@ class WorkflowItemTask(AsyncConsumerTask):
         payload = transaction.payload
         title = payload.get("title", "")
         logger.info("Processando item %s — título: %s", transaction.id, title)
+        raise Exception("Erro de teste")
         return {"item_id": transaction.id, "title": title}
 
     async def handle_process_success(self, transaction: Transaction, result: Any) -> None:
         await self.workflow_connector.ack_transaction(transaction)
         logger.info("Ack aplicado em %s (título: %s)", transaction.id, result.get("title"))
 
+    async def handle_process_exception(self, transaction: Transaction, exc: Exception) -> None:
+        await self.workflow_connector.nack_transaction(transaction, requeue=True, delay_seconds=30)
+        logger.error("Erro ao processar item %s: %s", transaction.id, exc)
+
     async def exit(self) -> None:
-        if hasattr(self, "workflow_connector") and hasattr(self.workflow_connector, "close"):
-            await self.workflow_connector.close()
+        connector = getattr(self, "workflow_connector", None)
+        if connector is not None and hasattr(connector, "close"):
+            await connector.close()
 
 
 if __name__ == "__main__":

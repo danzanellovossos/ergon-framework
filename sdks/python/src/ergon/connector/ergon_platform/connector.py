@@ -40,13 +40,32 @@ class ErgonPlatformConnector(Connector):
         config = self._consumer_config
         limit = batch_size or config.batch_size
         params: Dict[str, Any] = {**config.list_params, **kwargs}
-        return self.service.fetch_items(
+        if config.unassigned:
+            params.pop("assigned_to", None)
+            params["assigned"] = "no"
+
+        transactions = self.service.fetch_items(
             config.workflow_id,
             config.phase_id,
             limit=limit,
             offset=config.offset,
             **params,
         )
+        if not config.unassigned:
+            return transactions
+
+        claimed_transactions: List[Transaction] = []
+        for transaction in transactions:
+            try:
+                self.service.claim_item(transaction.id)
+                claimed_transactions.append(self.fetch_transaction_by_id(transaction.id))
+            except Exception:
+                logger.warning(
+                    "Failed to claim item %s during unassigned fetch; skipping it",
+                    transaction.id,
+                    exc_info=True,
+                )
+        return claimed_transactions
 
     def dispatch_transactions(self, transactions: List[Transaction], *args, **kwargs) -> List[str]:
         created_ids: List[str] = []
@@ -92,11 +111,32 @@ class ErgonPlatformConnector(Connector):
             return
         self.service.move_item_to_phase(transaction.id, target_phase)
 
-    def nack_transaction(self, transaction: Transaction, requeue: bool = True) -> None:
-        logger.debug(
-            "nack_transaction is a no-op for Ergon Platform; item %s stays in its current phase",
-            transaction.id,
+    def release_item(
+        self,
+        item_id: str,
+        data: Optional[Dict[str, Any]] = None,
+        *,
+        delay_seconds: Optional[int] = None,
+        **fields: Any,
+    ) -> Any:
+        return self.service.release_item(
+            item_id,
+            data,
+            delay_seconds=delay_seconds,
+            **fields,
         )
+
+    def nack_transaction(self, transaction: Transaction, requeue: bool = True, delay_seconds: int = 10) -> None:
+        if requeue:
+            self.service.release_item(transaction.id, delay_seconds=delay_seconds)
+            return
+
+        target_phase = self._consumer_config.nack_phase_id if self._consumer_config is not None else None
+        if not target_phase:
+            raise ValueError("nack_phase_id is required when nack_transaction is called with requeue=False")
+
+        self.service.move_item_to_phase(transaction.id, target_phase)
+        logger.debug("Item %s moved to nack phase %s", transaction.id, target_phase)
 
     def close(self) -> None:
         self.service.close()

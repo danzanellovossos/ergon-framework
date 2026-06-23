@@ -129,8 +129,22 @@ class AsyncErgonPlatformService:
     async def assign_item_group(self, item_id: str, group_id: str) -> Any:
         return await asyncio.to_thread(self._sync.assign_item_group, item_id, group_id)
 
-    async def release_item(self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
-        return await asyncio.to_thread(lambda: self._sync.release_item(item_id, data, **fields))
+    async def release_item(
+        self,
+        item_id: str,
+        data: Optional[Dict[str, Any]] = None,
+        *,
+        delay_seconds: Optional[int] = None,
+        **fields: Any,
+    ) -> Any:
+        return await asyncio.to_thread(
+            lambda: self._sync.release_item(
+                item_id,
+                data,
+                delay_seconds=delay_seconds,
+                **fields,
+            )
+        )
 
     async def route_item_to_global_target(
         self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any

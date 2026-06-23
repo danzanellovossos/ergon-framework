@@ -28,7 +28,7 @@ O **connector** implementa só o contrato do framework (`fetch`/`dispatch`/`ack`
 | Modelo | Propósito |
 |--------|-----------|
 | `ErgonPlatformClient` | Credenciais e conexão (`client_id`, `client_secret`, `base_url` (default `https://platform.ergondata.ai`), `company_id?`, `timeout`, `max_retries`) |
-| `ErgonPlatformConsumerConfig` | Origem do fetch (`workflow_id`, `phase_id`, `batch_size`, `offset`, `ack_phase_id?`, `list_params`) |
+| `ErgonPlatformConsumerConfig` | Origem do fetch (`workflow_id`, `phase_id`, `batch_size`, `offset`, `ack_phase_id?`, `nack_phase_id?`, `unassigned`, `list_params`) |
 | `ErgonPlatformProducerConfig` | Defaults de criação (`workflow_id?`, `phase_id?`, `attachment_field_id?`, `default_content_type?`, `parent_item_id?`) |
 | `CreateItemInput` | Payload de criação de item, com upload opcional de anexo e suporte a `parent_item_id` |
 
@@ -45,7 +45,7 @@ A autenticação usa a API key (M2M): na primeira requisição o SDK troca `clie
 | `fetch_transaction_by_id` / `fetch_transaction_by_id_async` | Busca um item por ID -> `Transaction` |
 | `get_transactions_count` / `get_transactions_count_async` | Total de itens na fase de consumo (profundidade de fila) |
 | `ack_transaction` | Move o item para `ack_phase_id` (no-op se não configurado) |
-| `nack_transaction` | No-op (o item permanece na fase atual) |
+| `nack_transaction` | `requeue=True` faz `release_item` (com delay opcional); `requeue=False` move para `nack_phase_id` |
 
 ### API via `connector.service`
 
@@ -73,6 +73,46 @@ Para demais operações, use `connector.service` (ou `AsyncErgonPlatformService`
 - `id` = ID do item
 - `payload` = item serializado (dict)
 - `metadata` = `{ workflow_id, phase_id, company_id, title }`
+
+Regras de atribuição no consumo:
+
+- `unassigned=True`: busca apenas cards não atribuídos (`assigned=no`) e tenta `claim` em cada item antes de retornar.
+- `unassigned=False` sem `assigned_to` explícito: usa o principal ID da API key (M2M), mantendo o comportamento padrão.
+- `unassigned=False` com `assigned_to` em `list_params` (ou no `fetch`): respeita o UUID informado.
+
+### Exemplos de configuração de consumo
+
+```python
+from ergon.connector.ergon_platform import ErgonPlatformConsumerConfig
+
+# Caso 1: somente unassigned (faz claim no fetch)
+cfg_unassigned = ErgonPlatformConsumerConfig(
+    workflow_id="wf-1",
+    phase_id="ph-1",
+    unassigned=True,
+)
+
+# Caso 2: assigned_to implícito (principal id M2M)
+cfg_principal = ErgonPlatformConsumerConfig(
+    workflow_id="wf-1",
+    phase_id="ph-1",
+    unassigned=False,
+)
+
+# Caso 3: assigned_to explícito (UUID específico)
+cfg_explicit = ErgonPlatformConsumerConfig(
+    workflow_id="wf-1",
+    phase_id="ph-1",
+    unassigned=False,
+    list_params={"assigned_to": "11111111-2222-3333-4444-555555555555"},
+)
+```
+
+Nos exemplos em `examples/ergon_platform/`:
+
+- `task_consumer.py` lê `ERGON_UNASSIGNED` e `ERGON_ASSIGNED_TO`.
+- `uso_direto_async.py` percorre os 3 cenários de fetch (unassigned, principal M2M, assigned_to explícito).
+- `.env.example` documenta as variáveis `ERGON_UNASSIGNED`, `ERGON_ASSIGNED_TO` e `ERGON_NACK_PHASE_ID`.
 
 ## Profundidade de fila
 
@@ -205,6 +245,13 @@ result = connector.service.get_pipeline_result("wf-1", "item-1", "field-1")
 ## Ack
 
 Ao contrário dos brokers, o ack tem **semântica de domínio**: move o item para `ack_phase_id`. Sem `ack_phase_id` configurado, o ack é no-op. Em uma `AsyncConsumerTask`, chame `ack_transaction` em `handle_process_success`.
+
+## Nack
+
+`nack_transaction` também usa semântica de domínio:
+
+- `requeue=True`: faz `release_item` com `delay_seconds` opcional (o controle de delay é aplicado pela plataforma), mantendo o mesmo card.
+- `requeue=False`: move o item para `nack_phase_id` (fase de erro), que deve estar configurada no `ErgonPlatformConsumerConfig`.
 
 ## Recomendações de uso
 

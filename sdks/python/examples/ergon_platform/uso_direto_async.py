@@ -7,6 +7,7 @@ Uso:
     # instale/disponibilize o pacote ergon-platform-sdk no mesmo ambiente
     cp examples/ergon_platform/.env.example examples/ergon_platform/.env
     # preencha ERGON_CLIENT_ID, ERGON_CLIENT_SECRET, ERGON_WORKFLOW_ID, ERGON_PHASE_ID
+    # opcional: ERGON_ASSIGNED_TO=<uuid> para demonstrar filtro explícito
     py examples/ergon_platform/uso_direto_async.py
 """
 
@@ -49,7 +50,48 @@ def _optional_env(name: str) -> Optional[str]:
     return value or None
 
 
+async def _run_fetch_case(
+    client: ErgonPlatformClient,
+    *,
+    workflow_id: str,
+    phase_id: str,
+    ack_phase_id: Optional[str],
+    label: str,
+    unassigned: bool,
+    assigned_to: Optional[str] = None,
+) -> None:
+    list_params = {"assigned_to": assigned_to} if assigned_to else {}
+    consumer_config = ErgonPlatformConsumerConfig(
+        workflow_id=workflow_id,
+        phase_id=phase_id,
+        batch_size=10,
+        ack_phase_id=ack_phase_id,
+        unassigned=unassigned,
+        list_params=list_params,
+    )
+    connector = AsyncErgonPlatformConnector(client=client, consumer_config=consumer_config)
+    try:
+        transactions = await connector.fetch_transactions_async()
+        logger.info("[%s] %d item(ns) retornado(s).", label, len(transactions))
+        for tx in transactions:
+            payload = tx.payload
+            logger.info(
+                "[%s] ID=%s | title=%s | assigned_to=%s",
+                label,
+                tx.id,
+                payload.get("title"),
+                payload.get("assigned_to"),
+            )
+    finally:
+        await connector.close()
+
+
 async def main() -> None:
+    workflow_id = _require_env("ERGON_WORKFLOW_ID")
+    phase_id = _require_env("ERGON_PHASE_ID")
+    ack_phase_id = _optional_env("ERGON_ACK_PHASE_ID")
+    explicit_assigned_to = _optional_env("ERGON_ASSIGNED_TO")
+
     client = ErgonPlatformClient(
         client_id=_require_env("ERGON_CLIENT_ID"),
         client_secret=_require_env("ERGON_CLIENT_SECRET"),
@@ -57,10 +99,10 @@ async def main() -> None:
     )
 
     consumer_config = ErgonPlatformConsumerConfig(
-        workflow_id=_require_env("ERGON_WORKFLOW_ID"),
-        phase_id=_require_env("ERGON_PHASE_ID"),
+        workflow_id=workflow_id,
+        phase_id=phase_id,
         batch_size=50,
-        ack_phase_id=_optional_env("ERGON_ACK_PHASE_ID"),
+        ack_phase_id=ack_phase_id,
     )
 
     connector = AsyncErgonPlatformConnector(client=client, consumer_config=consumer_config)
@@ -70,15 +112,15 @@ async def main() -> None:
         workflows = await connector.service.list_workflows()
         logger.info("%d workflow(s) encontrado(s).", len(workflows))
 
-        phases = await connector.service.list_workflow_phases(workflow_id=_require_env("ERGON_WORKFLOW_ID"))
+        phases = await connector.service.list_workflow_phases(workflow_id=workflow_id)
 
         fields = await connector.service.list_phase_fields(
             phase_id=phases[0]["id"],
-            workflow_id=_require_env("ERGON_WORKFLOW_ID"),
+            workflow_id=workflow_id,
         )
 
         cards = await connector.service.fetch_items(
-            workflow_id=_require_env("ERGON_WORKFLOW_ID"),
+            workflow_id=workflow_id,
             phase_id=phases[0]["id"],
         )
 
@@ -165,6 +207,46 @@ async def main() -> None:
 
     finally:
         await connector.close()
+
+    # -----------------------------------------------------------------
+    # Cenários de consumo (assigned/unassigned)
+    # -----------------------------------------------------------------
+    logger.info("---")
+    logger.info("Cenário 1: unassigned=True (somente não atribuídos + claim no fetch)")
+    await _run_fetch_case(
+        client,
+        workflow_id=workflow_id,
+        phase_id=phase_id,
+        ack_phase_id=ack_phase_id,
+        label="unassigned=true",
+        unassigned=True,
+    )
+
+    logger.info("---")
+    logger.info("Cenário 2: unassigned=False sem assigned_to (principal id M2M)")
+    await _run_fetch_case(
+        client,
+        workflow_id=workflow_id,
+        phase_id=phase_id,
+        ack_phase_id=ack_phase_id,
+        label="assigned_to=principal_id",
+        unassigned=False,
+    )
+
+    logger.info("---")
+    if explicit_assigned_to:
+        logger.info("Cenário 3: unassigned=False com assigned_to explícito (%s)", explicit_assigned_to)
+        await _run_fetch_case(
+            client,
+            workflow_id=workflow_id,
+            phase_id=phase_id,
+            ack_phase_id=ack_phase_id,
+            label="assigned_to=explicito",
+            unassigned=False,
+            assigned_to=explicit_assigned_to,
+        )
+    else:
+        logger.info("Cenário 3 ignorado: defina ERGON_ASSIGNED_TO no .env para testar assigned_to explícito.")
 
 
 if __name__ == "__main__":

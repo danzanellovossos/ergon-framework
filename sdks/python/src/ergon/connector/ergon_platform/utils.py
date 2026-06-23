@@ -1,3 +1,5 @@
+import base64
+import json
 from typing import Any, Dict, List, Optional
 
 from ..transaction import Transaction
@@ -167,6 +169,60 @@ def normalize_create_payload(payload: CreateItemPayload) -> Dict[str, Any]:
         data.setdefault("fields", {})
         return data
     raise TypeError(f"Unsupported create payload type: {type(payload)}")
+
+
+def requeue(transaction: Transaction) -> CreateItemInput:
+    """Build a CreateItemInput from a transaction payload for re-dispatch."""
+    data = normalize_create_payload(transaction.payload)
+    workflow_id = data.get("workflow_id") or transaction.metadata.get("workflow_id")
+    phase_id = data.get("phase_id") or transaction.metadata.get("phase_id")
+    title = data.get("title")
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError("title is required to requeue a transaction")
+
+    return CreateItemInput(
+        title=title,
+        workflow_id=workflow_id,
+        phase_id=phase_id,
+        parent_item_id=data.get("parent_item_id"),
+        field_values=data.get("field_values"),
+        attachment=data.get("attachment"),
+        attachment_field_id=data.get("attachment_field_id"),
+        content_type=data.get("content_type"),
+        extra_fields=dict(data.get("fields") or {}),
+    )
+
+
+def build_redispatch_transaction(transaction: Transaction) -> Transaction:
+    """Prepare a transaction payload suitable for re-dispatch."""
+    return Transaction(
+        id=transaction.id,
+        payload=requeue(transaction),
+        metadata=dict(transaction.metadata or {}),
+    )
+
+
+def decode_jwt_claims(jwt_token: str) -> Dict[str, Any]:
+    """Decode JWT payload claims without signature validation.
+
+    Raises:
+        ValueError: When the token shape or payload encoding is invalid.
+    """
+    parts = jwt_token.split(".")
+    if len(parts) < 2 or not parts[1]:
+        raise ValueError("Invalid JWT format: payload segment is missing")
+
+    payload = parts[1]
+    payload += "=" * (-len(payload) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(payload.encode("ascii"))
+        claims = json.loads(decoded.decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("Invalid JWT payload encoding") from exc
+
+    if not isinstance(claims, dict):
+        raise ValueError("Invalid JWT payload: expected a JSON object")
+    return claims
 
 
 def extract_items(response: Any) -> List[Any]:

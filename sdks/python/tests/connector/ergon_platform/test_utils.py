@@ -1,6 +1,9 @@
 """Tests for Ergon Platform connector utilities."""
 
+import pytest
+
 from ergon.connector.ergon_platform.models import CreateItemInput
+from ergon.connector.transaction import Transaction
 from ergon.connector.ergon_platform.utils import (
     classify_status,
     extract_buckets_file_id,
@@ -12,6 +15,7 @@ from ergon.connector.ergon_platform.utils import (
     get_value,
     item_to_transaction,
     normalize_create_payload,
+    requeue,
 )
 
 
@@ -148,6 +152,66 @@ class TestNormalizeCreatePayload:
         assert data["title"] == "T"
         assert data["phase_id"] == "ph"
         assert data["fields"] == {}
+
+
+class TestRequeue:
+    def test_from_create_item_input_payload(self):
+        payload = CreateItemInput(
+            title="T",
+            workflow_id="wf",
+            phase_id="ph",
+            parent_item_id="parent-1",
+            field_values={"a": 1},
+            attachment="/tmp/x.pdf",
+            attachment_field_id="f1",
+            content_type="application/pdf",
+            extra_fields={"priority": "high"},
+        )
+        tx = Transaction(id="tx-1", payload=payload)
+
+        result = requeue(tx)
+
+        assert result.model_dump() == payload.model_dump()
+
+    def test_from_dict_payload(self):
+        tx = Transaction(
+            id="tx-2",
+            payload={
+                "title": "Requeue",
+                "workflow_id": "wf",
+                "phase_id": "ph",
+                "parent_item_id": "parent-2",
+                "field_values": {"x": "y"},
+                "attachment": "/tmp/a.txt",
+                "attachment_field_id": "f2",
+                "content_type": "text/plain",
+                "fields": {"priority": "low"},
+            },
+        )
+
+        result = requeue(tx)
+
+        assert result.title == "Requeue"
+        assert result.workflow_id == "wf"
+        assert result.phase_id == "ph"
+        assert result.parent_item_id == "parent-2"
+        assert result.field_values == {"x": "y"}
+        assert result.attachment == "/tmp/a.txt"
+        assert result.attachment_field_id == "f2"
+        assert result.content_type == "text/plain"
+        assert result.extra_fields == {"priority": "low"}
+
+    def test_raises_value_error_when_missing_title(self):
+        tx = Transaction(id="tx-3", payload={"phase_id": "ph"})
+
+        with pytest.raises(ValueError, match="title is required"):
+            requeue(tx)
+
+    def test_raises_type_error_for_unsupported_payload(self):
+        tx = Transaction(id="tx-4", payload="invalid")
+
+        with pytest.raises(TypeError, match="Unsupported create payload type"):
+            requeue(tx)
 
 
 class TestExtractItems:

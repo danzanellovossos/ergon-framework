@@ -48,6 +48,59 @@ class TestFetchTransactions:
         with pytest.raises(ValueError, match="consumer_config"):
             connector.fetch_transactions()
 
+    def test_fetch_forwards_assigned_to_from_list_params(self):
+        config = ErgonPlatformConsumerConfig(
+            workflow_id="wf-1",
+            phase_id="ph-1",
+            list_params={"assigned_to": "44444444-4444-4444-4444-444444444444"},
+        )
+        connector = _make_connector(consumer_config=config)
+        expected_tx = Transaction(id="item-1", payload={"id": "item-1"}, metadata={"workflow_id": "wf-1"})
+
+        with patch.object(connector.service, "fetch_items", return_value=[expected_tx]) as mock_fetch:
+            connector.fetch_transactions()
+
+        _, kwargs = mock_fetch.call_args
+        assert kwargs["assigned_to"] == "44444444-4444-4444-4444-444444444444"
+
+    def test_fetch_unassigned_forces_assigned_no_and_claims_items(self):
+        config = ErgonPlatformConsumerConfig(
+            workflow_id="wf-1",
+            phase_id="ph-1",
+            unassigned=True,
+            list_params={"assigned_to": "44444444-4444-4444-4444-444444444444"},
+        )
+        connector = _make_connector(consumer_config=config)
+        listed_tx = Transaction(id="item-1", payload={"id": "item-1"}, metadata={"workflow_id": "wf-1"})
+        claimed_tx = Transaction(id="item-1", payload={"id": "item-1", "assigned_to": "worker"}, metadata={})
+
+        with patch.object(connector.service, "fetch_items", return_value=[listed_tx]) as mock_fetch, patch.object(
+            connector.service, "claim_item", return_value={}
+        ) as mock_claim, patch.object(
+            connector, "fetch_transaction_by_id", return_value=claimed_tx
+        ) as mock_refresh:
+            txns = connector.fetch_transactions()
+
+        assert txns == [claimed_tx]
+        _, kwargs = mock_fetch.call_args
+        assert kwargs["assigned"] == "no"
+        assert "assigned_to" not in kwargs
+        mock_claim.assert_called_once_with("item-1")
+        mock_refresh.assert_called_once_with("item-1")
+
+    def test_fetch_unassigned_skips_item_when_claim_fails(self):
+        config = ErgonPlatformConsumerConfig(workflow_id="wf-1", phase_id="ph-1", unassigned=True)
+        connector = _make_connector(consumer_config=config)
+        listed_tx = Transaction(id="item-1", payload={"id": "item-1"}, metadata={"workflow_id": "wf-1"})
+
+        with patch.object(connector.service, "fetch_items", return_value=[listed_tx]), patch.object(
+            connector.service, "claim_item", side_effect=RuntimeError("race")
+        ), patch.object(connector, "fetch_transaction_by_id") as mock_refresh:
+            txns = connector.fetch_transactions()
+
+        assert txns == []
+        mock_refresh.assert_not_called()
+
 
 class TestDispatchTransactions:
     def test_dispatch_creates_item(self):
@@ -180,3 +233,59 @@ class TestAckTransaction:
             connector.ack_transaction(tx)
 
         mock_move.assert_not_called()
+
+
+class TestReleaseItem:
+    def test_release_forwards_delay_seconds(self):
+        connector = _make_connector()
+
+        with patch.object(connector.service, "release_item", return_value={"id": "item-1"}) as mock_release:
+            result = connector.release_item("item-1", delay_seconds=75)
+
+        assert result == {"id": "item-1"}
+        mock_release.assert_called_once_with(
+            "item-1",
+            None,
+            delay_seconds=75,
+        )
+
+
+class TestNackTransaction:
+    def test_nack_requeue_releases_item_with_delay_seconds(self):
+        connector = _make_connector()
+        tx = Transaction(id="item-1", payload={})
+
+        with patch.object(connector.service, "release_item", return_value={}) as mock_release:
+            connector.nack_transaction(tx, requeue=True, delay_seconds=0)
+
+        mock_release.assert_called_once_with("item-1", delay_seconds=0)
+
+    def test_nack_requeue_forwards_positive_delay_seconds_to_release(self):
+        connector = _make_connector()
+        tx = Transaction(id="item-1", payload={})
+
+        with patch.object(connector.service, "release_item", return_value={}) as mock_release:
+            connector.nack_transaction(tx, requeue=True, delay_seconds=2)
+
+        mock_release.assert_called_once_with("item-1", delay_seconds=2)
+
+    def test_nack_without_requeue_moves_to_nack_phase(self):
+        config = ErgonPlatformConsumerConfig(workflow_id="wf", phase_id="ph", nack_phase_id="err")
+        connector = _make_connector(consumer_config=config)
+        tx = Transaction(id="item-1", payload={})
+
+        with patch.object(connector.service, "release_item", return_value={}) as mock_release, patch.object(
+            connector.service, "move_item_to_phase", return_value={}
+        ) as mock_move:
+            connector.nack_transaction(tx, requeue=False)
+
+        mock_release.assert_not_called()
+        mock_move.assert_called_once_with("item-1", "err")
+
+    def test_nack_without_requeue_requires_nack_phase(self):
+        config = ErgonPlatformConsumerConfig(workflow_id="wf", phase_id="ph")
+        connector = _make_connector(consumer_config=config)
+        tx = Transaction(id="item-1", payload={})
+
+        with pytest.raises(ValueError, match="nack_phase_id"):
+            connector.nack_transaction(tx, requeue=False)
