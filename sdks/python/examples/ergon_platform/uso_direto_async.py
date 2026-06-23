@@ -123,20 +123,23 @@ async def main() -> None:
             workflow_id=workflow_id,
             phase_id=phases[0]["id"],
         )
-
-        pipeline_result = await connector.service.get_pipeline_result(
-            workflow_id=_require_env("ERGON_WORKFLOW_ID"),
-            field_id=fields[0]["id"],
-            item_id=cards[0].__dict__["id"],
-        )
-        logger.info("Status do pipeline: %s", pipeline_result["state"])
+        if cards:
+            pipeline_result = await connector.service.get_pipeline_result(
+                workflow_id=_require_env("ERGON_WORKFLOW_ID"),
+                    field_id=fields[0]["id"],
+                    item_id=cards[0].__dict__["id"],
+                )
+            logger.info("Status do pipeline: %s", pipeline_result["state"])
+        else:
+            logger.info("Nenhum item encontrado na fase atual.")
+            
 
         logger.info("Buscando itens da fase %s...", consumer_config.phase_id)
         transactions = await connector.fetch_transactions_async()
 
         if not transactions:
             logger.info("Nenhum item encontrado na fase atual.")
-            return
+            
 
         logger.info("%d item(ns) encontrado(s).", len(transactions))
         for tx in transactions:
