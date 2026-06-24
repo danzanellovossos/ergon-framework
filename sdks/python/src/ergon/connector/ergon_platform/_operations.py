@@ -1,4 +1,3 @@
-import logging
 import math
 import mimetypes
 from pathlib import Path
@@ -22,42 +21,12 @@ from .utils import (
     latest_status_entry,
 )
 
-logger = logging.getLogger(__name__)
 
-_ERGON_PLATFORM_IMPORT_ERROR = "Install the ergon-platform-sdk package in the same environment"
-
-
-def _get_ergon_client():
-    try:
-        from ergon_platform import ErgonClient  # type: ignore[reportMissingImports]
-    except ImportError as exc:
-        raise ImportError(_ERGON_PLATFORM_IMPORT_ERROR) from exc
-    return ErgonClient
-
-
-class ErgonPlatformService:
-    def __init__(self, config: ErgonPlatformClient) -> None:
-        logger.info("Initializing ErgonPlatformService")
+class _ErgonPlatformOperations:
+    def __init__(self, config: ErgonPlatformClient, client: Any) -> None:
         self.config = config
+        self.client = client
         self._m2m_principal_id: Optional[str] = None
-        ErgonClient = _get_ergon_client()
-        self.client = ErgonClient(
-            client_id=config.client_id,
-            client_secret=config.client_secret,
-            base_url=config.base_url,
-            company_id=config.company_id,
-            timeout=config.timeout,
-            max_retries=config.max_retries,
-        )
-
-    def close(self) -> None:
-        self.client.close()
-
-    def list_workflows(self, *, limit: int = 50, offset: int = 0, **params: Any) -> Any:
-        return self.client.workflows.list(limit=limit, offset=offset, **params)
-
-    def list_workflow_phases(self, workflow_id: str, **params: Any) -> Any:
-        return self.client.workflows.workflow(workflow_id).phases(**params)
 
     def list_phase_fields(
         self,
@@ -79,12 +48,6 @@ class ErgonPlatformService:
 
         workflow_fields = self.client.workflows.workflow(workflow_id).fields(**params)
         return self._merge_unique_fields(phase_fields, workflow_fields)
-
-    def list_phase_items(self, workflow_id: str, phase_id: str, **params: Any) -> Any:
-        return self.client.workflows.workflow(workflow_id).items(phase_id=phase_id, **params)
-
-    def get_item(self, item_id: str, **params: Any) -> Any:
-        return self.client.workflows.items.get(item_id, **params)
 
     def create_item(
         self,
@@ -150,74 +113,24 @@ class ErgonPlatformService:
             "attachments": as_payload(attachments),
         }
 
-    def move_item_to_phase(self, item_id: str, phase_id: str) -> Any:
-        return self.client.workflows.items.route(item_id, to_phase_id=phase_id)
-
-    def list_item_children(self, item_id: str, **params: Any) -> Any:
-        return self.client.workflows.items.children(item_id, **params)
-
-    def list_item_child_targets(self, item_id: str, **params: Any) -> Any:
-        return self.client.workflows.items.child_targets(item_id, **params)
-
-    def get_item_child_capabilities(self, item_id: str, **params: Any) -> Any:
-        return self.client.workflows.items.child_capabilities(item_id, **params)
-
-    def unlink_item_child(self, item_id: str, child_item_id: str) -> None:
-        self.client.workflows.items.remove_child(item_id, child_item_id)
-
     def fetch_child_items(self, parent_item_id: str, **params: Any) -> List[Transaction]:
-        links = self.list_item_children(parent_item_id, **params) or []
+        links = self.client.workflows.items.children(parent_item_id, **params) or []
         transactions: List[Transaction] = []
         for link in links:
             child_item_id = str(get_value(link, "child_item_id", ""))
             if not child_item_id:
                 continue
-            child_item = self.get_item(child_item_id)
+            child_item = self.client.workflows.items.get(child_item_id)
             child_workflow_id = str(get_value(child_item, "workflow_id", ""))
             transactions.append(item_to_transaction(child_item, child_workflow_id))
         return transactions
 
-    def bulk_create_items(
-        self,
-        workflow_id: str,
-        items: List[Dict[str, Any]],
-        *,
-        response_format: str = "full",
-        **fields: Any,
-    ) -> Any:
-        return self.client.workflows.items.bulk_create(
-            {
-                "workflow_id": workflow_id,
-                "items": items,
-                "response_format": response_format,
-                **fields,
-            }
-        )
-
-    def query_items(self, workflow_id: str, query: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
-        return self.client.workflows.workflow(workflow_id).query_items({**(query or {}), **fields})
-
     def fetch_items_by_query(
         self, workflow_id: str, query: Optional[Dict[str, Any]] = None, **fields: Any
     ) -> List[Transaction]:
-        response = self.query_items(workflow_id, query, **fields)
+        response = self.client.workflows.workflow(workflow_id).query_items({**(query or {}), **fields})
         items = extract_items(response)
         return [item_to_transaction(item, workflow_id) for item in items]
-
-    def list_item_comments(self, item_id: str, **params: Any) -> Any:
-        return self.client.workflows.items.list_comments(item_id, **params)
-
-    def add_item_comment(self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
-        return self.client.workflows.items.add_comment(item_id, {**(data or {}), **fields})
-
-    def claim_item(self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
-        return self.client.workflows.items.claim(item_id, {**(data or {}), **fields})
-
-    def assign_item(self, item_id: str, principal_id: str) -> Any:
-        return self.client.workflows.items.assign(item_id, {"principal_id": principal_id})
-
-    def assign_item_group(self, item_id: str, group_id: str) -> Any:
-        return self.client.workflows.items.assign_group(item_id, {"group_id": group_id})
 
     def release_item(
         self,
@@ -237,12 +150,6 @@ class ErgonPlatformService:
                     visibility_timeout_on_release_minutes=release_minutes,
                 )
         return self.client.workflows.items.release(item_id, {**(data or {}), **fields})
-
-    def route_item_to_global_target(self, item_id: str, data: Optional[Dict[str, Any]] = None, **fields: Any) -> Any:
-        return self.client.workflows.items.route_to_global_target(item_id, {**(data or {}), **fields})
-
-    def list_item_events(self, item_id: str, **params: Any) -> Any:
-        return self.client.workflows.items.events(item_id, **params)
 
     def get_pipeline_result(
         self,
@@ -281,7 +188,7 @@ class ErgonPlatformService:
         }
 
     def get_phase_items_count(self, workflow_id: str, phase_id: str, **params: Any) -> int:
-        response = self.list_phase_items(workflow_id, phase_id, limit=1, offset=0, **params)
+        response = self.client.workflows.workflow(workflow_id).items(phase_id=phase_id, limit=1, offset=0, **params)
         return extract_total(response)
 
     def fetch_items(
@@ -296,9 +203,8 @@ class ErgonPlatformService:
         query_params = dict(params)
         if "assigned" not in query_params and not query_params.get("assigned_to"):
             query_params["assigned_to"] = self._get_m2m_principal_id()
-        response = self.list_phase_items(
-            workflow_id,
-            phase_id,
+        response = self.client.workflows.workflow(workflow_id).items(
+            phase_id=phase_id,
             limit=limit,
             offset=offset,
             **query_params,
@@ -307,12 +213,12 @@ class ErgonPlatformService:
         return [item_to_transaction(item, workflow_id) for item in items]
 
     def get_item_transaction(self, item_id: str, workflow_id: str = "", **params: Any) -> Transaction:
-        item = self.get_item(item_id, **params)
+        item = self.client.workflows.items.get(item_id, **params)
         resolved_workflow = workflow_id or str(get_value(item, "workflow_id", ""))
         return item_to_transaction(item, resolved_workflow)
 
     def _extract_buckets_file_id(self, item_id: str, field_id: str) -> Optional[str]:
-        item = self.get_item(item_id)
+        item = self.client.workflows.items.get(item_id)
         return extract_buckets_file_id(item, field_id)
 
     def _get_m2m_principal_id(self) -> str:
@@ -342,7 +248,6 @@ class ErgonPlatformService:
 
     @staticmethod
     def _merge_unique_fields(phase_fields: Any, workflow_fields: Any) -> Any:
-        """Merge two field collections by id while preserving order."""
         if not isinstance(phase_fields, list) or not isinstance(workflow_fields, list):
             return phase_fields
 

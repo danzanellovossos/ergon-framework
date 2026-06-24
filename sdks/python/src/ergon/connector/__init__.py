@@ -1,13 +1,11 @@
 from .connector import AsyncConnector, Connector, ConnectorConfig
 from .ergon_platform import (
     AsyncErgonPlatformConnector,
-    AsyncErgonPlatformService,
     CreateItemInput,
     ErgonPlatformClient,
     ErgonPlatformConnector,
     ErgonPlatformConsumerConfig,
     ErgonPlatformProducerConfig,
-    ErgonPlatformService,
 )
 from .excel import ExcelConnector, ExcelFetchConfig, ExcelRow, ExcelService
 from .nylas import (
@@ -62,7 +60,6 @@ __all__ = [
     "AckActionConfig",
     "AsyncConnector",
     "AsyncErgonPlatformConnector",
-    "AsyncErgonPlatformService",
     "AsyncNylasAuthService",
     "AsyncNylasConnector",
     "AsyncNylasService",
@@ -85,7 +82,6 @@ __all__ = [
     "ErgonPlatformConnector",
     "ErgonPlatformConsumerConfig",
     "ErgonPlatformProducerConfig",
-    "ErgonPlatformService",
     "ExcelConnector",
     "ExcelFetchConfig",
     "ExcelRow",

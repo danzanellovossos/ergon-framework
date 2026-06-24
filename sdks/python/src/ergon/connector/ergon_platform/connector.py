@@ -3,28 +3,28 @@ from typing import Any, Dict, List, Optional
 
 from ..connector import Connector
 from ..transaction import Transaction
+from ._client import create_ergon_client
+from ._operations import _ErgonPlatformOperations
 from .models import (
     CreateItemPayload,
     ErgonPlatformClient,
     ErgonPlatformConsumerConfig,
     ErgonPlatformProducerConfig,
 )
-from .service import ErgonPlatformService
 from .utils import get_value, normalize_create_payload
 
 logger = logging.getLogger(__name__)
 
 
 class ErgonPlatformConnector(Connector):
-    service: ErgonPlatformService
-
     def __init__(
         self,
         client: ErgonPlatformClient,
         consumer_config: Optional[ErgonPlatformConsumerConfig] = None,
         producer_config: Optional[ErgonPlatformProducerConfig] = None,
     ) -> None:
-        self.service = ErgonPlatformService(client)
+        self.client = create_ergon_client(client)
+        self._operations = _ErgonPlatformOperations(client, self.client)
         self._consumer_config = consumer_config
         self._producer_config = producer_config or ErgonPlatformProducerConfig()
 
@@ -44,7 +44,7 @@ class ErgonPlatformConnector(Connector):
             params.pop("assigned_to", None)
             params["assigned"] = "no"
 
-        transactions = self.service.fetch_items(
+        transactions = self._operations.fetch_items(
             config.workflow_id,
             config.phase_id,
             limit=limit,
@@ -57,7 +57,7 @@ class ErgonPlatformConnector(Connector):
         claimed_transactions: List[Transaction] = []
         for transaction in transactions:
             try:
-                self.service.claim_item(transaction.id)
+                self.client.workflows.items.claim(transaction.id, {})
                 claimed_transactions.append(self.fetch_transaction_by_id(transaction.id))
             except Exception:
                 logger.warning(
@@ -80,16 +80,16 @@ class ErgonPlatformConnector(Connector):
         *args,
         **kwargs,
     ) -> List[Transaction]:
-        return self.service.fetch_child_items(parent_item_id, **kwargs)
+        return self._operations.fetch_child_items(parent_item_id, **kwargs)
 
     def fetch_transaction_by_id(self, transaction_id: str, *args, **kwargs) -> Transaction:
         workflow_id = self._consumer_config.workflow_id if self._consumer_config else ""
-        return self.service.get_item_transaction(transaction_id, workflow_id, **kwargs)
+        return self._operations.get_item_transaction(transaction_id, workflow_id, **kwargs)
 
     def fetch_items_by_query(
         self, workflow_id: str, query: Optional[Dict[str, Any]] = None, **fields: Any
     ) -> List[Transaction]:
-        return self.service.fetch_items_by_query(workflow_id, query, **fields)
+        return self._operations.fetch_items_by_query(workflow_id, query, **fields)
 
     def get_transactions_count(self, *args, **kwargs) -> int:
         if self._consumer_config is None:
@@ -97,7 +97,7 @@ class ErgonPlatformConnector(Connector):
 
         config = self._consumer_config
         params: Dict[str, Any] = {**config.list_params, **kwargs}
-        return self.service.get_phase_items_count(
+        return self._operations.get_phase_items_count(
             config.workflow_id,
             config.phase_id,
             **params,
@@ -109,7 +109,7 @@ class ErgonPlatformConnector(Connector):
             target_phase = self._consumer_config.ack_phase_id
         if not target_phase:
             return
-        self.service.move_item_to_phase(transaction.id, target_phase)
+        self.client.workflows.items.route(transaction.id, to_phase_id=target_phase)
 
     def release_item(
         self,
@@ -119,7 +119,7 @@ class ErgonPlatformConnector(Connector):
         delay_seconds: Optional[int] = None,
         **fields: Any,
     ) -> Any:
-        return self.service.release_item(
+        return self._operations.release_item(
             item_id,
             data,
             delay_seconds=delay_seconds,
@@ -128,18 +128,42 @@ class ErgonPlatformConnector(Connector):
 
     def nack_transaction(self, transaction: Transaction, requeue: bool = True, delay_seconds: int = 10) -> None:
         if requeue:
-            self.service.release_item(transaction.id, delay_seconds=delay_seconds)
+            self._operations.release_item(transaction.id, delay_seconds=delay_seconds)
             return
 
         target_phase = self._consumer_config.nack_phase_id if self._consumer_config is not None else None
         if not target_phase:
             raise ValueError("nack_phase_id is required when nack_transaction is called with requeue=False")
 
-        self.service.move_item_to_phase(transaction.id, target_phase)
+        self.client.workflows.items.route(transaction.id, to_phase_id=target_phase)
         logger.debug("Item %s moved to nack phase %s", transaction.id, target_phase)
 
     def close(self) -> None:
-        self.service.close()
+        self.client.close()
+
+    def list_phase_fields(
+        self,
+        phase_id: str,
+        *,
+        workflow_id: Optional[str] = None,
+        include_workflow_fields: bool = True,
+        **params: Any,
+    ) -> Any:
+        return self._operations.list_phase_fields(
+            phase_id,
+            workflow_id=workflow_id,
+            include_workflow_fields=include_workflow_fields,
+            **params,
+        )
+
+    def get_pipeline_result(
+        self,
+        workflow_id: str,
+        item_id: str,
+        field_id: str,
+        buckets_file_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self._operations.get_pipeline_result(workflow_id, item_id, field_id, buckets_file_id)
 
     def _create_from_payload(self, payload: CreateItemPayload) -> Any:
         data = normalize_create_payload(payload)
@@ -157,7 +181,7 @@ class ErgonPlatformConnector(Connector):
         content_type = data.get("content_type") or producer.default_content_type
         parent_item_id = data.get("parent_item_id") or producer.parent_item_id
 
-        return self.service.create_item(
+        return self._operations.create_item(
             workflow_id,
             phase_id,
             data["title"],

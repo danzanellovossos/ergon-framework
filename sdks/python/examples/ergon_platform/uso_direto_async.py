@@ -109,25 +109,22 @@ async def main() -> None:
     create_phase_id = os.getenv("ERGON_CREATE_PHASE_ID", consumer_config.phase_id)
 
     try:
-        workflows = await connector.service.list_workflows()
+        workflows = await asyncio.to_thread(lambda: connector.client.workflows.list())
         logger.info("%d workflow(s) encontrado(s).", len(workflows))
 
-        phases = await connector.service.list_workflow_phases(workflow_id=workflow_id)
+        phases = await asyncio.to_thread(lambda: connector.client.workflows.workflow(workflow_id).phases())
 
-        fields = await connector.service.list_phase_fields(
+        fields = await connector.list_phase_fields(
             phase_id=phases[0]["id"],
             workflow_id=workflow_id,
         )
 
-        cards = await connector.service.fetch_items(
-            workflow_id=workflow_id,
-            phase_id=phases[0]["id"],
-        )
+        cards = await connector.fetch_transactions_async()
         if cards:
-            pipeline_result = await connector.service.get_pipeline_result(
+            pipeline_result = await connector.get_pipeline_result(
                 workflow_id=_require_env("ERGON_WORKFLOW_ID"),
                 field_id=fields[0]["id"],
-                item_id=cards[0].__dict__["id"],
+                item_id=cards[0].id,
             )
             logger.info("Status do pipeline: %s", pipeline_result["state"])
         else:
