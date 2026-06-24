@@ -22,6 +22,7 @@ dependencies = [
     "aiobotocore>=2.13.0",
     "asyncpg>=0.29.0",
     "boto3>=1.35.0",
+    "ergon-platform-sdk>=0.1.0",
     "httpx>=0.28.0",
     "more-itertools>=10.8.0",
     "openpyxl>=3.1.5",
@@ -37,6 +38,7 @@ dependencies = [
 
 [project.optional-dependencies]
 nylas = ["nylas>=6.0.0"]
+ergon_platform = []
 
 [dependency-groups]
 dev = [
@@ -97,6 +99,10 @@ reportMissingTypeStubs = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# ``importlib`` import mode lets test modules across connector folders share the
+# same basename (e.g. test_connector.py, test_async_connector.py) without needing
+# __init__.py files or triggering "import file mismatch" collection errors.
+addopts = "--import-mode=importlib"
 # ``auto`` mode auto-applies ``pytest.mark.asyncio`` to ``async def`` tests
 # and leaves sync tests alone, avoiding the spurious "marked async but not
 # async function" warnings that ``pytestmark`` at module level produced.
