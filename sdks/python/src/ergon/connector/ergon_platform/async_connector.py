@@ -1,5 +1,5 @@
-import logging
 import asyncio
+import logging
 from typing import Any, Dict, List, Optional
 
 from ..connector import AsyncConnector
@@ -92,7 +92,9 @@ class AsyncErgonPlatformConnector(AsyncConnector):
 
     async def fetch_transaction_by_id_async(self, transaction_id: str, *args, **kwargs) -> Transaction:
         workflow_id = self._consumer_config.workflow_id if self._consumer_config else ""
-        return await asyncio.to_thread(lambda: self._operations.get_item_transaction(transaction_id, workflow_id, **kwargs))
+        return await asyncio.to_thread(
+            lambda: self._operations.get_item_transaction(transaction_id, workflow_id, **kwargs)
+        )
 
     async def fetch_items_by_query(
         self, workflow_id: str, query: Optional[Dict[str, Any]] = None, **fields: Any

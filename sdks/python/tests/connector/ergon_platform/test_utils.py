@@ -3,20 +3,20 @@
 import pytest
 
 from ergon.connector.ergon_platform.models import CreateItemInput
-from ergon.connector.transaction import Transaction
 from ergon.connector.ergon_platform.utils import (
     classify_status,
     extract_buckets_file_id,
     extract_items,
-    extract_total,
     extract_status_entries,
     extract_status_file_id,
+    extract_total,
     find_status_entry,
     get_value,
     item_to_transaction,
     normalize_create_payload,
     requeue,
 )
+from ergon.connector.transaction import Transaction
 
 
 class TestGetValue:

@@ -268,9 +268,7 @@ class TestReleaseItem:
         result = await connector.release_item("item-1", delay_seconds=75)
 
         assert result == {"id": "item-1", "released": True}
-        assert sdk_client.workflows.items.update_calls == [
-            ("item-1", {"visibility_timeout_on_release_minutes": 2})
-        ]
+        assert sdk_client.workflows.items.update_calls == [("item-1", {"visibility_timeout_on_release_minutes": 2})]
         assert sdk_client.workflows.items.release_calls == [("item-1", {})]
 
 
@@ -290,9 +288,7 @@ class TestNackTransaction:
 
         await connector.nack_transaction(Transaction(id="item-1", payload={}), requeue=True, delay_seconds=75)
 
-        assert sdk_client.workflows.items.update_calls == [
-            ("item-1", {"visibility_timeout_on_release_minutes": 2})
-        ]
+        assert sdk_client.workflows.items.update_calls == [("item-1", {"visibility_timeout_on_release_minutes": 2})]
         assert sdk_client.workflows.items.release_calls == [("item-1", {})]
 
     async def test_nack_without_requeue_moves_to_nack_phase(self):
