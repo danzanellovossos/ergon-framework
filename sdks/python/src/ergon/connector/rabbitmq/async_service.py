@@ -4,7 +4,6 @@ import logging
 import ssl as ssl_module
 import time
 from collections import deque
-from contextlib import AsyncExitStack
 from typing import Any, AsyncContextManager, Callable, Dict, List, Optional, cast
 
 import aio_pika
@@ -24,15 +23,36 @@ from .models import AsyncRabbitmqClient, AsyncRabbitmqConsumerConfig, AsyncRabbi
 logger = logging.getLogger(__name__)
 
 
-# Exception classes that signal the underlying channel is no longer usable.
-# We catch these on ack/nack and surface a typed DeadChannelError so the
-# consumer mixin can short-circuit cleanly instead of cascading further
-# failures (nack on the same dead channel).
-_DEAD_CHANNEL_EXCEPTIONS: tuple[type[BaseException], ...] = (
-    aio_pika.exceptions.MessageProcessError,
-    aio_pika.exceptions.ChannelClosed,
+# Invalid channel state always means the active transport disappeared. Broader
+# AMQP connection hierarchies also contain permanent authentication/protocol
+# errors, so consume-time recovery uses the classifier below instead.
+_CHANNEL_INVALID_EXCEPTIONS: tuple[type[BaseException], ...] = (
     aio_pika.exceptions.ChannelInvalidStateError,
     aiormq.exceptions.ChannelInvalidStateError,
+)
+
+
+def _is_recoverable_broker_interruption(exc: BaseException) -> bool:
+    if isinstance(exc, _CHANNEL_INVALID_EXCEPTIONS):
+        return True
+    if type(exc) is aiormq.exceptions.AMQPConnectionError:
+        return True
+    if type(exc) is aiormq.exceptions.ConnectionClosed:
+        reply_code = exc.args[0] if exc.args else None
+        return reply_code == 320
+    if type(exc) is aiormq.exceptions.ConnectionInternalError:
+        return True
+    return False
+
+
+# Settlement can additionally discover a channel-level failure after delivery.
+# Surface those as DeadChannelError so the consumer mixin does not attempt a
+# second settlement on the same unusable channel.
+_DEAD_CHANNEL_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    aio_pika.exceptions.AMQPConnectionError,
+    *_CHANNEL_INVALID_EXCEPTIONS,
+    aio_pika.exceptions.MessageProcessError,
+    aio_pika.exceptions.ChannelClosed,
 )
 
 # Same as above plus ``TimeoutError`` (raised by the async timeout context when an
@@ -193,7 +213,8 @@ class AsyncRabbitMQService:
             return
         try:
             if not channel.is_closed:
-                await channel.close()
+                async with timeout_after(min(1.0, self.client.channel_timeout)):
+                    await channel.close()
                 logger.info("Closed dead consume channel (%s)", reason)
         except Exception as exc:  # noqa: BLE001 - best-effort teardown
             logger.warning("Error closing consume channel during teardown (%s): %r", reason, exc)
@@ -365,27 +386,33 @@ class AsyncRabbitMQService:
         self._consumer_state = "subscribing"
         poll_completed = False
 
-        # Ensure the consume channel exists with the requested prefetch QoS.
-        # The return value is unused here because declare_exchange/declare_queue
-        # re-fetch the channel from the cache.
-        await self._get_consume_channel(prefetch_count=config.prefetch_count)
+        try:
+            # Ensure the consume channel exists with the requested prefetch QoS.
+            # The return value is unused here because declarations re-fetch the
+            # channel from the cache.
+            await self._get_consume_channel(prefetch_count=config.prefetch_count)
 
-        queues: list[tuple[str, AbstractQueue]] = []
-        for subscription in config.resolved_subscriptions():
-            queue = await self.declare_queue(
-                subscription.queue_name,
-                durable=config.durable,
-                arguments=subscription.queue_arguments or None,
-            )
-            for binding in subscription.bindings:
-                exchange = await self.declare_exchange(
-                    binding.exchange_name,
-                    binding.exchange_type,
+            queues: list[tuple[str, AbstractQueue]] = []
+            for subscription in config.resolved_subscriptions():
+                queue = await self.declare_queue(
+                    subscription.queue_name,
                     durable=config.durable,
+                    arguments=subscription.queue_arguments or None,
                 )
-                for key in binding.routing_keys:
-                    await self.bind_queue(queue, exchange, key)
-            queues.append((subscription.queue_name, queue))
+                for binding in subscription.bindings:
+                    exchange = await self.declare_exchange(
+                        binding.exchange_name,
+                        binding.exchange_type,
+                        durable=config.durable,
+                    )
+                    for key in binding.routing_keys:
+                        await self.bind_queue(queue, exchange, key)
+                queues.append((subscription.queue_name, queue))
+        except Exception as exc:
+            if not _is_recoverable_broker_interruption(exc):
+                raise
+            await self._teardown_consume_channel(f"subscription setup interrupted: {exc!r}")
+            return []
 
         buffer: List[Dict[str, Any]] = []
         timeout = config.consume_timeout
@@ -404,7 +431,9 @@ class AsyncRabbitMQService:
                     )
         except TimeoutError:
             poll_completed = True
-        except _DEAD_CHANNEL_EXCEPTIONS as exc:
+        except Exception as exc:
+            if not _is_recoverable_broker_interruption(exc):
+                raise
             # Broker cancelled this subscription mid-iteration; deterministically
             # tear down (cancel consumers + close) the dead channel so the next
             # call rebuilds against a fresh consumer, the broker redelivers what
@@ -435,15 +464,27 @@ class AsyncRabbitMQService:
         batch_size: int,
         auto_ack: bool,
     ) -> None:
-        """Merge deliveries from multiple queue iterators into one batch."""
+        """Wait for one delivery, then drain only messages already available.
+
+        ``consume_timeout`` bounds the idle wait in :meth:`consume`; it must
+        not become a batch-assembly delay after the first delivery. Once any
+        message is buffered, give newly scheduled iterator reads one event-loop
+        turn to complete and return immediately if none are ready.
+        """
         pending: dict[asyncio.Task, tuple[str, Any]] = {}
-        async with AsyncExitStack() as stack:
+        iterator_contexts: list[AsyncContextManager[Any]] = []
+        try:
             for queue_name, queue in queues:
                 iterator_context = cast(
                     AsyncContextManager[Any],
-                    queue.iterator(no_ack=auto_ack),
+                    # The framework owns consumer teardown/resubscription.
+                    # Letting aio-pika restore these short-lived per-fetch
+                    # consumers can resurrect an iterator with no pending
+                    # reader after a broker restart, creating a zombie tag.
+                    queue.iterator(no_ack=auto_ack, robust=False),
                 )
-                iterator = await stack.enter_async_context(iterator_context)
+                iterator = await iterator_context.__aenter__()
+                iterator_contexts.append(iterator_context)
                 self._register_consumer_cancel_callback(iterator)
                 consumer_tag = getattr(iterator, "_consumer_tag", None) or getattr(iterator, "consumer_tag", None)
                 if consumer_tag:
@@ -451,33 +492,68 @@ class AsyncRabbitMQService:
                 pending[asyncio.create_task(anext(iterator))] = (queue_name, iterator)
 
             self._active_consumer_tag = next(iter(self._active_consumer_tags.values()), None)
+            while pending and len(buffer) < batch_size:
+                if buffer:
+                    done = {task for task in pending if task.done()}
+                    if not done:
+                        await asyncio.sleep(0)
+                        done = {task for task in pending if task.done()}
+                    if not done:
+                        break
+                else:
+                    done, _ = await asyncio.wait(
+                        pending,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                for task in done:
+                    queue_name, iterator = pending.pop(task)
+                    try:
+                        message = task.result()
+                    except StopAsyncIteration:
+                        self._active_consumer_tags.pop(queue_name, None)
+                        continue
 
+                    message_dict = self._message_to_dict(message, queue_name=queue_name)
+                    self._in_flight_message_ids.add(id(message))
+                    self._last_fetch_ts = time.time()
+                    self._consumer_state = "delivering"
+                    if len(buffer) < batch_size:
+                        buffer.append(message_dict)
+                    else:
+                        self._prefetched_messages.append(message_dict)
+                    if len(buffer) < batch_size:
+                        pending[asyncio.create_task(anext(iterator))] = (queue_name, iterator)
+        finally:
+            cleanup_timeout = min(1.0, self.client.channel_timeout)
+            cleanup_failed = False
+            for task in pending:
+                task.cancel()
+            if pending:
+                try:
+                    async with timeout_after(cleanup_timeout):
+                        await asyncio.gather(*pending, return_exceptions=True)
+                except TimeoutError:
+                    cleanup_failed = True
+                    logger.warning("Timed out cancelling RabbitMQ iterator reads")
+            cleanup_failed = await self._close_iterator_contexts(iterator_contexts) or cleanup_failed
+            if cleanup_failed:
+                await self._teardown_consume_channel("queue iterator cleanup failed")
+
+    async def _close_iterator_contexts(
+        self,
+        iterator_contexts: list[AsyncContextManager[Any]],
+    ) -> bool:
+        """Bound queue-iterator cleanup so a dead broker cannot stall a poll."""
+        cleanup_timeout = min(1.0, self.client.channel_timeout)
+        cleanup_failed = False
+        for iterator_context in reversed(iterator_contexts):
             try:
-                while pending and len(buffer) < batch_size:
-                    done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-                    for task in done:
-                        queue_name, iterator = pending.pop(task)
-                        try:
-                            message = task.result()
-                        except StopAsyncIteration:
-                            self._active_consumer_tags.pop(queue_name, None)
-                            continue
-
-                        message_dict = self._message_to_dict(message, queue_name=queue_name)
-                        self._in_flight_message_ids.add(id(message))
-                        self._last_fetch_ts = time.time()
-                        self._consumer_state = "delivering"
-                        if len(buffer) < batch_size:
-                            buffer.append(message_dict)
-                        else:
-                            self._prefetched_messages.append(message_dict)
-                        if len(buffer) < batch_size:
-                            pending[asyncio.create_task(anext(iterator))] = (queue_name, iterator)
-            finally:
-                for task in pending:
-                    task.cancel()
-                if pending:
-                    await asyncio.gather(*pending, return_exceptions=True)
+                async with timeout_after(cleanup_timeout):
+                    await iterator_context.__aexit__(None, None, None)
+            except Exception as exc:
+                cleanup_failed = True
+                logger.warning("RabbitMQ queue iterator cleanup failed: %r", exc)
+        return cleanup_failed
 
     def _register_consumer_cancel_callback(self, iterator: Any) -> None:
         """Best-effort registration of an on-cancel callback on the iterator's consumer.
