@@ -1,7 +1,7 @@
 import time
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class RabbitmqClient(BaseModel):
@@ -67,6 +67,21 @@ class AsyncRabbitmqClient(BaseModel):
             "fast (broker redelivers) rather than wedging the consumer."
         ),
     )
+    connect_timeout: float = Field(
+        default=30,
+        gt=0,
+        description="Max seconds to establish or restore an AMQP connection",
+    )
+    channel_timeout: float = Field(
+        default=15,
+        gt=0,
+        description="Max seconds to open a channel on an established connection",
+    )
+    reconnect_interval: float = Field(
+        default=5,
+        gt=0,
+        description="Seconds between aio-pika robust reconnection attempts",
+    )
     connection_attempts: int = Field(default=3, description="Connection retry attempts")
     ssl_enabled: bool = Field(default=False, description="Enable SSL/TLS")
     ssl_ca_certs: Optional[str] = Field(default=None, description="Path to CA certificate when using SSL")
@@ -77,11 +92,37 @@ class AsyncRabbitmqClient(BaseModel):
         return f"amqp://{self.username}:{self.password}@{self.host}:{self.port}/{self.virtual_host}"
 
 
-class AsyncRabbitmqConsumerConfig(BaseModel):
+class AsyncRabbitmqExchangeBinding(BaseModel):
+    """One exchange and its routing-key bindings for a queue subscription."""
+
+    exchange_name: str = Field(description="Exchange to bind to")
+    exchange_type: str = Field(default="topic", description="Exchange type: topic, direct, fanout, headers")
+    routing_keys: list[str] = Field(default_factory=lambda: ["#"], description="Routing key patterns")
+
+
+class AsyncRabbitmqQueueSubscription(BaseModel):
+    """A durable queue and every exchange binding that feeds it."""
+
     queue_name: str = Field(description="Queue to consume from")
+    bindings: list[AsyncRabbitmqExchangeBinding] = Field(default_factory=list)
+    queue_arguments: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Extra AMQP arguments forwarded to queue.declare",
+    )
+
+
+class AsyncRabbitmqConsumerConfig(BaseModel):
+    queue_name: Optional[str] = Field(default=None, description="Legacy single queue to consume from")
     exchange_name: str = Field(default="", description="Exchange name (empty for default exchange)")
     exchange_type: str = Field(default="topic", description="Exchange type: topic, direct, fanout, headers")
-    binding_keys: list[str] = Field(default=["#"], description="Routing key patterns for queue binding")
+    binding_keys: list[str] = Field(default_factory=lambda: ["#"], description="Routing key patterns for queue binding")
+    subscriptions: list[AsyncRabbitmqQueueSubscription] = Field(
+        default_factory=list,
+        description=(
+            "Queue subscriptions for multi-queue or multi-exchange consumers. "
+            "When omitted, queue_name/exchange_name/binding_keys define one legacy subscription."
+        ),
+    )
     prefetch_count: int = Field(
         default=10,
         description=(
@@ -104,6 +145,44 @@ class AsyncRabbitmqConsumerConfig(BaseModel):
             "must be recreated or the args set via a broker-side Policy."
         ),
     )
+
+    @model_validator(mode="after")
+    def validate_subscriptions(self) -> "AsyncRabbitmqConsumerConfig":
+        if self.queue_name is None and not self.subscriptions:
+            raise ValueError("At least one queue_name or subscription is required")
+
+        queue_names = [subscription.queue_name for subscription in self.subscriptions]
+        if self.queue_name is not None:
+            queue_names.append(self.queue_name)
+        if len(queue_names) != len(set(queue_names)):
+            raise ValueError("Each RabbitMQ queue may appear only once in the consumer topology")
+
+        return self
+
+    def resolved_subscriptions(self) -> list[AsyncRabbitmqQueueSubscription]:
+        """Return the normalized queue topology, including legacy single-queue config."""
+        subscriptions = list(self.subscriptions)
+        if self.queue_name is not None:
+            bindings = (
+                [
+                    AsyncRabbitmqExchangeBinding(
+                        exchange_name=self.exchange_name,
+                        exchange_type=self.exchange_type,
+                        routing_keys=self.binding_keys,
+                    )
+                ]
+                if self.exchange_name
+                else []
+            )
+            subscriptions.insert(
+                0,
+                AsyncRabbitmqQueueSubscription(
+                    queue_name=self.queue_name,
+                    bindings=bindings,
+                    queue_arguments=self.queue_arguments,
+                ),
+            )
+        return subscriptions
 
 
 class AsyncRabbitmqProducerConfig(BaseModel):

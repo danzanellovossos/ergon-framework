@@ -14,7 +14,9 @@ from ergon.connector.rabbitmq.async_service import AsyncRabbitMQService
 from ergon.connector.rabbitmq.models import (
     AsyncRabbitmqClient,
     AsyncRabbitmqConsumerConfig,
+    AsyncRabbitmqExchangeBinding,
     AsyncRabbitmqProducerConfig,
+    AsyncRabbitmqQueueSubscription,
 )
 from ergon.task.exceptions import (
     AckOnDeadChannelError,
@@ -72,6 +74,55 @@ class TestClientUrl:
 
 class TestConnection:
     @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
+    async def test_connect_hang_is_bounded(self, mock_connect):
+        async def never_connects(*args, **kwargs):
+            await asyncio.Event().wait()
+
+        mock_connect.side_effect = never_connects
+        service = AsyncRabbitMQService(_make_client(connect_timeout=0.02))
+
+        with pytest.raises(TimeoutError):
+            await service._get_connection()
+
+        assert service.health()["state"] == "connect_stalled"
+
+    async def test_existing_robust_connection_recovery_is_bounded_and_reset(self):
+        connected = asyncio.Event()
+        mock_conn = AsyncMock()
+        mock_conn.is_closed = False
+        mock_conn.connected = connected
+        mock_conn.close = AsyncMock()
+
+        service = AsyncRabbitMQService(_make_client(connect_timeout=0.02))
+        service._connection = mock_conn
+
+        with pytest.raises(TimeoutError):
+            await service._get_connection()
+
+        mock_conn.close.assert_awaited_once()
+        assert service._connection is None
+        assert service.health()["consumer_epoch"] == 1
+
+    async def test_existing_robust_connection_returns_after_recovery(self):
+        connected = asyncio.Event()
+        mock_conn = AsyncMock()
+        mock_conn.is_closed = False
+        mock_conn.connected = connected
+
+        service = AsyncRabbitMQService(_make_client(connect_timeout=0.2))
+        service._connection = mock_conn
+
+        async def restore_connection():
+            await asyncio.sleep(0.01)
+            connected.set()
+
+        restore_task = asyncio.create_task(restore_connection())
+        result = await service._get_connection()
+        await restore_task
+
+        assert result is mock_conn
+
+    @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
     async def test_lazy_connection(self, mock_connect):
         mock_conn = AsyncMock()
         mock_conn.is_closed = False
@@ -111,6 +162,27 @@ class TestConnection:
 
 
 class TestConsume:
+    def test_legacy_config_resolves_to_one_subscription(self):
+        config = AsyncRabbitmqConsumerConfig(
+            queue_name="test-queue",
+            exchange_name="test-exchange",
+            binding_keys=["test.#"],
+            queue_arguments={"x-dead-letter-exchange": "dlx"},
+        )
+
+        subscriptions = config.resolved_subscriptions()
+
+        assert len(subscriptions) == 1
+        assert subscriptions[0].queue_name == "test-queue"
+        assert subscriptions[0].queue_arguments == {"x-dead-letter-exchange": "dlx"}
+        assert subscriptions[0].bindings[0].exchange_name == "test-exchange"
+        assert subscriptions[0].bindings[0].routing_keys == ["test.#"]
+
+    def test_multi_subscription_requires_unique_queue_names(self):
+        duplicate = AsyncRabbitmqQueueSubscription(queue_name="same")
+        with pytest.raises(ValueError, match="only once"):
+            AsyncRabbitmqConsumerConfig(subscriptions=[duplicate, duplicate])
+
     @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
     async def test_consume_returns_messages(self, mock_connect):
         msg = _mock_message()
@@ -153,6 +225,125 @@ class TestConsume:
         assert result[0]["body"] == {"key": "val"}
         assert result[0]["routing_key"] == "test.key"
         assert result[0]["delivery_tag"] == 1
+
+    @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
+    async def test_consume_merges_multiple_queue_subscriptions(self, mock_connect):
+        first_message = _mock_message(routing_key="iam.created", delivery_tag=7)
+
+        @asynccontextmanager
+        async def _ready_iterator(**kwargs):
+            async def _gen():
+                yield first_message
+
+            yield _gen()
+
+        @asynccontextmanager
+        async def _idle_iterator(**kwargs):
+            async def _gen():
+                await asyncio.sleep(10)
+                return
+                yield
+
+            yield _gen()
+
+        queue_one = MagicMock()
+        queue_one.iterator = _ready_iterator
+        queue_one.bind = AsyncMock()
+        queue_two = MagicMock()
+        queue_two.iterator = _idle_iterator
+        queue_two.bind = AsyncMock()
+
+        exchanges = {
+            "iam": MagicMock(name="iam"),
+            "conversations": MagicMock(name="conversations"),
+            "agents": MagicMock(name="agents"),
+        }
+        mock_channel = _mock_channel()
+        mock_channel.declare_queue = AsyncMock(side_effect=[queue_one, queue_two])
+        mock_channel.declare_exchange = AsyncMock(side_effect=lambda name, *_args, **_kwargs: exchanges[name])
+
+        mock_conn = AsyncMock()
+        mock_conn.is_closed = False
+        mock_conn.channel = AsyncMock(return_value=mock_channel)
+        mock_connect.return_value = mock_conn
+
+        service = AsyncRabbitMQService(_make_client())
+        config = AsyncRabbitmqConsumerConfig(
+            subscriptions=[
+                AsyncRabbitmqQueueSubscription(
+                    queue_name="audit.iam",
+                    bindings=[
+                        AsyncRabbitmqExchangeBinding(
+                            exchange_name="iam",
+                            routing_keys=["#"],
+                        )
+                    ],
+                ),
+                AsyncRabbitmqQueueSubscription(
+                    queue_name="audit.cross-service",
+                    bindings=[
+                        AsyncRabbitmqExchangeBinding(
+                            exchange_name="conversations",
+                            routing_keys=["conversations.#"],
+                        ),
+                        AsyncRabbitmqExchangeBinding(
+                            exchange_name="agents",
+                            routing_keys=["agents.#"],
+                        ),
+                    ],
+                ),
+            ],
+            consume_timeout=1,
+        )
+
+        result = await service.consume(config, batch_size=1)
+
+        assert len(result) == 1
+        assert result[0]["queue_name"] == "audit.iam"
+        assert result[0]["routing_key"] == "iam.created"
+        assert mock_channel.declare_queue.await_count == 2
+        assert mock_channel.declare_exchange.await_count == 3
+        queue_one.bind.assert_awaited_once_with(exchanges["iam"], routing_key="#")
+        assert queue_two.bind.await_count == 2
+
+    @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
+    async def test_simultaneous_deliveries_do_not_exceed_batch_size(self, mock_connect):
+        def queue_with_message(message):
+            @asynccontextmanager
+            async def _iterator(**kwargs):
+                async def _gen():
+                    yield message
+
+                yield _gen()
+
+            queue = MagicMock()
+            queue.iterator = _iterator
+            return queue
+
+        queue_one = queue_with_message(_mock_message(delivery_tag=1))
+        queue_two = queue_with_message(_mock_message(delivery_tag=2))
+        mock_channel = _mock_channel()
+        mock_channel.declare_queue = AsyncMock(side_effect=[queue_one, queue_two])
+
+        mock_conn = AsyncMock()
+        mock_conn.is_closed = False
+        mock_conn.channel = AsyncMock(return_value=mock_channel)
+        mock_connect.return_value = mock_conn
+
+        service = AsyncRabbitMQService(_make_client())
+        config = AsyncRabbitmqConsumerConfig(
+            subscriptions=[
+                AsyncRabbitmqQueueSubscription(queue_name="one"),
+                AsyncRabbitmqQueueSubscription(queue_name="two"),
+            ],
+        )
+
+        first = await service.consume(config, batch_size=1)
+        second = await service.consume(config, batch_size=1)
+
+        assert len(first) == 1
+        assert len(second) == 1
+        assert {first[0]["delivery_tag"], second[0]["delivery_tag"]} == {1, 2}
 
     @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
     async def test_consume_forwards_queue_arguments(self, mock_connect):
@@ -297,6 +488,11 @@ class TestConsume:
 
         result = await service.consume(config, batch_size=10)
         assert result == []
+        health = service.health()
+        assert health["state"] == "polling"
+        assert health["last_poll_started_ts"] is not None
+        assert health["last_poll_completed_ts"] is not None
+        assert health["in_flight_count"] == 0
 
 
 class TestPublish:
@@ -459,9 +655,11 @@ class TestDeadChannelAckNack:
     async def test_ack_success_records_liveness(self):
         msg = _mock_message()
         service = AsyncRabbitMQService(_make_client())
+        service._in_flight_message_ids.add(id(msg))
         assert service._last_ack_ts is None
         await service.ack(msg)
         assert service._last_ack_ts is not None
+        assert service.health()["in_flight_count"] == 0
 
     async def test_teardown_consume_channel_closes_and_clears(self):
         service = AsyncRabbitMQService(_make_client())

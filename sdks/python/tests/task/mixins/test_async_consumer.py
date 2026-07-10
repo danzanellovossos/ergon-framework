@@ -1,6 +1,7 @@
 """Tests for ergon.task.mixins.consumer — AsyncConsumerMixin lifecycle, fetch, and consume loop."""
 
 import asyncio
+import time
 from concurrent import futures
 from unittest.mock import patch
 
@@ -140,6 +141,50 @@ class TestFetch:
         assert isinstance(result, RuntimeError)
 
 
+class TestConsumerLiveness:
+    async def test_idle_queue_uses_poll_completion_not_stale_ack(self):
+        conn = MockAsyncConnector([])
+        conn.health = lambda: {
+            "state": "polling",
+            "last_poll_started_ts": time.time() - 1,
+            "last_poll_completed_ts": time.time() - 1,
+            "seconds_since_last_poll_started": 1,
+            "seconds_since_last_ack": 86_400,
+        }
+        consumer = MockAsyncConsumer(connectors={"default": conn})
+
+        snapshot = consumer.liveness_snapshot()
+
+        assert snapshot.healthy is True
+
+    async def test_unfinished_stale_poll_is_unhealthy(self):
+        conn = MockAsyncConnector([])
+        conn.health = lambda: {
+            "state": "reconnecting",
+            "last_poll_started_ts": time.time() - 180,
+            "last_poll_completed_ts": time.time() - 300,
+            "seconds_since_last_poll_started": 180,
+        }
+        consumer = MockAsyncConsumer(connectors={"default": conn})
+        consumer._consumer_fetch_stale_after = 60
+
+        snapshot = consumer.liveness_snapshot()
+
+        assert snapshot.healthy is False
+        assert snapshot.state == "poll_stalled"
+
+    async def test_generic_connector_stalled_fetch_is_unhealthy(self):
+        consumer = MockAsyncConsumer(connectors={"default": MockAsyncConnector([])})
+        consumer._consumer_liveness_state = "fetching"
+        consumer._consumer_last_progress_monotonic = time.monotonic() - 180
+        consumer._consumer_fetch_stale_after = 60
+
+        snapshot = consumer.liveness_snapshot()
+
+        assert snapshot.healthy is False
+        assert snapshot.state == "fetch_stalled"
+
+
 # =====================================================================
 #   Consume loop — non-streaming
 # =====================================================================
@@ -247,6 +292,32 @@ class TestConsumeNonStreaming:
 
         with pytest.raises(exceptions.ConsumerLoopTimeoutException):
             await consumer.consume_transactions(policy=policy)
+
+    async def test_transaction_runtime_timeout_cancels_and_routes_to_exception_handler(self):
+        async def forever_process(tx):
+            await asyncio.Event().wait()
+
+        failures = []
+
+        async def track_exception(tx, exc):
+            failures.append(exc)
+
+        conn = MockAsyncConnector(make_transactions(1))
+        consumer = MockAsyncConsumer(
+            connectors={"default": conn},
+            process_fn=forever_process,
+            exception_fn=track_exception,
+        )
+        policy = policies.ConsumerPolicy(
+            fetch=policies.FetchPolicy(batch=policies.BatchPolicy(size=1)),
+            transaction_runtime=policies.TransactionRuntimePolicy(timeout=0.05),
+        )
+
+        result = await asyncio.wait_for(consumer.consume_transactions(policy=policy), timeout=0.5)
+
+        assert result == 1
+        assert len(failures) == 1
+        assert isinstance(failures[0], exceptions.TransactionTimeoutException)
 
     @patch("ergon.task.utils.backoff_async")
     async def test_batch_interval(self, mock_backoff):

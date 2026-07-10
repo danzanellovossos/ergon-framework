@@ -106,6 +106,13 @@ class TransactionException(Exception):
         }
 
 
+class TransactionTimeoutException(TransactionException):
+    """Raised when a transaction exceeds its configured runtime budget."""
+
+    message = "Transaction runtime timed out."
+    category = ExceptionType.TIMEOUT
+
+
 class FetchTimeoutException(Exception):
     """
     Exception raised when a fetch operation times out.

@@ -1,7 +1,9 @@
 import asyncio
+import logging as stdlib_logging
 import os
 import signal
 import threading
+import time
 import traceback
 import uuid
 from concurrent.futures import ProcessPoolExecutor
@@ -17,6 +19,7 @@ from .base import (
     TaskConfig,
     TaskExecMetadata,
 )
+from .liveness import LivenessProvider, TaskSupervisionPolicy
 
 # =============================================================
 # EXIT CODES (POSIX-ALIGNED)
@@ -38,6 +41,7 @@ class ExitCode(IntEnum):
 
 _shutdown_event = threading.Event()
 _shutdown_signal: int | None = None
+_supervisor_logger = stdlib_logging.getLogger(__name__)
 
 
 def _signal_handler(signum, frame):
@@ -61,6 +65,82 @@ def get_shutdown_exit_code() -> ExitCode:
     if _shutdown_signal == signal.SIGTERM:
         return ExitCode.SIGTERM
     return ExitCode.ERROR
+
+
+class _TaskLivenessSupervisor:
+    """Independent process watchdog for tasks exposing liveness snapshots."""
+
+    def __init__(
+        self,
+        provider: LivenessProvider,
+        policy: TaskSupervisionPolicy,
+        request_shutdown,
+        hard_exit=os._exit,
+    ) -> None:
+        self.provider = provider
+        self.policy = policy
+        self.request_shutdown = request_shutdown
+        self.hard_exit = hard_exit
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(
+            target=self._run,
+            name="ergon-liveness-supervisor",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout=max(1.0, self.policy.check_interval * 2))
+
+    def _run(self) -> None:
+        started_at = time.monotonic()
+        unhealthy_since: float | None = None
+        shutdown_requested_at: float | None = None
+
+        while not self._stop.wait(self.policy.check_interval):
+            now = time.monotonic()
+            if now - started_at < self.policy.startup_grace:
+                continue
+
+            try:
+                snapshot = self.provider.liveness_snapshot()
+            except Exception as exc:  # noqa: BLE001 - a broken health check is unhealthy
+                healthy = False
+                reason = f"liveness check raised {exc!r}"
+            else:
+                healthy = snapshot.healthy
+                reason = snapshot.reason or snapshot.state
+
+            if healthy:
+                unhealthy_since = None
+                continue
+
+            if unhealthy_since is None:
+                unhealthy_since = now
+                _supervisor_logger.error("Task liveness check failed: %s", reason)
+                continue
+
+            if shutdown_requested_at is None and now - unhealthy_since >= self.policy.unhealthy_grace:
+                shutdown_requested_at = now
+                _supervisor_logger.critical(
+                    "Task remained unhealthy for %.1fs (%s); requesting process shutdown",
+                    now - unhealthy_since,
+                    reason,
+                )
+                self.request_shutdown(reason)
+                continue
+
+            if shutdown_requested_at is not None and now - shutdown_requested_at >= self.policy.shutdown_grace:
+                _supervisor_logger.critical(
+                    "Task did not stop within %.1fs after liveness shutdown request; forcing exit",
+                    self.policy.shutdown_grace,
+                )
+                self.hard_exit(int(ExitCode.ERROR))
 
 
 # =============================================================
@@ -135,6 +215,7 @@ async def __run_task_async(
     tracer = tracing.get_tracer(f"task.{config.name}")
 
     instance = None
+    supervisor = None
 
     try:
         with tracer.start_as_current_span(  # type: ignore[attr-defined]
@@ -160,6 +241,21 @@ async def __run_task_async(
                 **kwargs,
             )
 
+            if config.supervision.enabled and isinstance(instance, LivenessProvider):
+                loop = asyncio.get_running_loop()
+                runner_task = asyncio.current_task()
+
+                def request_liveness_shutdown(reason: str) -> None:
+                    if runner_task is not None and not runner_task.done():
+                        loop.call_soon_threadsafe(runner_task.cancel, f"Task unhealthy: {reason}")
+
+                supervisor = _TaskLivenessSupervisor(
+                    provider=instance,
+                    policy=config.supervision,
+                    request_shutdown=request_liveness_shutdown,
+                )
+                supervisor.start()
+
             if mode == "transaction":
                 await __run_transaction_async(
                     instance=instance,
@@ -171,6 +267,8 @@ async def __run_task_async(
                 await instance.execute()
 
     finally:
+        if supervisor is not None:
+            supervisor.stop()
         if instance is not None:
             await instance.exit()
 
@@ -347,6 +445,10 @@ def run_task(
         except ValueError:
             traceback.print_exc()
             return int(ExitCode.CONFIG_ERROR)
+
+        except asyncio.CancelledError:
+            traceback.print_exc()
+            return int(ExitCode.ERROR)
 
         except Exception:
             traceback.print_exc()

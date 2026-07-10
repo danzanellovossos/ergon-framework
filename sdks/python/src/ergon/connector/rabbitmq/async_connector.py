@@ -37,6 +37,8 @@ class AsyncRabbitMQConnector(AsyncConnector):
 
         config = self._consumer_config
         if queue_name or exchange_name or binding_keys:
+            if config.subscriptions:
+                raise ValueError("Per-fetch queue/exchange overrides are not supported with multi-subscription config")
             overrides: Dict[str, Any] = {}
             if queue_name is not None:
                 overrides["queue_name"] = queue_name
@@ -66,7 +68,8 @@ class AsyncRabbitMQConnector(AsyncConnector):
                         "content_type": msg.get("content_type"),
                         "message_id": msg.get("message_id"),
                         "correlation_id": msg.get("correlation_id"),
-                        "queue_name": config.queue_name,
+                        "queue_name": msg.get("queue_name") or config.queue_name,
+                        "exchange_name": msg.get("exchange_name"),
                         "_message": msg.get("_message"),
                     },
                 )

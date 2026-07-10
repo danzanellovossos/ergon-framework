@@ -50,6 +50,8 @@ class TestFetchTransactions:
                 "content_type": "application/json",
                 "message_id": "msg-123",
                 "correlation_id": "corr-456",
+                "queue_name": "source-queue",
+                "exchange_name": "events",
                 "_message": raw_msg,
             }
         ]
@@ -67,6 +69,8 @@ class TestFetchTransactions:
         assert tx.metadata["routing_key"] == "user.created"
         assert tx.metadata["delivery_tag"] == 42
         assert tx.metadata["headers"] == {"x-source": "api"}
+        assert tx.metadata["queue_name"] == "source-queue"
+        assert tx.metadata["exchange_name"] == "events"
         assert tx.metadata["_message"] is raw_msg
 
     async def test_fetch_empty_returns_empty_list(self):
