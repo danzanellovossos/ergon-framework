@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import logging as stdlib_logging
 import os
 import signal
@@ -6,6 +7,7 @@ import threading
 import time
 import traceback
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from enum import IntEnum
@@ -41,6 +43,8 @@ class ExitCode(IntEnum):
 
 _shutdown_event = threading.Event()
 _shutdown_signal: int | None = None
+_shutdown_callbacks: set[Callable[[], None]] = set()
+_shutdown_callbacks_lock = threading.Lock()
 _supervisor_logger = stdlib_logging.getLogger(__name__)
 
 
@@ -48,11 +52,39 @@ def _signal_handler(signum, frame):
     global _shutdown_signal
     _shutdown_signal = signum
     _shutdown_event.set()
+    with _shutdown_callbacks_lock:
+        callbacks = tuple(_shutdown_callbacks)
+    for callback in callbacks:
+        try:
+            callback()
+        except Exception:
+            _supervisor_logger.exception("Async shutdown callback failed")
 
 
 def _install_signal_handlers():
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
+
+
+def _reset_shutdown_state() -> None:
+    global _shutdown_signal
+    _shutdown_event.clear()
+    _shutdown_signal = None
+    with _shutdown_callbacks_lock:
+        _shutdown_callbacks.clear()
+
+
+def _register_shutdown_callback(callback: Callable[[], None]) -> None:
+    with _shutdown_callbacks_lock:
+        _shutdown_callbacks.add(callback)
+        shutdown_requested = _shutdown_event.is_set()
+    if shutdown_requested:
+        callback()
+
+
+def _unregister_shutdown_callback(callback: Callable[[], None]) -> None:
+    with _shutdown_callbacks_lock:
+        _shutdown_callbacks.discard(callback)
 
 
 def is_shutdown_requested() -> bool:
@@ -216,20 +248,31 @@ async def __run_task_async(
 
     instance = None
     supervisor = None
+    liveness_shutdown_requested = threading.Event()
+    connectors: dict[str, Any] = {}
+    services: dict[str, Any] = {}
+    loop = asyncio.get_running_loop()
+    runner_task = asyncio.current_task()
+
+    def request_signal_shutdown() -> None:
+        if runner_task is not None and not runner_task.done():
+            loop.call_soon_threadsafe(runner_task.cancel, "Process shutdown requested")
+
+    _register_shutdown_callback(request_signal_shutdown)
 
     try:
         with tracer.start_as_current_span(  # type: ignore[attr-defined]
             f"{config.task.__name__}.run",
             attributes={"task.execution.id": task_exec_metadata["execution_id"]},
         ):
-            connectors = {}
             for name, cfg in config.connectors.items():
                 conn = cfg.connector(*cfg.args, **cfg.kwargs)
+                connectors[name] = conn
                 if hasattr(conn, "init_async"):
                     await conn.init_async()  # type: ignore[attr-defined]
-                connectors[name] = conn
 
-            services = {name: cfg.service(*cfg.args, **cfg.kwargs) for name, cfg in config.services.items()}
+            for name, cfg in config.services.items():
+                services[name] = cfg.service(*cfg.args, **cfg.kwargs)
 
             instance = config.task(
                 connectors=connectors,
@@ -242,10 +285,9 @@ async def __run_task_async(
             )
 
             if config.supervision.enabled and isinstance(instance, LivenessProvider):
-                loop = asyncio.get_running_loop()
-                runner_task = asyncio.current_task()
 
                 def request_liveness_shutdown(reason: str) -> None:
+                    liveness_shutdown_requested.set()
                     if runner_task is not None and not runner_task.done():
                         loop.call_soon_threadsafe(runner_task.cancel, f"Task unhealthy: {reason}")
 
@@ -266,11 +308,37 @@ async def __run_task_async(
             else:
                 await instance.execute()
 
+    except asyncio.CancelledError:
+        if not is_shutdown_requested():
+            raise
     finally:
-        if supervisor is not None:
+        _unregister_shutdown_callback(request_signal_shutdown)
+        if supervisor is not None and not liveness_shutdown_requested.is_set():
             supervisor.stop()
-        if instance is not None:
-            await instance.exit()
+        try:
+            if instance is not None:
+                await instance.exit()
+        finally:
+            try:
+                resources = [*connectors.values(), *services.values()]
+                for resource in reversed(resources):
+                    close = getattr(resource, "close", None)
+                    if close is None:
+                        close = getattr(resource, "aclose", None)
+                    if not callable(close):
+                        continue
+                    try:
+                        result = close()
+                        if inspect.isawaitable(result):
+                            await result
+                    except Exception:
+                        _supervisor_logger.exception(
+                            "Failed to close async task resource %s",
+                            type(resource).__name__,
+                        )
+            finally:
+                if supervisor is not None:
+                    supervisor.stop()
 
 
 # =============================================================
@@ -424,6 +492,7 @@ def run_task(
     Returns POSIX-compatible exit code.
     """
 
+    _reset_shutdown_state()
     _install_signal_handlers()
     is_async = issubclass(config.task, BaseAsyncTask)  # type: ignore[arg-type]
 
