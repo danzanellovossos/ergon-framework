@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, model_validator
 from .. import telemetry
 from ..connector import Connector, ConnectorConfig
 from ..service import ServiceConfig
+from .liveness import TaskSupervisionPolicy
 
 
 class TaskConfig(BaseModel):
@@ -28,6 +29,7 @@ class TaskConfig(BaseModel):
     logging: Optional[telemetry.logging.LoggingConfig] = None
     metrics: Optional[telemetry.metrics.MetricsConfig] = None
     tracing: Optional[telemetry.tracing.TracingConfig] = None
+    supervision: TaskSupervisionPolicy = Field(default_factory=TaskSupervisionPolicy)
 
     @model_validator(mode="after")
     def validate(self) -> "TaskConfig":

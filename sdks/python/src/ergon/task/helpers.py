@@ -637,8 +637,15 @@ async def async_execute(
     """
 
     in_flight: set[asyncio.Task] = set()
+    started_at: dict[asyncio.Task, float] = {}
     completed = 0
     submit_iter = iter(submissions)
+    loop = asyncio.get_running_loop()
+
+    def start_submission(submit: Callable[[], asyncio.Task]) -> None:
+        task = submit()
+        in_flight.add(task)
+        started_at[task] = loop.time()
 
     # ============================================================
     # INITIAL FILL
@@ -648,7 +655,7 @@ async def async_execute(
             break
         try:
             submit = next(submit_iter)
-            in_flight.add(submit())
+            start_submission(submit)
         except StopIteration:
             break
         except Exception as e:
@@ -658,11 +665,32 @@ async def async_execute(
     # MAIN LOOP
     # ============================================================
     while in_flight:
-        done, in_flight = await asyncio.wait(
+        wait_timeout = None
+        if timeout is not None:
+            wait_timeout = max(
+                0.0,
+                min(timeout - (loop.time() - started_at[task]) for task in in_flight),
+            )
+
+        done, pending = await asyncio.wait(
             in_flight,
             return_when=asyncio.FIRST_COMPLETED,
-            timeout=timeout,
+            timeout=wait_timeout,
         )
+        in_flight = pending
+
+        if timeout is not None:
+            now = loop.time()
+            overdue = {task for task in in_flight if now - started_at[task] >= timeout}
+            for task in overdue:
+                task.cancel()
+            if overdue:
+                await asyncio.gather(*overdue, return_exceptions=True)
+                for task in overdue:
+                    logger.error("[async] Execution timeout")
+                    started_at.pop(task, None)
+                    completed += 1
+                in_flight.difference_update(overdue)
 
         for task in done:
             try:
@@ -672,6 +700,7 @@ async def async_execute(
             except Exception as e:
                 logger.error(f"[async] Execution error: {e}")
             finally:
+                started_at.pop(task, None)
                 completed += 1
 
         # ============================================================
@@ -682,7 +711,7 @@ async def async_execute(
                 break
             try:
                 submit = next(submit_iter)
-                in_flight.add(submit())
+                start_submission(submit)
             except StopIteration:
                 break
             except Exception as e:

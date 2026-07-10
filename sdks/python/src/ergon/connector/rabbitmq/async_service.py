@@ -3,7 +3,9 @@ import json
 import logging
 import ssl as ssl_module
 import time
-from typing import Any, Callable, Dict, List, Optional
+from collections import deque
+from contextlib import AsyncExitStack
+from typing import Any, AsyncContextManager, Callable, Dict, List, Optional, cast
 
 import aio_pika
 import aio_pika.exceptions
@@ -15,6 +17,7 @@ from aio_pika.abc import (
     AbstractQueue,
     AbstractRobustConnection,
 )
+from async_timeout import timeout as timeout_after
 
 from .models import AsyncRabbitmqClient, AsyncRabbitmqConsumerConfig, AsyncRabbitmqProducerConfig
 
@@ -32,7 +35,7 @@ _DEAD_CHANNEL_EXCEPTIONS: tuple[type[BaseException], ...] = (
     aiormq.exceptions.ChannelInvalidStateError,
 )
 
-# Same as above plus ``TimeoutError`` (raised by ``asyncio.timeout`` when an
+# Same as above plus ``TimeoutError`` (raised by the async timeout context when an
 # ack/nack stalls on a half-open socket). A stalled ack is functionally a dead
 # channel: we tear down and let the broker redeliver instead of blocking until
 # the heartbeat eventually fires.
@@ -47,6 +50,7 @@ class AsyncRabbitMQService:
         self.client = client
 
         self._connection: Optional[AbstractRobustConnection] = None
+        self._connection_lock = asyncio.Lock()
         # Separate channels for consume and publish so a consumer-side outage
         # (e.g. Basic.Cancel from broker after a force-recreate) cannot poison
         # the publish path, and vice-versa.
@@ -64,15 +68,35 @@ class AsyncRabbitMQService:
         # successful fetch/ack and reset when the consume channel is torn down.
         self._last_fetch_ts: Optional[float] = None
         self._last_ack_ts: Optional[float] = None
+        self._last_settlement_ts: Optional[float] = None
+        self._last_poll_started_ts: Optional[float] = None
+        self._last_poll_completed_ts: Optional[float] = None
         self._active_consumer_tag: Optional[str] = None
+        self._active_consumer_tags: Dict[str, str] = {}
+        self._consumer_state = "disconnected"
+        self._consumer_epoch = 0
+        self._in_flight_message_ids: set[int] = set()
+        self._prefetched_messages: deque[Dict[str, Any]] = deque()
 
     # ---------- Connection / Channel ----------
 
     async def _get_connection(self) -> AbstractRobustConnection:
-        if self._connection is None or self._connection.is_closed:
-            url = self.client.get_url()
+        async with self._connection_lock:
+            if self._connection is not None and not self._connection.is_closed:
+                connected = getattr(self._connection, "connected", None)
+                if isinstance(connected, asyncio.Event) and not connected.is_set():
+                    self._consumer_state = "reconnecting"
+                    try:
+                        async with timeout_after(self.client.connect_timeout):
+                            await connected.wait()
+                    except TimeoutError:
+                        self._consumer_state = "connect_stalled"
+                        await self._reset_connection("robust reconnect timed out")
+                        raise
+                return self._connection
 
-            kwargs: Dict[str, Any] = {}
+            url = self.client.get_url()
+            kwargs: Dict[str, Any] = {"reconnect_interval": self.client.reconnect_interval}
             if self.client.ssl_enabled:
                 ctx = ssl_module.create_default_context()
                 if self.client.ssl_ca_certs:
@@ -80,14 +104,42 @@ class AsyncRabbitMQService:
                 kwargs["ssl"] = True
                 kwargs["ssl_context"] = ctx
 
-            self._connection = await aio_pika.connect_robust(
-                url,
-                heartbeat=self.client.heartbeat,
-                **kwargs,
-            )
-            logger.info("Connected to RabbitMQ at %s", url.split("@")[-1] if "@" in url else url)
+            self._consumer_state = "connecting"
+            try:
+                async with timeout_after(self.client.connect_timeout):
+                    connection = await aio_pika.connect_robust(  # type: ignore[call-overload]
+                        url,
+                        heartbeat=self.client.heartbeat,
+                        timeout=self.client.connect_timeout,
+                        **kwargs,
+                    )
+            except TimeoutError:
+                self._consumer_state = "connect_stalled"
+                raise
+            except BaseException:
+                self._consumer_state = "disconnected"
+                raise
 
-        return self._connection
+            self._connection = connection
+            self._consumer_state = "connected"
+            logger.info("Connected to RabbitMQ at %s", url.split("@")[-1] if "@" in url else url)
+            return connection
+
+    async def _reset_connection(self, reason: str) -> None:
+        """Drop every channel and close a connection that cannot make progress."""
+        logger.warning("Resetting RabbitMQ connection (%s)", reason)
+        await self._teardown_consume_channel(reason)
+        publish_channel = self._publish_channel
+        self._publish_channel = None
+        await self._close_channel_safely(publish_channel, reason)
+
+        connection = self._connection
+        self._connection = None
+        if connection is not None and not connection.is_closed:
+            try:
+                await connection.close()
+            except Exception as exc:  # noqa: BLE001 - best-effort reset
+                logger.warning("Error closing RabbitMQ connection during reset (%s): %r", reason, exc)
 
     def _invalidate_consume_channel(self, reason: str = "explicit invalidation") -> None:
         """Drop cached consume channel + queue/exchange handles.
@@ -128,6 +180,11 @@ class AsyncRabbitMQService:
         channel = self._consume_channel
         self._invalidate_consume_channel(reason)
         self._active_consumer_tag = None
+        self._active_consumer_tags.clear()
+        self._consumer_epoch += 1
+        self._consumer_state = "channel_dead"
+        self._in_flight_message_ids.clear()
+        self._prefetched_messages.clear()
         await self._close_channel_safely(channel, reason)
 
     async def _close_channel_safely(self, channel: Optional[AbstractChannel], reason: str) -> None:
@@ -153,6 +210,11 @@ class AsyncRabbitMQService:
         channel = self._consume_channel
         self._invalidate_consume_channel(reason)
         self._active_consumer_tag = None
+        self._active_consumer_tags.clear()
+        self._consumer_epoch += 1
+        self._consumer_state = "channel_dead"
+        self._in_flight_message_ids.clear()
+        self._prefetched_messages.clear()
         if channel is None or channel.is_closed:
             return
         try:
@@ -174,7 +236,13 @@ class AsyncRabbitMQService:
     async def _get_consume_channel(self, prefetch_count: Optional[int] = None) -> AbstractChannel:
         if self._consume_channel is None or self._consume_channel.is_closed:
             connection = await self._get_connection()
-            self._consume_channel = await connection.channel()
+            try:
+                async with timeout_after(self.client.channel_timeout):
+                    self._consume_channel = await connection.channel()
+            except TimeoutError:
+                self._consumer_state = "connect_stalled"
+                await self._reset_connection("consume channel creation timed out")
+                raise
             # ``add_close_callback`` is not part of the abstract interface
             # but is provided by the concrete ``Channel`` class. Older
             # aio_pika versions and test mocks may not expose it, so we
@@ -191,13 +259,19 @@ class AsyncRabbitMQService:
             if prefetch_count is not None:
                 await self._consume_channel.set_qos(prefetch_count=prefetch_count)
                 logger.debug("Consume channel QoS set to prefetch_count=%d", prefetch_count)
+            self._consumer_state = "subscribed"
 
         return self._consume_channel
 
     async def _get_publish_channel(self) -> AbstractChannel:
         if self._publish_channel is None or self._publish_channel.is_closed:
             connection = await self._get_connection()
-            self._publish_channel = await connection.channel()
+            try:
+                async with timeout_after(self.client.channel_timeout):
+                    self._publish_channel = await connection.channel()
+            except TimeoutError:
+                await self._reset_connection("publish channel creation timed out")
+                raise
 
         return self._publish_channel
 
@@ -280,57 +354,56 @@ class AsyncRabbitMQService:
         """
         Fetch up to batch_size messages from the configured queue.
 
-        Declares exchange/queue/bindings on first call, then iterates the
-        queue collecting messages until batch_size is reached or
+        Declares every configured exchange/queue/binding on first call, then
+        concurrently iterates the queues until batch_size is reached or
         consume_timeout elapses.
 
         Returns raw message dicts without acknowledging — the caller
         is responsible for ack/nack via the delivery_tag in metadata.
         """
+        self._last_poll_started_ts = time.time()
+        self._consumer_state = "subscribing"
+        poll_completed = False
+
         # Ensure the consume channel exists with the requested prefetch QoS.
         # The return value is unused here because declare_exchange/declare_queue
         # re-fetch the channel from the cache.
         await self._get_consume_channel(prefetch_count=config.prefetch_count)
 
-        if config.exchange_name:
-            exchange = await self.declare_exchange(
-                config.exchange_name,
-                config.exchange_type,
+        queues: list[tuple[str, AbstractQueue]] = []
+        for subscription in config.resolved_subscriptions():
+            queue = await self.declare_queue(
+                subscription.queue_name,
                 durable=config.durable,
+                arguments=subscription.queue_arguments or None,
             )
-        else:
-            exchange = None
-
-        queue = await self.declare_queue(
-            config.queue_name,
-            durable=config.durable,
-            arguments=config.queue_arguments or None,
-        )
-
-        if exchange is not None:
-            for key in config.binding_keys:
-                await self.bind_queue(queue, exchange, key)
+            for binding in subscription.bindings:
+                exchange = await self.declare_exchange(
+                    binding.exchange_name,
+                    binding.exchange_type,
+                    durable=config.durable,
+                )
+                for key in binding.routing_keys:
+                    await self.bind_queue(queue, exchange, key)
+            queues.append((subscription.queue_name, queue))
 
         buffer: List[Dict[str, Any]] = []
         timeout = config.consume_timeout
+        while self._prefetched_messages and len(buffer) < batch_size:
+            buffer.append(self._prefetched_messages.popleft())
 
         try:
-            async with asyncio.timeout(timeout):  # type: ignore[attr-defined]
-                async with queue.iterator(no_ack=config.auto_ack) as iterator:
-                    self._register_consumer_cancel_callback(iterator)
-                    # Surface the active consumer tag for liveness diagnostics;
-                    # attribute name varies across aio_pika versions.
-                    self._active_consumer_tag = getattr(iterator, "_consumer_tag", None) or getattr(
-                        iterator, "consumer_tag", None
+            self._consumer_state = "polling"
+            if len(buffer) < batch_size:
+                async with timeout_after(timeout):
+                    await self._consume_queues(
+                        queues,
+                        buffer,
+                        batch_size=batch_size,
+                        auto_ack=config.auto_ack,
                     )
-                    async for message in iterator:
-                        msg_dict = self._message_to_dict(message)
-                        buffer.append(msg_dict)
-                        self._last_fetch_ts = time.time()
-                        if len(buffer) >= batch_size:
-                            break
         except TimeoutError:
-            pass
+            poll_completed = True
         except _DEAD_CHANNEL_EXCEPTIONS as exc:
             # Broker cancelled this subscription mid-iteration; deterministically
             # tear down (cancel consumers + close) the dead channel so the next
@@ -339,13 +412,72 @@ class AsyncRabbitMQService:
             # behind.
             await self._teardown_consume_channel(f"consume aborted: {exc!r}")
             return buffer
+        else:
+            poll_completed = True
         finally:
+            self._active_consumer_tag = None
+            self._active_consumer_tags.clear()
             # If the channel was closed during iteration, make sure we don't
             # hand back a stale cache to the next caller.
             if self._consume_channel is not None and self._consume_channel.is_closed:
                 await self._teardown_consume_channel("consume channel observed closed after iteration")
+            if poll_completed:
+                self._last_poll_completed_ts = time.time()
+                self._consumer_state = "polling"
 
         return buffer
+
+    async def _consume_queues(
+        self,
+        queues: list[tuple[str, AbstractQueue]],
+        buffer: List[Dict[str, Any]],
+        *,
+        batch_size: int,
+        auto_ack: bool,
+    ) -> None:
+        """Merge deliveries from multiple queue iterators into one batch."""
+        pending: dict[asyncio.Task, tuple[str, Any]] = {}
+        async with AsyncExitStack() as stack:
+            for queue_name, queue in queues:
+                iterator_context = cast(
+                    AsyncContextManager[Any],
+                    queue.iterator(no_ack=auto_ack),
+                )
+                iterator = await stack.enter_async_context(iterator_context)
+                self._register_consumer_cancel_callback(iterator)
+                consumer_tag = getattr(iterator, "_consumer_tag", None) or getattr(iterator, "consumer_tag", None)
+                if consumer_tag:
+                    self._active_consumer_tags[queue_name] = consumer_tag
+                pending[asyncio.create_task(anext(iterator))] = (queue_name, iterator)
+
+            self._active_consumer_tag = next(iter(self._active_consumer_tags.values()), None)
+
+            try:
+                while pending and len(buffer) < batch_size:
+                    done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                    for task in done:
+                        queue_name, iterator = pending.pop(task)
+                        try:
+                            message = task.result()
+                        except StopAsyncIteration:
+                            self._active_consumer_tags.pop(queue_name, None)
+                            continue
+
+                        message_dict = self._message_to_dict(message, queue_name=queue_name)
+                        self._in_flight_message_ids.add(id(message))
+                        self._last_fetch_ts = time.time()
+                        self._consumer_state = "delivering"
+                        if len(buffer) < batch_size:
+                            buffer.append(message_dict)
+                        else:
+                            self._prefetched_messages.append(message_dict)
+                        if len(buffer) < batch_size:
+                            pending[asyncio.create_task(anext(iterator))] = (queue_name, iterator)
+            finally:
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
 
     def _register_consumer_cancel_callback(self, iterator: Any) -> None:
         """Best-effort registration of an on-cancel callback on the iterator's consumer.
@@ -378,7 +510,7 @@ class AsyncRabbitMQService:
             logger.debug("Iterator consumer does not accept cancel callback; skipping")
 
     @staticmethod
-    def _message_to_dict(message: AbstractIncomingMessage) -> Dict[str, Any]:
+    def _message_to_dict(message: AbstractIncomingMessage, queue_name: Optional[str] = None) -> Dict[str, Any]:
         try:
             body = json.loads(message.body.decode("utf-8"))
         except Exception:
@@ -392,6 +524,8 @@ class AsyncRabbitMQService:
             "content_type": message.content_type,
             "message_id": message.message_id,
             "correlation_id": message.correlation_id,
+            "queue_name": queue_name,
+            "exchange_name": str(getattr(message, "exchange", "") or ""),
             "_message": message,
         }
 
@@ -452,12 +586,16 @@ class AsyncRabbitMQService:
         # ergon.connector and ergon.task at package init time.
         from ...task import exceptions as task_exceptions
 
+        self._consumer_state = "acking"
         try:
             # Bound the ack so a half-open socket is detected in seconds rather
             # than blocking until the (much longer) heartbeat timeout fires.
-            async with asyncio.timeout(self.client.ack_timeout):  # type: ignore[attr-defined]
+            async with timeout_after(self.client.ack_timeout):
                 await message.ack()
             self._last_ack_ts = time.time()
+            self._last_settlement_ts = self._last_ack_ts
+            self._in_flight_message_ids.discard(id(message))
+            self._consumer_state = "polling"
         except _DEAD_CHANNEL_TIMEOUT_EXCEPTIONS as exc:
             await self._teardown_consume_channel(f"ack failed: {exc!r}")
             raise task_exceptions.AckOnDeadChannelError(
@@ -469,9 +607,13 @@ class AsyncRabbitMQService:
     async def nack(self, message: AbstractIncomingMessage, requeue: bool = True) -> None:
         from ...task import exceptions as task_exceptions
 
+        self._consumer_state = "acking"
         try:
-            async with asyncio.timeout(self.client.ack_timeout):  # type: ignore[attr-defined]
+            async with timeout_after(self.client.ack_timeout):
                 await message.nack(requeue=requeue)
+            self._last_settlement_ts = time.time()
+            self._in_flight_message_ids.discard(id(message))
+            self._consumer_state = "polling"
         except _DEAD_CHANNEL_TIMEOUT_EXCEPTIONS as exc:
             await self._teardown_consume_channel(f"nack failed: {exc!r}")
             raise task_exceptions.NackOnDeadChannelError(
@@ -485,22 +627,38 @@ class AsyncRabbitMQService:
     def health(self) -> Dict[str, Any]:
         """Snapshot of consumer liveness for external health checks.
 
-        Exposes the timestamps of the last successful fetch and ack, the active
-        consumer tag, and connection/channel state so a service can detect a
-        wedged or zombie consumer (e.g. no successful ack within N seconds)
-        instead of silently running for hours after a broker cancel.
+        ``last_poll_completed_ts`` advances even when every queue is empty, so
+        callers can distinguish healthy idle polling from a wedged consumer.
+        Message-delivery and settlement timestamps remain activity diagnostics,
+        not standalone liveness gates.
         """
         now = time.time()
         connection_open = self._connection is not None and not self._connection.is_closed
         consume_channel_open = self._consume_channel is not None and not self._consume_channel.is_closed
         return {
+            "state": self._consumer_state,
+            "consumer_epoch": self._consumer_epoch,
             "connection_open": connection_open,
             "consume_channel_open": consume_channel_open,
             "active_consumer_tag": self._active_consumer_tag,
+            "active_consumer_tags": dict(self._active_consumer_tags),
+            "in_flight_count": len(self._in_flight_message_ids),
+            "last_poll_started_ts": self._last_poll_started_ts,
+            "last_poll_completed_ts": self._last_poll_completed_ts,
             "last_fetch_ts": self._last_fetch_ts,
             "last_ack_ts": self._last_ack_ts,
+            "last_settlement_ts": self._last_settlement_ts,
+            "seconds_since_last_poll_started": (
+                now - self._last_poll_started_ts if self._last_poll_started_ts is not None else None
+            ),
+            "seconds_since_last_poll_completed": (
+                now - self._last_poll_completed_ts if self._last_poll_completed_ts is not None else None
+            ),
             "seconds_since_last_fetch": (now - self._last_fetch_ts) if self._last_fetch_ts is not None else None,
             "seconds_since_last_ack": (now - self._last_ack_ts) if self._last_ack_ts is not None else None,
+            "seconds_since_last_settlement": (
+                now - self._last_settlement_ts if self._last_settlement_ts is not None else None
+            ),
         }
 
     # ---------- Lifecycle ----------
@@ -522,4 +680,9 @@ class AsyncRabbitMQService:
             await self._connection.close()
             self._connection = None
 
+        self._active_consumer_tag = None
+        self._active_consumer_tags.clear()
+        self._in_flight_message_ids.clear()
+        self._prefetched_messages.clear()
+        self._consumer_state = "closed"
         logger.info("RabbitMQ connection closed")

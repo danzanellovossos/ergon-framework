@@ -6,10 +6,11 @@ from concurrent import futures
 from datetime import datetime
 from typing import Any, List
 
+from async_timeout import timeout as timeout_after
 from opentelemetry import context as otel_context
 
 from ... import connector, telemetry
-from .. import base, exceptions, helpers, policies, utils
+from .. import base, exceptions, helpers, liveness, policies, utils
 from . import metrics as mixin_metrics
 from . import producer
 
@@ -178,6 +179,9 @@ class ConsumerMixin(ABC):
                 return exc_ok, exc_result
 
             return True, success_result
+        except asyncio.CancelledError:
+            final_status = "timeout"
+            raise
         finally:
             # Record transaction-level metrics
             tx_duration = time.perf_counter() - tx_start
@@ -491,6 +495,95 @@ class HybridTask(producer.ProducerMixin, ConsumerMixin, base.BaseTask):
 class AsyncConsumerMixin(ABC):
     name: str
     connectors: dict[str, connector.AsyncConnector]
+    _consumer_liveness_state: str
+    _consumer_last_progress_monotonic: float
+    _consumer_in_flight: set[int]
+    _consumer_active_stale_after: float | None
+    _consumer_fetch_stale_after: float
+
+    def _mark_consumer_progress(self, state: str) -> None:
+        self._consumer_liveness_state = state
+        self._consumer_last_progress_monotonic = time.monotonic()
+
+    def _set_transaction_in_flight(self, transaction: connector.Transaction, active: bool) -> None:
+        in_flight = getattr(self, "_consumer_in_flight", None)
+        if in_flight is None:
+            in_flight = set()
+            self._consumer_in_flight = in_flight
+        if active:
+            in_flight.add(id(transaction))
+        else:
+            in_flight.discard(id(transaction))
+        self._mark_consumer_progress("processing" if in_flight else "polling")
+
+    def liveness_snapshot(self) -> liveness.TaskLivenessSnapshot:
+        """Evaluate consumer-loop progress without treating an idle queue as dead."""
+        now = time.monotonic()
+        state = getattr(self, "_consumer_liveness_state", "starting")
+        last_progress = getattr(self, "_consumer_last_progress_monotonic", now)
+        in_flight = len(getattr(self, "_consumer_in_flight", set()))
+        active_stale_after = getattr(self, "_consumer_active_stale_after", None)
+        fetch_stale_after = getattr(self, "_consumer_fetch_stale_after", 120.0)
+        details: dict[str, Any] = {
+            "in_flight_count": in_flight,
+            "seconds_since_progress": now - last_progress,
+            "connectors": {},
+        }
+
+        if in_flight and active_stale_after is not None and now - last_progress > active_stale_after:
+            return liveness.TaskLivenessSnapshot(
+                healthy=False,
+                state="processing_stalled",
+                reason=f"No transaction progress for {now - last_progress:.1f}s",
+                details=details,
+            )
+
+        if state == "fetching" and now - last_progress > fetch_stale_after:
+            return liveness.TaskLivenessSnapshot(
+                healthy=False,
+                state="fetch_stalled",
+                reason=f"Fetch has not completed for {now - last_progress:.1f}s",
+                details=details,
+            )
+
+        for name, conn in self.connectors.items():
+            health_fn = getattr(conn, "health", None)
+            if not callable(health_fn):
+                continue
+            connector_health = health_fn()
+            if not isinstance(connector_health, dict):
+                continue
+            details["connectors"][name] = connector_health
+            connector_state = connector_health.get("state")
+            poll_started = connector_health.get("last_poll_started_ts")
+            poll_completed = connector_health.get("last_poll_completed_ts")
+            poll_age = connector_health.get("seconds_since_last_poll_started")
+
+            if connector_state == "connect_stalled":
+                return liveness.TaskLivenessSnapshot(
+                    healthy=False,
+                    state=connector_state,
+                    reason=f"Connector {name} could not restore its connection",
+                    details=details,
+                )
+            if (
+                poll_started is not None
+                and (poll_completed is None or poll_started > poll_completed)
+                and poll_age is not None
+                and poll_age > fetch_stale_after
+            ):
+                return liveness.TaskLivenessSnapshot(
+                    healthy=False,
+                    state="poll_stalled",
+                    reason=f"Connector {name} poll has not completed for {poll_age:.1f}s",
+                    details=details,
+                )
+
+        return liveness.TaskLivenessSnapshot(
+            healthy=True,
+            state=state,
+            details=details,
+        )
 
     # =====================================================================
     # HOOKS
@@ -509,6 +602,7 @@ class AsyncConsumerMixin(ABC):
     #   FETCH HANDLER (ASYNC)
     # =====================================================================
     async def _handle_fetch(self, conn, policy: policies.FetchPolicy) -> tuple[bool, List[connector.Transaction]]:
+        self._mark_consumer_progress("fetching")
         logger.info(f"Fetch handler started for batch size {policy.batch.size}", extra=policy.extra)
         fetch_start = time.perf_counter()
         success, result = await helpers.run_fn_async(
@@ -528,6 +622,7 @@ class AsyncConsumerMixin(ABC):
             success=success,
         )
         logger.info(f"Fetch handler completed with status: {'success' if success else 'error'}")
+        self._mark_consumer_progress("polling")
         return success, result
 
     # =====================================================================
@@ -539,6 +634,7 @@ class AsyncConsumerMixin(ABC):
         """
         tx_start = time.perf_counter()
         final_status = "success"
+        self._set_transaction_in_flight(transaction, True)
 
         try:
             # -----------------------
@@ -621,6 +717,7 @@ class AsyncConsumerMixin(ABC):
 
             return True, success_result
         finally:
+            self._set_transaction_in_flight(transaction, False)
             # Record transaction-level metrics
             tx_duration = time.perf_counter() - tx_start
             mixin_metrics.record_consumer_transaction(
@@ -730,16 +827,55 @@ class AsyncConsumerMixin(ABC):
             logger.debug(f"Consume loop running with loop policy: {policy.loop.model_dump_json(indent=2)}")
 
             conn = self._resolve_connector(policy.fetch.connector_name)
+            self._consumer_in_flight = set()
+            self._mark_consumer_progress("starting")
+            supervision = getattr(getattr(self, "task_config", None), "supervision", None)
+            transaction_timeout = policy.transaction_runtime.timeout
+            processing_override = getattr(supervision, "processing_stale_after", None)
+            self._consumer_active_stale_after = processing_override or (
+                max(60.0, transaction_timeout + 60.0) if transaction_timeout is not None else None
+            )
+            client = getattr(getattr(conn, "service", None), "client", None)
+            consumer_config = getattr(conn, "_consumer_config", None)
+            connect_timeout = getattr(client, "connect_timeout", 30.0)
+            channel_timeout = getattr(client, "channel_timeout", 15.0)
+            consume_timeout = getattr(consumer_config, "consume_timeout", 5.0)
+            derived_fetch_stale_after = max(
+                60.0,
+                connect_timeout + channel_timeout + consume_timeout + 10.0,
+            )
+            self._consumer_fetch_stale_after = (
+                getattr(supervision, "fetch_stale_after", None) or derived_fetch_stale_after
+            )
             _warn_if_prefetch_exceeds_concurrency(conn, policy, getattr(self, "name", self.__class__.__name__))
 
             ctx = otel_context.Context()
 
             async def submit_start_processing(tr, pol):
-                return await helpers.run_fn_async(
-                    fn=lambda: self._start_processing(tr, pol),
-                    trace_name=f"{self.__class__.__name__}.start_processing",
-                    trace_attrs={"transaction_id": tr.id},
-                )
+                try:
+                    if pol.transaction_runtime.timeout is None:
+                        return await helpers.run_fn_async(
+                            fn=lambda: self._start_processing(tr, pol),
+                            trace_name=f"{self.__class__.__name__}.start_processing",
+                            trace_attrs={"transaction_id": tr.id},
+                        )
+                    async with timeout_after(pol.transaction_runtime.timeout):
+                        return await helpers.run_fn_async(
+                            fn=lambda: self._start_processing(tr, pol),
+                            trace_name=f"{self.__class__.__name__}.start_processing",
+                            trace_attrs={"transaction_id": tr.id},
+                        )
+                except TimeoutError as exc:
+                    timeout_error = exceptions.TransactionTimeoutException(
+                        transaction_id=tr.id,
+                        cause=exc,
+                    )
+                    logger.error(
+                        "Transaction %s exceeded runtime timeout %.2fs; invoking exception handler",
+                        tr.id,
+                        pol.transaction_runtime.timeout,
+                    )
+                    return await self._handle_exception(tr, timeout_error, pol.exception.retry)
 
             while True:
                 batch_number += 1
@@ -762,6 +898,7 @@ class AsyncConsumerMixin(ABC):
                 #  EMPTY QUEUE HANDLING
                 # ============================================================
                 if not transactions:
+                    self._mark_consumer_progress("idle")
                     logger.info(f"Empty fetch detected at {datetime.now().isoformat()}")
                     if not policy.loop.streaming:
                         logger.info("Non-streaming mode detected, breaking loop")
@@ -784,6 +921,7 @@ class AsyncConsumerMixin(ABC):
                     continue
 
                 empty_count = 0
+                self._mark_consumer_progress("processing")
 
                 logger.info(f"{len(transactions)} transaction(s) fetched from fetch handler")
 
@@ -833,10 +971,10 @@ class AsyncConsumerMixin(ABC):
                         submissions=submissions(),
                         concurrency=policy.loop.concurrency.value,
                         limit=policy.loop.limit,
-                        timeout=policy.transaction_runtime.timeout,
                     )
 
                 processed += count
+                self._mark_consumer_progress("polling")
 
                 if policy.loop.limit and processed >= policy.loop.limit:
                     break

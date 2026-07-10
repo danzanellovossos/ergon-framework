@@ -463,19 +463,27 @@ class TestAsyncExecute:
         assert count == 3
 
     @pytest.mark.asyncio
-    async def test_timeout_no_eviction(self):
+    async def test_timeout_cancels_stuck_tasks_and_completes(self):
+        cancelled = 0
+
         async def blocking():
-            await asyncio.Event().wait()
+            nonlocal cancelled
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled += 1
 
         def submissions():
             for _ in range(2):
                 yield lambda: asyncio.create_task(blocking())
 
-        with pytest.raises((asyncio.TimeoutError, TimeoutError)):
-            await asyncio.wait_for(
-                async_execute(submissions=submissions(), concurrency=2, timeout=0.1),
-                timeout=0.5,
-            )
+        count = await asyncio.wait_for(
+            async_execute(submissions=submissions(), concurrency=2, timeout=0.1),
+            timeout=0.5,
+        )
+
+        assert count == 2
+        assert cancelled == 2
 
     @pytest.mark.asyncio
     async def test_empty_submissions(self):
