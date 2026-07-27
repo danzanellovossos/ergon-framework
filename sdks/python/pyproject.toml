@@ -1,6 +1,6 @@
 [project]
 name = "ergon-framework-python"
-version = "0.1.7"
+version = "0.1.8"
 description = "Ergon internal task-oriented project bootstrapper"
 readme = "README.md"
 license = "MIT"
@@ -47,7 +47,7 @@ dev = [
     "pyright>=1.1.390",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.25.0",
-    "ruff>=0.6.0",
+    "ruff>=0.6.0,<0.16",
 ]
 
 [build-system]

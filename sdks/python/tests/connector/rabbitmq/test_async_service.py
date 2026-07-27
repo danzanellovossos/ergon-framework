@@ -112,6 +112,36 @@ class TestConnection:
         assert service._connection is None
         assert service.health()["consumer_epoch"] == 1
 
+    async def test_reset_closes_robust_connection_with_closed_transport(self):
+        mock_conn = AsyncMock()
+        mock_conn.is_closed = True
+        mock_conn.close = AsyncMock()
+
+        service = AsyncRabbitMQService(_make_client())
+        service._connection = mock_conn
+
+        await service._reset_connection("broker shutdown")
+
+        mock_conn.close.assert_awaited_once()
+        assert service._connection is None
+
+    async def test_reset_bounds_robust_connection_close(self):
+        async def never_closes():
+            await asyncio.Event().wait()
+
+        mock_conn = AsyncMock()
+        mock_conn.is_closed = True
+        mock_conn.close = AsyncMock(side_effect=never_closes)
+
+        service = AsyncRabbitMQService(_make_client(connect_timeout=0.02))
+        service._connection = mock_conn
+
+        started = time.monotonic()
+        await asyncio.wait_for(service._reset_connection("network blackhole"), timeout=0.2)
+
+        assert time.monotonic() - started < 0.2
+        assert service._connection is None
+
     async def test_existing_robust_connection_returns_after_recovery(self):
         connected = asyncio.Event()
         mock_conn = AsyncMock()
