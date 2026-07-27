@@ -1,5 +1,6 @@
 import asyncio
 import signal
+import threading
 
 import pytest
 
@@ -7,6 +8,7 @@ from ergon.connector import AsyncConnector, ConnectorConfig
 from ergon.service import ServiceConfig
 from ergon.task import runner
 from ergon.task.base import BaseAsyncTask, TaskConfig
+from ergon.task.liveness import TaskLivenessSnapshot, TaskSupervisionPolicy
 
 
 class _AsyncTestConnector(AsyncConnector):
@@ -158,3 +160,41 @@ async def test_partially_initialized_connector_closes_after_init_failure():
         await runner.__run_task_async(config, "task")
 
     assert closed is True
+
+
+@pytest.mark.asyncio
+async def test_task_failure_keeps_hard_exit_armed_through_stalled_cleanup(monkeypatch):
+    cleanup_started = asyncio.Event()
+    hard_exit = threading.Event()
+
+    class Task(BaseAsyncTask):
+        def liveness_snapshot(self):
+            return TaskLivenessSnapshot(healthy=True, state="idle")
+
+        async def execute(self):
+            raise RuntimeError("fetch failed")
+
+        async def exit(self):
+            cleanup_started.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(runner.os, "_exit", lambda _code: hard_exit.set())
+    config = TaskConfig(
+        name="failed-task-cleanup-deadline",
+        task=Task,
+        connectors={"test": ConnectorConfig(connector=_AsyncTestConnector)},
+        supervision=TaskSupervisionPolicy(
+            check_interval=0.01,
+            startup_grace=0,
+            unhealthy_grace=0.01,
+            shutdown_grace=0.02,
+        ),
+    )
+
+    execution = asyncio.create_task(runner.__run_task_async(config, "task"))
+    await asyncio.wait_for(cleanup_started.wait(), timeout=1)
+    assert await asyncio.to_thread(hard_exit.wait, 0.5)
+
+    execution.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await execution

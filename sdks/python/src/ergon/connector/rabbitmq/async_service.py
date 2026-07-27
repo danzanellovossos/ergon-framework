@@ -155,11 +155,33 @@ class AsyncRabbitMQService:
 
         connection = self._connection
         self._connection = None
-        if connection is not None and not connection.is_closed:
-            try:
+        await self._close_connection_safely(connection, reason)
+
+    async def _close_connection_safely(
+        self,
+        connection: Optional[AbstractRobustConnection],
+        reason: str,
+    ) -> None:
+        """Stop transport and robust-reconnect ownership within a fixed deadline.
+
+        ``RobustConnection.is_closed`` only describes its current transport. Its
+        background reconnection task can still be alive after the broker closes
+        that transport, so ``close()`` must always run for an owned connection.
+        """
+        if connection is None:
+            return
+        close_timeout = min(5.0, self.client.connect_timeout)
+        try:
+            async with timeout_after(close_timeout):
                 await connection.close()
-            except Exception as exc:  # noqa: BLE001 - best-effort reset
-                logger.warning("Error closing RabbitMQ connection during reset (%s): %r", reason, exc)
+        except TimeoutError:
+            logger.error(
+                "Timed out closing RabbitMQ connection after %.1fs (%s)",
+                close_timeout,
+                reason,
+            )
+        except Exception as exc:  # noqa: BLE001 - best-effort reset
+            logger.warning("Error closing RabbitMQ connection (%s): %r", reason, exc)
 
     def _invalidate_consume_channel(self, reason: str = "explicit invalidation") -> None:
         """Drop cached consume channel + queue/exchange handles.
@@ -752,9 +774,9 @@ class AsyncRabbitMQService:
                     logger.warning("Error closing %s: %r", attr_name, exc)
             setattr(self, attr_name, None)
 
-        if self._connection is not None and not self._connection.is_closed:
-            await self._connection.close()
-            self._connection = None
+        connection = self._connection
+        self._connection = None
+        await self._close_connection_safely(connection, "service close")
 
         self._active_consumer_tag = None
         self._active_consumer_tags.clear()

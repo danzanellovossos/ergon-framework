@@ -106,15 +106,18 @@ class _TaskLivenessSupervisor:
         self,
         provider: LivenessProvider,
         policy: TaskSupervisionPolicy,
-        request_shutdown,
-        hard_exit=os._exit,
+        request_shutdown: Callable[[str], None],
+        hard_exit: Callable[[int], None] | None = None,
     ) -> None:
         self.provider = provider
         self.policy = policy
         self.request_shutdown = request_shutdown
-        self.hard_exit = hard_exit
+        self.hard_exit = hard_exit or os._exit
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_requested_at: float | None = None
+        self._shutdown_reason: str | None = None
 
     def start(self) -> None:
         self._thread = threading.Thread(
@@ -129,13 +132,39 @@ class _TaskLivenessSupervisor:
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=max(1.0, self.policy.check_interval * 2))
 
+    def arm_shutdown_deadline(self, reason: str) -> None:
+        """Force process exit if any cooperative shutdown or cleanup wedges."""
+        with self._shutdown_lock:
+            if self._shutdown_requested_at is not None:
+                return
+            self._shutdown_requested_at = time.monotonic()
+            self._shutdown_reason = reason
+        _supervisor_logger.warning(
+            "Task shutdown deadline armed for %.1fs (%s)",
+            self.policy.shutdown_grace,
+            reason,
+        )
+
     def _run(self) -> None:
         started_at = time.monotonic()
         unhealthy_since: float | None = None
-        shutdown_requested_at: float | None = None
 
         while not self._stop.wait(self.policy.check_interval):
             now = time.monotonic()
+            with self._shutdown_lock:
+                shutdown_requested_at = self._shutdown_requested_at
+                shutdown_reason = self._shutdown_reason
+            if shutdown_requested_at is not None:
+                if now - shutdown_requested_at >= self.policy.shutdown_grace:
+                    _supervisor_logger.critical(
+                        "Task did not stop within %.1fs after shutdown began (%s); forcing exit",
+                        self.policy.shutdown_grace,
+                        shutdown_reason,
+                    )
+                    self._stop.set()
+                    self.hard_exit(int(ExitCode.ERROR))
+                continue
+
             if now - started_at < self.policy.startup_grace:
                 continue
 
@@ -157,22 +186,14 @@ class _TaskLivenessSupervisor:
                 _supervisor_logger.error("Task liveness check failed: %s", reason)
                 continue
 
-            if shutdown_requested_at is None and now - unhealthy_since >= self.policy.unhealthy_grace:
-                shutdown_requested_at = now
+            if now - unhealthy_since >= self.policy.unhealthy_grace:
                 _supervisor_logger.critical(
                     "Task remained unhealthy for %.1fs (%s); requesting process shutdown",
                     now - unhealthy_since,
                     reason,
                 )
+                self.arm_shutdown_deadline(reason)
                 self.request_shutdown(reason)
-                continue
-
-            if shutdown_requested_at is not None and now - shutdown_requested_at >= self.policy.shutdown_grace:
-                _supervisor_logger.critical(
-                    "Task did not stop within %.1fs after liveness shutdown request; forcing exit",
-                    self.policy.shutdown_grace,
-                )
-                self.hard_exit(int(ExitCode.ERROR))
 
 
 # =============================================================
@@ -313,8 +334,10 @@ async def __run_task_async(
             raise
     finally:
         _unregister_shutdown_callback(request_signal_shutdown)
-        if supervisor is not None and not liveness_shutdown_requested.is_set():
-            supervisor.stop()
+        if supervisor is not None:
+            supervisor.arm_shutdown_deadline(
+                "liveness shutdown cleanup" if liveness_shutdown_requested.is_set() else "task cleanup"
+            )
         try:
             if instance is not None:
                 await instance.exit()
