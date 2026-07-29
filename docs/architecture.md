@@ -143,6 +143,7 @@ The consumer engine handles all the complexity:
 
 - Fetching batches from connectors
 - Concurrent processing with configurable parallelism
+- Optional continuous refill for long-running async handlers
 - Retry logic with exponential backoff
 - Timeout enforcement
 - Error routing to exception handlers
@@ -275,20 +276,11 @@ ConsumerPolicy {
     name: string
 
     loop {
+        mode: "batch" | "continuous"  // Async scheduling strategy
         concurrency {
             value: int          // Parallel transaction processing
             min: int            // Minimum concurrency
             max: int            // Maximum concurrency
-        }
-        batch {
-            size: int           // Transactions per fetch
-            min_size: int
-            max_size: int
-        }
-        empty_queue {
-            backoff: float              // Initial backoff on empty queue
-            backoff_multiplier: float   // Exponential factor
-            backoff_cap: float          // Maximum backoff
         }
         timeout: int            // Max loop duration (seconds)
         limit: int              // Max transactions to process
@@ -296,6 +288,16 @@ ConsumerPolicy {
     }
 
     fetch {
+        batch {
+            size: int           // Transactions per fetch in batch mode
+            min_size: int
+            max_size: int
+        }
+        empty {
+            backoff: float              // Initial backoff on empty queue
+            backoff_multiplier: float   // Exponential factor
+            backoff_cap: float          // Maximum backoff
+        }
         retry: RetryPolicy
         connector: string       // Connector name to fetch from
     }
@@ -313,6 +315,8 @@ ConsumerPolicy {
     }
 }
 ```
+
+Async consumers use `mode: "batch"` by default: each fetched batch completes before the next fetch. With `mode: "continuous"`, the engine fetches up to the number of free concurrency slots and replaces completed transactions immediately. Continuous mode is intended for broker-backed, I/O-bound workloads whose transaction durations vary significantly; `fetch.batch.size` applies only to batch mode.
 
 Each phase (fetch, process, success, exception) has independent retry configuration. This allows you to, for example, retry business logic 3 times but only retry the exception handler once.
 

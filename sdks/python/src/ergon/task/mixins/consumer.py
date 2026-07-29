@@ -601,22 +601,28 @@ class AsyncConsumerMixin(ABC):
     # =====================================================================
     #   FETCH HANDLER (ASYNC)
     # =====================================================================
-    async def _handle_fetch(self, conn, policy: policies.FetchPolicy) -> tuple[bool, List[connector.Transaction]]:
+    async def _handle_fetch(
+        self,
+        conn,
+        policy: policies.FetchPolicy,
+        batch_size: int | None = None,
+    ) -> tuple[bool, List[connector.Transaction]]:
+        fetch_size = policy.batch.size if batch_size is None else batch_size
         self._mark_consumer_progress("fetching")
-        logger.info(f"Fetch handler started for batch size {policy.batch.size}", extra=policy.extra)
+        logger.info(f"Fetch handler started for batch size {fetch_size}", extra=policy.extra)
         fetch_start = time.perf_counter()
         success, result = await helpers.run_fn_async(
-            fn=lambda: conn.fetch_transactions_async(policy.batch.size, **policy.extra),
+            fn=lambda: conn.fetch_transactions_async(fetch_size, **policy.extra),
             retry=policy.retry,
             trace_name=f"{self.__class__.__name__}.fetch_transactions",
-            trace_attrs={"batch_size": policy.batch.size},
+            trace_attrs={"batch_size": fetch_size},
         )
         # Record fetch metrics
         fetched_count = len(result) if success and result else 0
         mixin_metrics.record_consumer_fetch(
             task_name=getattr(self, "name", self.__class__.__name__),
             connector_name=conn.__class__.__name__,
-            batch_size=policy.batch.size,
+            batch_size=fetch_size,
             fetched_count=fetched_count,
             duration=time.perf_counter() - fetch_start,
             success=success,
@@ -877,13 +883,135 @@ class AsyncConsumerMixin(ABC):
                     )
                     return await self._handle_exception(tr, timeout_error, pol.exception.retry)
 
+            async def _consume_continuous():
+                nonlocal batch_number, empty_count, processed
+
+                concurrency = policy.loop.concurrency.value
+                submitted = 0
+                in_flight: set[asyncio.Task] = set()
+
+                async def reap(done: set[asyncio.Task]) -> None:
+                    nonlocal processed
+                    for task in done:
+                        try:
+                            await task
+                        except Exception as exc:
+                            logger.error("[async] Execution error: %s", exc)
+                        finally:
+                            processed += 1
+
+                async def wait_for_completion() -> None:
+                    done, _ = await asyncio.wait(
+                        in_flight,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    in_flight.difference_update(done)
+                    await reap(done)
+                    self._mark_consumer_progress("polling")
+
+                try:
+                    while True:
+                        if policy.loop.limit is not None and submitted >= policy.loop.limit:
+                            if in_flight:
+                                await wait_for_completion()
+                                continue
+                            break
+
+                        free_slots = concurrency - len(in_flight)
+                        if free_slots == 0:
+                            await wait_for_completion()
+                            continue
+
+                        if policy.loop.limit is not None:
+                            free_slots = min(free_slots, policy.loop.limit - submitted)
+
+                        logger.debug(
+                            "Fetching transactions for %d free continuous-consumer slot(s) with fetch policy: %s",
+                            free_slots,
+                            policy.fetch.model_dump_json(indent=2),
+                        )
+                        success, result = await self._handle_fetch(
+                            conn,
+                            policy.fetch,
+                            batch_size=free_slots,
+                        )
+
+                        if not success:
+                            logger.error("Fetch failed → %s", result)
+                            if isinstance(result, (asyncio.TimeoutError, futures.TimeoutError)):
+                                raise exceptions.FetchTimeoutException(str(result))
+                            raise exceptions.FetchException(str(result))
+
+                        transactions = result
+                        if transactions:
+                            empty_count = 0
+                            batch_number += 1
+                            self._mark_consumer_progress("processing")
+                            logger.info(
+                                "%d transaction(s) fetched for continuous processing",
+                                len(transactions),
+                            )
+                            mixin_metrics.record_consumer_batch(
+                                task_name=getattr(self, "name", self.__class__.__name__),
+                                batch_number=batch_number,
+                                batch_size=len(transactions),
+                                streaming=policy.loop.streaming,
+                            )
+                            for transaction in transactions:
+                                in_flight.add(
+                                    asyncio.create_task(
+                                        submit_start_processing(transaction, policy),
+                                    )
+                                )
+                                submitted += 1
+                            continue
+
+                        if in_flight:
+                            await wait_for_completion()
+                            continue
+
+                        self._mark_consumer_progress("idle")
+                        logger.info("Empty fetch detected at %s", datetime.now().isoformat())
+                        if not policy.loop.streaming:
+                            logger.info("Non-streaming mode detected, breaking loop")
+                            break
+
+                        mixin_metrics.record_consumer_empty_queue_wait(
+                            task_name=getattr(self, "name", self.__class__.__name__),
+                            wait_count=empty_count,
+                        )
+                        await utils.backoff_async(
+                            backoff=policy.fetch.empty.backoff,
+                            multiplier=policy.fetch.empty.backoff_multiplier,
+                            cap=policy.fetch.empty.backoff_cap,
+                            attempt=empty_count,
+                        )
+                        empty_count += 1
+                except BaseException:
+                    for task in in_flight:
+                        task.cancel()
+                    if in_flight:
+                        await asyncio.gather(*in_flight, return_exceptions=True)
+                    raise
+
+                elapsed_time = time.perf_counter() - start_time
+                logger.info(
+                    "[Consume continuous] Finished. Processed=%d in %.2f seconds",
+                    processed,
+                    elapsed_time,
+                )
+                return processed
+
+            if policy.loop.mode == "continuous":
+                return await _consume_continuous()
+
             while True:
                 batch_number += 1
 
                 # ============================================================
                 #  FETCH
                 # ============================================================
-                logger.info(f"Fetching transactions batch with fetch policy: {policy.fetch.model_dump_json(indent=2)}")
+                logger.debug(f"Fetching transactions batch with fetch policy: {policy.fetch.model_dump_json(indent=2)}")
                 success, result = await self._handle_fetch(conn, policy.fetch)
 
                 if not success:
@@ -941,7 +1069,7 @@ class AsyncConsumerMixin(ABC):
                 else:
                     batch_context = None  # Use current context
 
-                logger.info(
+                logger.debug(
                     f"Starting batch processing of "
                     f"{len(transactions)} transaction(s) "
                     f"from fetch handler with "
