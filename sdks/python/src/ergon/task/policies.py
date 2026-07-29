@@ -170,6 +170,9 @@ class ConsumerLoopPolicy(BaseModel):
     @field_validator("mode", mode="before")
     @classmethod
     def _normalize_mode(cls, v):
+        v = _normalize_optional(v)
+        if v is None:
+            return "batch"
         return v.strip().lower() if isinstance(v, str) else v
 
     @field_validator("timeout", "limit", mode="before")

@@ -938,6 +938,17 @@ class AsyncConsumerMixin(ABC):
 
                         if not success:
                             logger.error("Fetch failed → %s", result)
+                            # Unlike shutdown/cancellation, a fetch failure must not
+                            # cancel work already in progress: let in-flight
+                            # transactions finish (bounded by the transaction
+                            # runtime timeout) before propagating the failure.
+                            if in_flight:
+                                logger.warning(
+                                    "Fetch failed with %d transaction(s) in flight; draining before raising",
+                                    len(in_flight),
+                                )
+                                await asyncio.gather(*in_flight, return_exceptions=True)
+                                in_flight.clear()
                             if isinstance(result, (asyncio.TimeoutError, futures.TimeoutError)):
                                 raise exceptions.FetchTimeoutException(str(result))
                             raise exceptions.FetchException(str(result))

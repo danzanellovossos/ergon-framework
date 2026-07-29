@@ -546,6 +546,38 @@ class TestConsumeContinuous:
         assert mock_backoff.call_count == 2
         assert [call.kwargs["attempt"] for call in mock_backoff.call_args_list] == [0, 1]
 
+    async def test_fetch_failure_drains_in_flight_before_raising(self):
+        completed = []
+
+        class FailingConnector(MockAsyncConnector):
+            calls = 0
+
+            async def fetch_transactions_async(self, batch_size=1, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return await super().fetch_transactions_async(batch_size, **kwargs)
+                raise RuntimeError("connection lost")
+
+        async def process(tx):
+            await asyncio.sleep(0.05)
+            completed.append(tx.id)
+            return tx.payload
+
+        conn = FailingConnector(make_transactions(2))
+        consumer = MockAsyncConsumer(connectors={"default": conn}, process_fn=process)
+        policy = policies.ConsumerPolicy(
+            loop=policies.ConsumerLoopPolicy(
+                mode="continuous",
+                streaming=True,
+                concurrency=policies.ConcurrencyPolicy(value=2),
+            ),
+        )
+
+        with pytest.raises(exceptions.FetchException):
+            await consumer.consume_transactions(policy=policy)
+
+        assert sorted(completed) == ["0", "1"]
+
     async def test_limit_stops_fetching_and_drains_submitted_work(self):
         conn = MockAsyncConnector(make_transactions(20))
         consumer = MockAsyncConsumer(connectors={"default": conn})
