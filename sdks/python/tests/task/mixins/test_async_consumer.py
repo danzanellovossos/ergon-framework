@@ -428,6 +428,175 @@ class TestConsumeStreaming:
 
 
 # =====================================================================
+#   Consume loop — continuous refill
+# =====================================================================
+
+
+class TestConsumeContinuous:
+    async def test_refills_while_slow_transaction_is_running(self):
+        slow_running = asyncio.Event()
+        release_slow = asyncio.Event()
+        refilled_while_slow = False
+
+        class TrackingConnector(MockAsyncConnector):
+            async def fetch_transactions_async(self, batch_size=1, **kwargs):
+                nonlocal refilled_while_slow
+                if slow_running.is_set() and not release_slow.is_set():
+                    refilled_while_slow = True
+                    release_slow.set()
+                return await super().fetch_transactions_async(batch_size, **kwargs)
+
+        async def process(tx):
+            if tx.id == "0":
+                slow_running.set()
+                await release_slow.wait()
+            else:
+                await asyncio.sleep(0.01)
+            return tx.payload
+
+        conn = TrackingConnector(make_transactions(4))
+        consumer = MockAsyncConsumer(connectors={"default": conn}, process_fn=process)
+        policy = policies.ConsumerPolicy(
+            fetch=policies.FetchPolicy(batch=policies.BatchPolicy(size=1)),
+            loop=policies.ConsumerLoopPolicy(
+                mode="continuous",
+                concurrency=policies.ConcurrencyPolicy(value=2),
+            ),
+        )
+
+        result = await asyncio.wait_for(consumer.consume_transactions(policy=policy), timeout=1)
+
+        assert result == 4
+        assert refilled_while_slow is True
+
+    async def test_never_exceeds_concurrency_bound(self):
+        active = 0
+        peak = 0
+
+        async def tracked_process(tx):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return tx.payload
+
+        conn = MockAsyncConnector(make_transactions(9))
+        consumer = MockAsyncConsumer(connectors={"default": conn}, process_fn=tracked_process)
+        policy = policies.ConsumerPolicy(
+            loop=policies.ConsumerLoopPolicy(
+                mode="continuous",
+                concurrency=policies.ConcurrencyPolicy(value=3),
+            ),
+        )
+
+        result = await consumer.consume_transactions(policy=policy)
+
+        assert result == 9
+        assert peak == 3
+
+    async def test_non_streaming_drains_queue_and_in_flight_work(self):
+        completed = []
+
+        async def process(tx):
+            await asyncio.sleep(0.01)
+            completed.append(tx.id)
+            return tx.payload
+
+        conn = MockAsyncConnector(make_transactions(7))
+        consumer = MockAsyncConsumer(connectors={"default": conn}, process_fn=process)
+        policy = policies.ConsumerPolicy(
+            loop=policies.ConsumerLoopPolicy(
+                mode="continuous",
+                concurrency=policies.ConcurrencyPolicy(value=3),
+            ),
+        )
+
+        result = await consumer.consume_transactions(policy=policy)
+
+        assert result == 7
+        assert sorted(completed, key=int) == [str(i) for i in range(7)]
+        assert conn._queue == []
+
+    @patch("ergon.task.utils.backoff_async")
+    async def test_streaming_backs_off_then_resumes(self, mock_backoff):
+        conn = MockAsyncConnector([])
+
+        def refill(*args, **kwargs):
+            if mock_backoff.call_count == 2:
+                conn._queue.extend(make_transactions(2))
+
+        mock_backoff.side_effect = refill
+        consumer = MockAsyncConsumer(connectors={"default": conn})
+        policy = policies.ConsumerPolicy(
+            fetch=policies.FetchPolicy(
+                empty=policies.EmptyFetchPolicy(backoff=0.01),
+            ),
+            loop=policies.ConsumerLoopPolicy(
+                mode="continuous",
+                streaming=True,
+                limit=2,
+                concurrency=policies.ConcurrencyPolicy(value=2),
+            ),
+        )
+
+        result = await consumer.consume_transactions(policy=policy)
+
+        assert result == 2
+        assert mock_backoff.call_count == 2
+        assert [call.kwargs["attempt"] for call in mock_backoff.call_args_list] == [0, 1]
+
+    async def test_fetch_failure_drains_in_flight_before_raising(self):
+        completed = []
+
+        class FailingConnector(MockAsyncConnector):
+            calls = 0
+
+            async def fetch_transactions_async(self, batch_size=1, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return await super().fetch_transactions_async(batch_size, **kwargs)
+                raise RuntimeError("connection lost")
+
+        async def process(tx):
+            await asyncio.sleep(0.05)
+            completed.append(tx.id)
+            return tx.payload
+
+        conn = FailingConnector(make_transactions(2))
+        consumer = MockAsyncConsumer(connectors={"default": conn}, process_fn=process)
+        policy = policies.ConsumerPolicy(
+            loop=policies.ConsumerLoopPolicy(
+                mode="continuous",
+                streaming=True,
+                concurrency=policies.ConcurrencyPolicy(value=2),
+            ),
+        )
+
+        with pytest.raises(exceptions.FetchException):
+            await consumer.consume_transactions(policy=policy)
+
+        assert sorted(completed) == ["0", "1"]
+
+    async def test_limit_stops_fetching_and_drains_submitted_work(self):
+        conn = MockAsyncConnector(make_transactions(20))
+        consumer = MockAsyncConsumer(connectors={"default": conn})
+        policy = policies.ConsumerPolicy(
+            loop=policies.ConsumerLoopPolicy(
+                mode="continuous",
+                limit=5,
+                concurrency=policies.ConcurrencyPolicy(value=3),
+            ),
+        )
+
+        result = await consumer.consume_transactions(policy=policy)
+
+        assert result == 5
+        assert len(consumer.processed) == 5
+        assert len(conn._queue) == 15
+
+
+# =====================================================================
 #   Connector resolution
 # =====================================================================
 

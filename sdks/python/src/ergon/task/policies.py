@@ -1,4 +1,4 @@
-from typing import Optional, Union
+from typing import Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -161,10 +161,19 @@ class ExceptionPolicy(BaseModel):
 
 
 class ConsumerLoopPolicy(BaseModel):
+    mode: Literal["batch", "continuous"] = Field(default="batch")
     concurrency: ConcurrencyPolicy = Field(default_factory=ConcurrencyPolicy)
     timeout: Optional[float] = Field(default=None, ge=0)
     limit: Optional[int] = Field(default=None, ge=0)
     streaming: bool = Field(default=False)
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _normalize_mode(cls, v):
+        v = _normalize_optional(v)
+        if v is None:
+            return "batch"
+        return v.strip().lower() if isinstance(v, str) else v
 
     @field_validator("timeout", "limit", mode="before")
     @classmethod
