@@ -99,7 +99,9 @@ class AsyncRabbitMQService:
         # AMQP is push-based: one long-lived basic.consume registration per
         # queue feeds this local buffer. Broker QoS bounds the number of
         # unacknowledged deliveries, so fetches only drain memory.
-        self._delivery_buffer: asyncio.Queue[tuple[int, Dict[str, Any]]] = asyncio.Queue()
+        self._delivery_buffer: asyncio.Queue[tuple[int, Optional[Dict[str, Any]]]] = asyncio.Queue()
+        self._fetch_waiters = 0
+        self._closed = False
         self._consumer_setup_lock = asyncio.Lock()
         self._consumer_config_signature: Optional[str] = None
 
@@ -235,6 +237,7 @@ class AsyncRabbitMQService:
         self._consumer_epoch += 1
         self._consumer_state = "channel_dead"
         self._in_flight_message_ids.clear()
+        self._wake_pending_fetches()
         await self._close_channel_safely(channel, reason)
 
     async def _close_channel_safely(self, channel: Optional[AbstractChannel], reason: str) -> None:
@@ -265,6 +268,7 @@ class AsyncRabbitMQService:
         self._consumer_epoch += 1
         self._consumer_state = "channel_dead"
         self._in_flight_message_ids.clear()
+        self._wake_pending_fetches()
         if channel.is_closed:
             return
         try:
@@ -415,6 +419,8 @@ class AsyncRabbitMQService:
         """
         if batch_size <= 0:
             return []
+        if self._closed:
+            raise RuntimeError("RabbitMQ service is closed")
 
         self._last_poll_started_ts = time.time()
         self._consumer_state = "subscribing"
@@ -432,15 +438,22 @@ class AsyncRabbitMQService:
         buffer: List[Dict[str, Any]] = []
         try:
             self._consumer_state = "polling"
-            async with timeout_after(config.consume_timeout):
-                buffer.append(await self._next_current_delivery())
+            self._fetch_waiters += 1
+            try:
+                async with timeout_after(config.consume_timeout):
+                    first_delivery = await self._next_current_delivery()
+            finally:
+                self._fetch_waiters -= 1
+
+            if first_delivery is not None:
+                buffer.append(first_delivery)
 
             while len(buffer) < batch_size:
                 try:
                     epoch, delivery = self._delivery_buffer.get_nowait()
                 except asyncio.QueueEmpty:
                     break
-                if epoch == self._consumer_epoch:
+                if epoch == self._consumer_epoch and delivery is not None:
                     buffer.append(delivery)
         except TimeoutError:
             poll_completed = True
@@ -451,12 +464,15 @@ class AsyncRabbitMQService:
                 await self._teardown_consume_channel("consume channel observed closed after iteration")
             if poll_completed:
                 self._last_poll_completed_ts = time.time()
-                self._consumer_state = "polling"
+                if not self._closed:
+                    self._consumer_state = "polling"
 
         return buffer
 
     async def _ensure_consumers(self, config: AsyncRabbitmqConsumerConfig) -> None:
         """Declare topology and register one persistent consumer per queue."""
+        if self._closed:
+            raise RuntimeError("RabbitMQ service is closed")
         signature = config.model_dump_json()
 
         async with self._consumer_setup_lock:
@@ -500,12 +516,10 @@ class AsyncRabbitMQService:
                         *,
                         delivery_queue_name: str = queue_name,
                         delivery_epoch: int = epoch,
-                        delivery_auto_ack: bool = config.auto_ack,
                     ) -> None:
                         if delivery_epoch != self._consumer_epoch:
                             return
-                        if not delivery_auto_ack:
-                            self._in_flight_message_ids.add(id(message))
+                        self._in_flight_message_ids.add(id(message))
                         self._last_fetch_ts = time.time()
                         self._consumer_state = "delivering"
                         self._delivery_buffer.put_nowait(
@@ -555,7 +569,12 @@ class AsyncRabbitMQService:
             return True
         return set(self._active_consumer_tags.values()).issubset(consumers)
 
-    async def _next_current_delivery(self) -> Dict[str, Any]:
+    def _wake_pending_fetches(self) -> None:
+        """Wake local buffer readers after channel teardown or shutdown."""
+        for _ in range(self._fetch_waiters):
+            self._delivery_buffer.put_nowait((self._consumer_epoch, None))
+
+    async def _next_current_delivery(self) -> Optional[Dict[str, Any]]:
         """Discard stale-epoch entries and return the next live delivery."""
         while True:
             epoch, delivery = await self._delivery_buffer.get()
@@ -718,6 +737,8 @@ class AsyncRabbitMQService:
     # ---------- Lifecycle ----------
 
     async def close(self) -> None:
+        self._closed = True
+        self._consumer_state = "closing"
         await self._teardown_consume_channel("service close")
 
         publish_channel = self._publish_channel
