@@ -1,11 +1,9 @@
 """Tests for AsyncRabbitMQService — connection lifecycle, consume, publish, ack/nack."""
 
 import asyncio
-import builtins
 import json
 import time
-from contextlib import asynccontextmanager
-from typing import Any, AsyncContextManager
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aio_pika.exceptions
@@ -58,11 +56,34 @@ def _mock_channel() -> AsyncMock:
     """Mock channel that mirrors the sync/async surface ``AsyncRabbitMQService`` uses."""
     channel = AsyncMock()
     channel.is_closed = False
-    # add_close_callback is a sync method on real aio_pika channels; using
-    # AsyncMock here would create unawaited-coroutine warnings.
+    channel.close_callbacks = MagicMock()
+    channel.close_callbacks.add = MagicMock()
+    # Legacy fallback is also synchronous on older aio-pika channels.
     channel.add_close_callback = MagicMock()
     channel.set_qos = AsyncMock()
     return channel
+
+
+def _mock_consumer_queue(
+    *,
+    name: str = "test-queue",
+    messages: list[Any] | None = None,
+    consumer_tag: str | None = None,
+) -> tuple[MagicMock, list[Any]]:
+    """Build a queue whose long-lived consumer can receive test deliveries."""
+    callbacks: list[Any] = []
+
+    async def consume(callback, **_kwargs):
+        callbacks.append(callback)
+        for message in messages or []:
+            await callback(message)
+        return consumer_tag or f"ctag-{name}"
+
+    queue = MagicMock()
+    queue.name = name
+    queue.consume = AsyncMock(side_effect=consume)
+    queue.bind = AsyncMock()
+    return queue, callbacks
 
 
 class TestClientUrl:
@@ -186,6 +207,23 @@ class TestConnection:
         mock_connect.assert_awaited_once()
 
     @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
+    async def test_consume_channel_registers_current_close_callback_api(self, mock_connect):
+        mock_channel = _mock_channel()
+        mock_conn = AsyncMock()
+        mock_conn.is_closed = False
+        mock_conn.channel = AsyncMock(return_value=mock_channel)
+        mock_connect.return_value = mock_conn
+
+        service = AsyncRabbitMQService(_make_client())
+        await service._get_consume_channel()
+
+        mock_channel.close_callbacks.add.assert_called_once_with(
+            service._on_consume_channel_close,
+            weak=True,
+        )
+        mock_channel.add_close_callback.assert_not_called()
+
+    @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
     async def test_ssl_connection(self, mock_connect):
         mock_conn = AsyncMock()
         mock_conn.is_closed = False
@@ -230,24 +268,14 @@ class TestConsume:
         with pytest.raises(ValueError, match="only once"):
             AsyncRabbitmqConsumerConfig(subscriptions=[duplicate, duplicate])
 
+    def test_prefetch_must_bound_the_delivery_buffer(self):
+        with pytest.raises(ValueError, match="greater than 0"):
+            AsyncRabbitmqConsumerConfig(queue_name="test-queue", prefetch_count=0)
+
     @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
     async def test_consume_returns_messages(self, mock_connect):
         msg = _mock_message()
-        iterator_kwargs: dict[str, Any] = {}
-
-        @asynccontextmanager
-        async def _iterator_cm(**kwargs):
-            iterator_kwargs.update(kwargs)
-
-            async def _gen():
-                yield msg
-
-            yield _gen()
-
-        mock_queue = MagicMock()
-        mock_queue.name = "test-queue"
-        mock_queue.iterator = _iterator_cm
-        mock_queue.bind = AsyncMock()
+        mock_queue, _callbacks = _mock_consumer_queue(messages=[msg])
 
         mock_exchange = AsyncMock()
         mock_exchange.name = "test-exchange"
@@ -275,25 +303,33 @@ class TestConsume:
         assert result[0]["body"] == {"key": "val"}
         assert result[0]["routing_key"] == "test.key"
         assert result[0]["delivery_tag"] == 1
-        assert iterator_kwargs == {"no_ack": False, "robust": False}
+        mock_queue.consume.assert_awaited_once()
+        _, consume_kwargs = mock_queue.consume.call_args
+        assert consume_kwargs == {"no_ack": False, "robust": False}
+
+    @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
+    async def test_auto_ack_delivery_is_not_tracked_as_in_flight(self, mock_connect):
+        mock_queue, _callbacks = _mock_consumer_queue(messages=[_mock_message()])
+        mock_channel = _mock_channel()
+        mock_channel.declare_queue = AsyncMock(return_value=mock_queue)
+        mock_conn = AsyncMock()
+        mock_conn.is_closed = False
+        mock_conn.channel = AsyncMock(return_value=mock_channel)
+        mock_connect.return_value = mock_conn
+
+        service = AsyncRabbitMQService(_make_client())
+        config = AsyncRabbitmqConsumerConfig(
+            queue_name="test-queue",
+            auto_ack=True,
+        )
+
+        assert len(await service.consume(config)) == 1
+        assert service.health()["in_flight_count"] == 0
 
     @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
     async def test_consume_returns_first_delivery_without_waiting_to_fill_batch(self, mock_connect):
         first_message = _mock_message(delivery_tag=1)
-        second_message = _mock_message(delivery_tag=2)
-        release_second = asyncio.Event()
-
-        @asynccontextmanager
-        async def _iterator_cm(**kwargs):
-            async def _gen():
-                yield first_message
-                await release_second.wait()
-                yield second_message
-
-            yield _gen()
-
-        mock_queue = MagicMock()
-        mock_queue.iterator = _iterator_cm
+        mock_queue, _callbacks = _mock_consumer_queue(messages=[first_message])
 
         mock_channel = _mock_channel()
         mock_channel.declare_queue = AsyncMock(return_value=mock_queue)
@@ -316,17 +352,7 @@ class TestConsume:
     @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
     async def test_consume_nonblocking_drains_immediately_available_messages(self, mock_connect):
         messages = [_mock_message(delivery_tag=index) for index in range(1, 4)]
-
-        @asynccontextmanager
-        async def _iterator_cm(**kwargs):
-            async def _gen():
-                for message in messages:
-                    yield message
-
-            yield _gen()
-
-        mock_queue = MagicMock()
-        mock_queue.iterator = _iterator_cm
+        mock_queue, _callbacks = _mock_consumer_queue(messages=messages)
 
         mock_channel = _mock_channel()
         mock_channel.declare_queue = AsyncMock(return_value=mock_queue)
@@ -349,29 +375,11 @@ class TestConsume:
     @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
     async def test_consume_merges_multiple_queue_subscriptions(self, mock_connect):
         first_message = _mock_message(routing_key="iam.created", delivery_tag=7)
-
-        @asynccontextmanager
-        async def _ready_iterator(**kwargs):
-            async def _gen():
-                yield first_message
-
-            yield _gen()
-
-        @asynccontextmanager
-        async def _idle_iterator(**kwargs):
-            async def _gen():
-                await asyncio.sleep(10)
-                return
-                yield
-
-            yield _gen()
-
-        queue_one = MagicMock()
-        queue_one.iterator = _ready_iterator
-        queue_one.bind = AsyncMock()
-        queue_two = MagicMock()
-        queue_two.iterator = _idle_iterator
-        queue_two.bind = AsyncMock()
+        queue_one, _callbacks_one = _mock_consumer_queue(
+            name="audit.iam",
+            messages=[first_message],
+        )
+        queue_two, _callbacks_two = _mock_consumer_queue(name="audit.cross-service")
 
         exchanges = {
             "iam": MagicMock(name="iam"),
@@ -428,20 +436,14 @@ class TestConsume:
 
     @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
     async def test_simultaneous_deliveries_do_not_exceed_batch_size(self, mock_connect):
-        def queue_with_message(message):
-            @asynccontextmanager
-            async def _iterator(**kwargs):
-                async def _gen():
-                    yield message
-
-                yield _gen()
-
-            queue = MagicMock()
-            queue.iterator = _iterator
-            return queue
-
-        queue_one = queue_with_message(_mock_message(delivery_tag=1))
-        queue_two = queue_with_message(_mock_message(delivery_tag=2))
+        queue_one, _callbacks_one = _mock_consumer_queue(
+            name="one",
+            messages=[_mock_message(delivery_tag=1)],
+        )
+        queue_two, _callbacks_two = _mock_consumer_queue(
+            name="two",
+            messages=[_mock_message(delivery_tag=2)],
+        )
         mock_channel = _mock_channel()
         mock_channel.declare_queue = AsyncMock(side_effect=[queue_one, queue_two])
 
@@ -475,18 +477,7 @@ class TestConsume:
         TTL configuration a no-op in production.
         """
 
-        @asynccontextmanager
-        async def _iterator_cm(**kwargs):
-            async def _gen():
-                await asyncio.sleep(10)
-                return
-                yield  # make it an async generator
-
-            yield _gen()
-
-        mock_queue = MagicMock()
-        mock_queue.name = "test-queue"
-        mock_queue.iterator = _iterator_cm
+        mock_queue, _callbacks = _mock_consumer_queue()
 
         mock_channel = _mock_channel()
         mock_channel.declare_queue = AsyncMock(return_value=mock_queue)
@@ -526,18 +517,7 @@ class TestConsume:
         PRECONDITION_FAILED on inequivalent args).
         """
 
-        @asynccontextmanager
-        async def _iterator_cm(**kwargs):
-            async def _gen():
-                await asyncio.sleep(10)
-                return
-                yield
-
-            yield _gen()
-
-        mock_queue = MagicMock()
-        mock_queue.name = "test-queue"
-        mock_queue.iterator = _iterator_cm
+        mock_queue, _callbacks = _mock_consumer_queue()
 
         mock_channel = _mock_channel()
         mock_channel.declare_queue = AsyncMock(return_value=mock_queue)
@@ -579,18 +559,7 @@ class TestConsume:
 
     @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
     async def test_consume_empty_queue_timeout(self, mock_connect):
-        @asynccontextmanager
-        async def _iterator_cm(**kwargs):
-            async def _gen():
-                await asyncio.sleep(10)
-                return
-                yield  # make it an async generator
-
-            yield _gen()
-
-        mock_queue = MagicMock()
-        mock_queue.name = "test-queue"
-        mock_queue.iterator = _iterator_cm
+        mock_queue, _callbacks = _mock_consumer_queue()
 
         mock_channel = _mock_channel()
         mock_channel.declare_queue = AsyncMock(return_value=mock_queue)
@@ -680,23 +649,8 @@ class TestConsume:
             await service.consume(config, batch_size=10)
 
     @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
-    async def test_consume_bounds_iterator_cleanup_when_broker_is_unresponsive(self, mock_connect):
-        class HangingIteratorContext:
-            async def __aenter__(self):
-                async def _gen():
-                    await asyncio.sleep(10)
-                    return
-                    yield
-
-                return _gen()
-
-            async def __aexit__(self, exc_type, exc, traceback):
-                await asyncio.sleep(10)
-
-        mock_queue = MagicMock()
-        mock_queue.name = "test-queue"
-        mock_queue.iterator.return_value = HangingIteratorContext()
-
+    async def test_repeated_fetches_reuse_one_registered_consumer(self, mock_connect):
+        mock_queue, _callbacks = _mock_consumer_queue()
         mock_channel = _mock_channel()
         mock_channel.declare_queue = AsyncMock(return_value=mock_queue)
 
@@ -705,44 +659,58 @@ class TestConsume:
         mock_conn.channel = AsyncMock(return_value=mock_channel)
         mock_connect.return_value = mock_conn
 
-        service = AsyncRabbitMQService(_make_client(channel_timeout=0.1))
+        service = AsyncRabbitMQService(_make_client())
         config = AsyncRabbitmqConsumerConfig(
             queue_name="test-queue",
-            consume_timeout=0.05,
+            consume_timeout=0.001,
         )
 
-        started = time.monotonic()
-        result = await asyncio.wait_for(service.consume(config, batch_size=10), timeout=0.5)
+        for _ in range(100):
+            assert await service.consume(config, batch_size=10) == []
 
-        assert result == []
-        assert time.monotonic() - started < 0.5
-        mock_channel.close.assert_awaited_once()
+        mock_queue.consume.assert_awaited_once()
+        assert mock_queue.iterator.call_count == 0
+        assert service.health()["active_consumer_tags"] == {"test-queue": "ctag-test-queue"}
+
+    @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
+    async def test_broker_cancelled_consumer_is_rebuilt_on_next_fetch(self, mock_connect):
+        first_queue, _first_callbacks = _mock_consumer_queue(consumer_tag="ctag-old")
+        second_queue, _second_callbacks = _mock_consumer_queue(
+            messages=[_mock_message(delivery_tag=2)],
+            consumer_tag="ctag-new",
+        )
+        underlay_channel = MagicMock()
+        underlay_channel.consumers = {"ctag-old": MagicMock()}
+
+        first_channel = _mock_channel()
+        first_channel.declare_queue = AsyncMock(return_value=first_queue)
+        first_channel.get_underlay_channel = AsyncMock(return_value=underlay_channel)
+        second_channel = _mock_channel()
+        second_channel.declare_queue = AsyncMock(return_value=second_queue)
+
+        mock_conn = AsyncMock()
+        mock_conn.is_closed = False
+        mock_conn.channel = AsyncMock(side_effect=[first_channel, second_channel])
+        mock_connect.return_value = mock_conn
+
+        service = AsyncRabbitMQService(_make_client())
+        config = AsyncRabbitmqConsumerConfig(
+            queue_name="test-queue",
+            consume_timeout=0.001,
+        )
+
+        assert await service.consume(config) == []
+        underlay_channel.consumers.clear()
+        result = await service.consume(config)
+
+        assert result[0]["delivery_tag"] == 2
+        first_channel.close.assert_awaited_once()
+        assert service.health()["active_consumer_tags"] == {"test-queue": "ctag-new"}
         assert service.health()["consumer_epoch"] == 1
 
     @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
-    async def test_consume_bounds_pending_iterator_cancellation(self, mock_connect):
-        class StubbornIterator:
-            def __aiter__(self):
-                return self
-
-            async def __anext__(self):
-                try:
-                    await asyncio.sleep(10)
-                except asyncio.CancelledError:
-                    await asyncio.sleep(10)
-                raise StopAsyncIteration
-
-        class IteratorContext:
-            async def __aenter__(self):
-                return StubbornIterator()
-
-            async def __aexit__(self, exc_type, exc, traceback):
-                return None
-
-        mock_queue = MagicMock()
-        mock_queue.name = "test-queue"
-        mock_queue.iterator.return_value = IteratorContext()
-
+    async def test_cancelled_fetch_keeps_subscription_alive(self, mock_connect):
+        mock_queue, callbacks = _mock_consumer_queue()
         mock_channel = _mock_channel()
         mock_channel.declare_queue = AsyncMock(return_value=mock_queue)
 
@@ -751,53 +719,56 @@ class TestConsume:
         mock_conn.channel = AsyncMock(return_value=mock_channel)
         mock_connect.return_value = mock_conn
 
-        service = AsyncRabbitMQService(_make_client(channel_timeout=0.1))
+        service = AsyncRabbitMQService(_make_client())
         config = AsyncRabbitmqConsumerConfig(
             queue_name="test-queue",
-            consume_timeout=0.05,
+            consume_timeout=10,
         )
 
-        started = time.monotonic()
-        result = await asyncio.wait_for(service.consume(config, batch_size=10), timeout=0.5)
+        waiting_fetch = asyncio.create_task(service.consume(config, batch_size=1))
+        await asyncio.sleep(0)
+        waiting_fetch.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting_fetch
 
-        assert result == []
-        assert time.monotonic() - started < 0.5
-        mock_channel.close.assert_awaited_once()
-        assert service.health()["consumer_epoch"] == 1
+        await callbacks[0](_mock_message(delivery_tag=42))
+        result = await service.consume(config, batch_size=1)
 
-    async def test_iterator_cleanup_continues_after_exception_group(self):
-        exception_group_type = getattr(builtins, "ExceptionGroup", None)
-        if exception_group_type is None:
-            pytest.skip("ExceptionGroup requires Python 3.11+")
+        assert result[0]["delivery_tag"] == 42
+        mock_queue.consume.assert_awaited_once()
 
-        closed: list[str] = []
+    @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
+    async def test_teardown_discards_buffer_and_stale_epoch_deliveries(self, mock_connect):
+        first_queue, first_callbacks = _mock_consumer_queue(name="test-queue", consumer_tag="ctag-old")
+        second_queue, second_callbacks = _mock_consumer_queue(name="test-queue", consumer_tag="ctag-new")
+        first_channel = _mock_channel()
+        first_channel.declare_queue = AsyncMock(return_value=first_queue)
+        second_channel = _mock_channel()
+        second_channel.declare_queue = AsyncMock(return_value=second_queue)
 
-        class IteratorContext:
-            def __init__(self, name: str, *, fail: bool = False):
-                self.name = name
-                self.fail = fail
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, exc_type, exc, traceback):
-                closed.append(self.name)
-                if self.fail:
-                    raise exception_group_type(
-                        "buffered message cleanup failed",
-                        [RuntimeError("nack failed")],
-                    )
+        mock_conn = AsyncMock()
+        mock_conn.is_closed = False
+        mock_conn.channel = AsyncMock(side_effect=[first_channel, second_channel])
+        mock_connect.return_value = mock_conn
 
         service = AsyncRabbitMQService(_make_client())
-        contexts: list[AsyncContextManager[Any]] = [
-            IteratorContext("remaining"),
-            IteratorContext("failing", fail=True),
-        ]
+        config = AsyncRabbitmqConsumerConfig(
+            queue_name="test-queue",
+            consume_timeout=0.01,
+        )
 
-        cleanup_failed = await service._close_iterator_contexts(contexts)
+        await service.consume(config)
+        await first_callbacks[0](_mock_message(delivery_tag=1))
+        await service._teardown_consume_channel("test reset")
+        await first_callbacks[0](_mock_message(delivery_tag=2))
+        assert service.health()["buffered_delivery_count"] == 0
 
-        assert cleanup_failed is True
-        assert closed == ["failing", "remaining"]
+        setup_fetch = asyncio.create_task(service.consume(config))
+        await asyncio.sleep(0)
+        await second_callbacks[0](_mock_message(delivery_tag=3))
+        result = await setup_fetch
+
+        assert [message["delivery_tag"] for message in result] == [3]
 
 
 class TestPublish:
