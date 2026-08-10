@@ -125,6 +125,7 @@ class AsyncRabbitmqConsumerConfig(BaseModel):
     )
     prefetch_count: int = Field(
         default=10,
+        gt=0,
         description=(
             "Number of unacknowledged messages allowed. Recommended: set equal to the "
             "consumer loop concurrency. A prefetch larger than concurrency lets idle "
