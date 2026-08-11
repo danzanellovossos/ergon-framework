@@ -6,15 +6,23 @@ This guide walks you through setting up a project with the Ergon Python SDK—fr
 
 ## Installation
 
-Ergon is not yet published to PyPI. To use the framework, clone the repository and install it as a local dependency.
-
-### Clone the Repository
+Install the core framework from PyPI:
 
 ```bash
-git clone https://github.com/your-org/ergon-framework.git
+pip install ergon-framework-python
 ```
 
-### Install as a Path Dependency
+Connector client libraries are optional. Select only the integrations the application uses:
+
+```bash
+pip install 'ergon-framework-python[rabbitmq,postgres]'
+```
+
+Available connector extras are `rabbitmq`, `sqs`, `postgres`, `pipefy`, `excel`,
+`ergon-platform`, and `nylas`. Use `ergon-framework-python[all]` for every bundled
+connector.
+
+### Local Development
 
 Add Ergon to your project's `pyproject.toml`:
 

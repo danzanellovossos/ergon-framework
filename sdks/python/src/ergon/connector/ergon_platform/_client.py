@@ -1,6 +1,9 @@
 from .models import ErgonPlatformClient
 
-_ERGON_PLATFORM_IMPORT_ERROR = "Install the ergon-platform-sdk package in the same environment"
+_ERGON_PLATFORM_IMPORT_ERROR = (
+    "The 'ergon-platform' connector dependencies are not installed. "
+    "Install them with: pip install 'ergon-framework-python[ergon-platform]'"
+)
 
 
 def _get_ergon_client():

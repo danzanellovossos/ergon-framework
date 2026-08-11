@@ -14,6 +14,18 @@
 pip install ergon-framework-python
 ```
 
+Connector integrations are optional extras, so a core installation does not
+pull in client libraries that your application does not use:
+
+```bash
+pip install 'ergon-framework-python[rabbitmq]'
+pip install 'ergon-framework-python[sqs,postgres]'
+pip install 'ergon-framework-python[all]'
+```
+
+Available extras are `rabbitmq`, `sqs`, `postgres`, `pipefy`, `excel`,
+`ergon-platform`, and `nylas`.
+
 For local development, install in editable mode:
 
 ```bash

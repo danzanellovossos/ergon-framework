@@ -1,62 +1,134 @@
+from typing import TYPE_CHECKING, Any
+
+from ._lazy import exported_names, load_export
 from .connector import AsyncConnector, Connector, ConnectorConfig
-from .ergon_platform import (
-    AsyncErgonPlatformConnector,
-    CreateItemInput,
-    ErgonPlatformClient,
-    ErgonPlatformConnector,
-    ErgonPlatformConsumerConfig,
-    ErgonPlatformProducerConfig,
-)
-from .excel import ExcelConnector, ExcelFetchConfig, ExcelRow, ExcelService
-from .nylas import (
-    AckActionConfig,
-    AsyncNylasAuthService,
-    AsyncNylasConnector,
-    AsyncNylasService,
-    AuthUrlConfig,
-    CodeExchangeInput,
-    GrantAuthResult,
-    MessageQueryFilter,
-    NylasAuthClient,
-    NylasAuthService,
-    NylasClient,
-    NylasConnector,
-    NylasConsumerConfig,
-    NylasProducerConfig,
-    NylasService,
-    SendMessageInput,
-)
-from .postgres import (
-    AsyncPostgresConnector,
-    AsyncPostgresService,
-    PostgresClient,
-    PostgresConsumerConfig,
-    PostgresProducerConfig,
-)
-from .rabbitmq import (
-    AsyncRabbitmqClient,
-    AsyncRabbitMQConnector,
-    AsyncRabbitmqConsumerConfig,
-    AsyncRabbitmqExchangeBinding,
-    AsyncRabbitmqProducerConfig,
-    AsyncRabbitmqQueueSubscription,
-    AsyncRabbitMQService,
-    RabbitmqClient,
-    RabbitMQConnector,
-    RabbitmqConsumerMessage,
-    RabbitmqProducerMessage,
-    RabbitMQService,
-)
-from .sqs import (
-    AsyncSQSConnector,
-    AsyncSQSService,
-    SQSClient,
-    SQSConnector,
-    SQSConsumerConfig,
-    SQSProducerConfig,
-    SQSService,
-)
 from .transaction import Transaction
+
+if TYPE_CHECKING:
+    from .ergon_platform import (
+        AsyncErgonPlatformConnector,
+        CreateItemInput,
+        ErgonPlatformClient,
+        ErgonPlatformConnector,
+        ErgonPlatformConsumerConfig,
+        ErgonPlatformProducerConfig,
+    )
+    from .excel import ExcelConnector, ExcelFetchConfig, ExcelRow, ExcelService
+    from .nylas import (
+        AckActionConfig,
+        AsyncNylasAuthService,
+        AsyncNylasConnector,
+        AsyncNylasService,
+        AuthUrlConfig,
+        CodeExchangeInput,
+        GrantAuthResult,
+        MessageQueryFilter,
+        NylasAuthClient,
+        NylasAuthService,
+        NylasClient,
+        NylasConnector,
+        NylasConsumerConfig,
+        NylasProducerConfig,
+        NylasService,
+        SendMessageInput,
+    )
+    from .postgres import (
+        AsyncPostgresConnector,
+        AsyncPostgresService,
+        PostgresClient,
+        PostgresConsumerConfig,
+        PostgresProducerConfig,
+    )
+    from .rabbitmq import (
+        AsyncRabbitmqClient,
+        AsyncRabbitMQConnector,
+        AsyncRabbitmqConsumerConfig,
+        AsyncRabbitmqExchangeBinding,
+        AsyncRabbitmqProducerConfig,
+        AsyncRabbitmqQueueSubscription,
+        AsyncRabbitMQService,
+        RabbitmqClient,
+        RabbitMQConnector,
+        RabbitmqConsumerMessage,
+        RabbitmqProducerMessage,
+        RabbitMQService,
+    )
+    from .sqs import (
+        AsyncSQSConnector,
+        AsyncSQSService,
+        SQSClient,
+        SQSConnector,
+        SQSConsumerConfig,
+        SQSProducerConfig,
+        SQSService,
+    )
+
+_LAZY_EXPORTS = {
+    "AckActionConfig": "nylas",
+    "AsyncErgonPlatformConnector": "ergon_platform",
+    "AsyncNylasAuthService": "nylas",
+    "AsyncNylasConnector": "nylas",
+    "AsyncNylasService": "nylas",
+    "AsyncPostgresConnector": "postgres",
+    "AsyncPostgresService": "postgres",
+    "AsyncRabbitMQConnector": "rabbitmq",
+    "AsyncRabbitMQService": "rabbitmq",
+    "AsyncRabbitmqClient": "rabbitmq",
+    "AsyncRabbitmqConsumerConfig": "rabbitmq",
+    "AsyncRabbitmqExchangeBinding": "rabbitmq",
+    "AsyncRabbitmqProducerConfig": "rabbitmq",
+    "AsyncRabbitmqQueueSubscription": "rabbitmq",
+    "AsyncSQSConnector": "sqs",
+    "AsyncSQSService": "sqs",
+    "AuthUrlConfig": "nylas",
+    "CodeExchangeInput": "nylas",
+    "CreateItemInput": "ergon_platform",
+    "ErgonPlatformClient": "ergon_platform",
+    "ErgonPlatformConnector": "ergon_platform",
+    "ErgonPlatformConsumerConfig": "ergon_platform",
+    "ErgonPlatformProducerConfig": "ergon_platform",
+    "ExcelConnector": "excel",
+    "ExcelFetchConfig": "excel",
+    "ExcelRow": "excel",
+    "ExcelService": "excel",
+    "GrantAuthResult": "nylas",
+    "MessageQueryFilter": "nylas",
+    "NylasAuthClient": "nylas",
+    "NylasAuthService": "nylas",
+    "NylasClient": "nylas",
+    "NylasConnector": "nylas",
+    "NylasConsumerConfig": "nylas",
+    "NylasProducerConfig": "nylas",
+    "NylasService": "nylas",
+    "PostgresClient": "postgres",
+    "PostgresConsumerConfig": "postgres",
+    "PostgresProducerConfig": "postgres",
+    "RabbitMQConnector": "rabbitmq",
+    "RabbitMQService": "rabbitmq",
+    "RabbitmqClient": "rabbitmq",
+    "RabbitmqConsumerMessage": "rabbitmq",
+    "RabbitmqProducerMessage": "rabbitmq",
+    "SQSClient": "sqs",
+    "SQSConnector": "sqs",
+    "SQSConsumerConfig": "sqs",
+    "SQSProducerConfig": "sqs",
+    "SQSService": "sqs",
+    "SendMessageInput": "nylas",
+}
+
+
+def __getattr__(name: str) -> Any:
+    return load_export(
+        name=name,
+        package=__name__,
+        exports=_LAZY_EXPORTS,
+        namespace=globals(),
+    )
+
+
+def __dir__() -> list[str]:
+    return exported_names(globals(), _LAZY_EXPORTS)
+
 
 __all__ = [
     "AckActionConfig",
