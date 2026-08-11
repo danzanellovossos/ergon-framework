@@ -134,7 +134,10 @@ class AsyncRabbitmqConsumerConfig(BaseModel):
         ),
     )
     durable: bool = Field(default=True, description="Durable exchange and queue declarations")
-    auto_ack: bool = Field(default=False, description="Automatically acknowledge messages on delivery")
+    auto_ack: bool = Field(
+        default=False,
+        description="Must remain false so broker prefetch provides bounded delivery backpressure",
+    )
     consume_timeout: float = Field(default=2.0, description="Max seconds to wait per fetch call")
     queue_arguments: dict[str, Any] = Field(
         default_factory=dict,
@@ -151,6 +154,10 @@ class AsyncRabbitmqConsumerConfig(BaseModel):
     def validate_subscriptions(self) -> "AsyncRabbitmqConsumerConfig":
         if self.queue_name is None and not self.subscriptions:
             raise ValueError("At least one queue_name or subscription is required")
+        if self.auto_ack:
+            raise ValueError(
+                "Async RabbitMQ consumers require manual acknowledgments; auto_ack=True bypasses prefetch backpressure"
+            )
 
         queue_names = [subscription.queue_name for subscription in self.subscriptions]
         if self.queue_name is not None:

@@ -307,24 +307,12 @@ class TestConsume:
         _, consume_kwargs = mock_queue.consume.call_args
         assert consume_kwargs == {"no_ack": False, "robust": False}
 
-    @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
-    async def test_auto_ack_delivery_is_not_tracked_as_in_flight(self, mock_connect):
-        mock_queue, _callbacks = _mock_consumer_queue(messages=[_mock_message()])
-        mock_channel = _mock_channel()
-        mock_channel.declare_queue = AsyncMock(return_value=mock_queue)
-        mock_conn = AsyncMock()
-        mock_conn.is_closed = False
-        mock_conn.channel = AsyncMock(return_value=mock_channel)
-        mock_connect.return_value = mock_conn
-
-        service = AsyncRabbitMQService(_make_client())
-        config = AsyncRabbitmqConsumerConfig(
-            queue_name="test-queue",
-            auto_ack=True,
-        )
-
-        assert len(await service.consume(config)) == 1
-        assert service.health()["in_flight_count"] == 0
+    def test_auto_ack_is_rejected_without_broker_backpressure(self):
+        with pytest.raises(ValueError, match="bypasses prefetch backpressure"):
+            AsyncRabbitmqConsumerConfig(
+                queue_name="test-queue",
+                auto_ack=True,
+            )
 
     @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
     async def test_consume_returns_first_delivery_without_waiting_to_fill_batch(self, mock_connect):
@@ -833,6 +821,34 @@ class TestClose:
         assert service._connection is None
         assert service._consume_channel is None
         assert service._publish_channel is None
+
+    @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
+    async def test_close_wakes_pending_fetch_without_overwriting_closed_state(self, mock_connect):
+        mock_queue, _callbacks = _mock_consumer_queue()
+        mock_channel = _mock_channel()
+        mock_channel.declare_queue = AsyncMock(return_value=mock_queue)
+        mock_conn = AsyncMock()
+        mock_conn.is_closed = False
+        mock_conn.channel = AsyncMock(return_value=mock_channel)
+        mock_conn.close = AsyncMock()
+        mock_connect.return_value = mock_conn
+
+        service = AsyncRabbitMQService(_make_client())
+        config = AsyncRabbitmqConsumerConfig(
+            queue_name="test-queue",
+            consume_timeout=30,
+        )
+        pending_fetch = asyncio.create_task(service.consume(config))
+        for _ in range(10):
+            if service._fetch_waiters:
+                break
+            await asyncio.sleep(0)
+
+        await service.close()
+        result = await asyncio.wait_for(pending_fetch, timeout=0.5)
+
+        assert result == []
+        assert service.health()["state"] == "closed"
 
     @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
     async def test_close_closes_both_channels(self, mock_connect):
