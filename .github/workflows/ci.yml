@@ -24,7 +24,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: sdks/python
-        run: uv sync --dev
+        run: uv sync --dev --all-extras
 
       - name: Ruff Lint (no autofix)
         working-directory: sdks/python
@@ -52,7 +52,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: sdks/python
-        run: uv sync --dev --extra nylas
+        run: uv sync --dev --all-extras
 
       - name: Pyright
         working-directory: sdks/python
@@ -76,8 +76,53 @@ jobs:
 
       - name: Install dependencies
         working-directory: sdks/python
-        run: uv sync --dev
+        run: uv sync --dev --all-extras
 
       - name: Pytest
         working-directory: sdks/python
         run: uv run pytest -v
+
+  minimal-install:
+    name: Minimal install
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install framework without connector extras
+        working-directory: sdks/python
+        run: |
+          uv venv --python 3.10 .venv-minimal
+          uv pip install --python .venv-minimal/bin/python .
+
+      - name: Verify core import and optional dependency error
+        working-directory: sdks/python
+        run: |
+          .venv-minimal/bin/python - <<'PY'
+          import sys
+
+          import ergon
+          from ergon.connector import Connector, Transaction
+
+          assert Connector is not None
+          assert Transaction is not None
+          assert "aio_pika" not in sys.modules
+          assert "asyncpg" not in sys.modules
+          assert "boto3" not in sys.modules
+          assert "httpx" not in sys.modules
+          assert "nylas" not in sys.modules
+          assert "openpyxl" not in sys.modules
+          assert "pika" not in sys.modules
+          assert "requests" not in sys.modules
+
+          try:
+              from ergon.connector import RabbitMQConnector
+          except ImportError as exc:
+              assert "ergon-framework-python[rabbitmq]" in str(exc)
+          else:
+              raise AssertionError("RabbitMQConnector imported without its optional extra")
+          PY

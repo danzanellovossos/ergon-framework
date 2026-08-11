@@ -22,11 +22,14 @@ Ergon is a language-agnostic framework specification with official SDK implement
 
 ### Quick Install (Python)
 
-Ergon is not yet published to PyPI. Clone the repository and install as a local dependency:
+```bash
+pip install ergon-framework-python
+```
+
+Connector integrations are optional. Install only the ones your application uses:
 
 ```bash
-git clone https://github.com/your-org/ergon-framework.git
-pip install -e /path/to/ergon-framework/sdks/python
+pip install 'ergon-framework-python[rabbitmq,postgres]'
 ```
 
 ### Running Tasks
