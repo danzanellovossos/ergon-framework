@@ -92,8 +92,6 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
 
       - name: Install framework without connector extras
         working-directory: sdks/python
