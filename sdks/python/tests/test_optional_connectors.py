@@ -6,12 +6,12 @@ import textwrap
 
 
 def _run_isolated(script: str) -> None:
-    subprocess.run(
+    result = subprocess.run(
         [sys.executable, "-c", textwrap.dedent(script)],
-        check=True,
         text=True,
         capture_output=True,
     )
+    assert result.returncode == 0, f"isolated script failed:\n{result.stdout}\n{result.stderr}"
 
 
 def test_core_import_does_not_load_connector_clients() -> None:
@@ -46,6 +46,18 @@ def test_connector_models_remain_available_without_loading_client() -> None:
         assert AsyncRabbitmqConsumerConfig is not None
         assert "aio_pika" not in sys.modules
         assert "pika" not in sys.modules
+        """
+    )
+
+
+def test_subpackages_are_reachable_as_module_attributes() -> None:
+    _run_isolated(
+        """
+        import ergon.connector
+
+        assert ergon.connector.rabbitmq.RabbitMQConnector is not None
+        assert ergon.connector.postgres.PostgresClient is not None
+        assert "rabbitmq" in dir(ergon.connector)
         """
     )
 

@@ -1,3 +1,4 @@
+from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
 from ._lazy import exported_names, load_export
@@ -63,6 +64,16 @@ if TYPE_CHECKING:
         SQSService,
     )
 
+_CONNECTOR_SUBPACKAGES = (
+    "ergon_platform",
+    "excel",
+    "nylas",
+    "pipefy",
+    "postgres",
+    "rabbitmq",
+    "sqs",
+)
+
 _LAZY_EXPORTS = {
     "AckActionConfig": "nylas",
     "AsyncErgonPlatformConnector": "ergon_platform",
@@ -118,6 +129,10 @@ _LAZY_EXPORTS = {
 
 
 def __getattr__(name: str) -> Any:
+    if name in _CONNECTOR_SUBPACKAGES:
+        module = import_module(f".{name}", __name__)
+        globals()[name] = module
+        return module
     return load_export(
         name=name,
         package=__name__,
@@ -127,7 +142,7 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return exported_names(globals(), _LAZY_EXPORTS)
+    return sorted(set(exported_names(globals(), _LAZY_EXPORTS)) | set(_CONNECTOR_SUBPACKAGES))
 
 
 __all__ = [
