@@ -128,6 +128,21 @@ class TestAckTransaction:
 
         mock_update.assert_not_called()
 
+    def test_ack_delete_skips_update(self):
+        ack = AckActionConfig(delete=True, mark_as_read=True, move_to_folder_id="processed-folder")
+        config = NylasConsumerConfig(ack_config=ack)
+        connector = _make_connector(consumer_config=config)
+        tx = Transaction(id="msg-1", payload={"id": "msg-1"})
+
+        with (
+            patch.object(connector.service, "delete_message") as mock_delete,
+            patch.object(connector.service, "update_message") as mock_update,
+        ):
+            connector.ack_transaction(tx)
+
+        mock_delete.assert_called_once_with("msg-1")
+        mock_update.assert_not_called()
+
 
 class TestFetchById:
     def test_fetch_transaction_by_id(self):

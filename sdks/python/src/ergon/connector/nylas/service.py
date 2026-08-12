@@ -259,6 +259,9 @@ class NylasService:
         data = extract_response_data(response)
         return data if isinstance(data, dict) else serialize_nylas_object(data)
 
+    def delete_message(self, message_id: str) -> None:
+        self._nylas.messages.destroy(self.grant_id, message_id)
+
     def list_folders(self) -> List[Dict[str, Any]]:
         response = self._nylas.folders.list(self.grant_id)
         data = extract_response_data(response) or []

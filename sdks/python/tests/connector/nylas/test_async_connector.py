@@ -113,3 +113,18 @@ class TestAckTransaction:
         connector = _make_connector(consumer_config=config)
         tx = Transaction(id="msg-1", payload={})
         await connector.nack_transaction(tx)
+
+    async def test_ack_delete_skips_update(self):
+        ack = AckActionConfig(delete=True, mark_as_read=True, add_star=True)
+        config = NylasConsumerConfig(ack_config=ack)
+        connector = _make_connector(consumer_config=config)
+        tx = Transaction(id="msg-1", payload={"id": "msg-1"})
+
+        with (
+            patch.object(connector.service, "delete_message", new_callable=AsyncMock) as mock_delete,
+            patch.object(connector.service, "update_message", new_callable=AsyncMock) as mock_update,
+        ):
+            await connector.ack_transaction(tx)
+
+        mock_delete.assert_awaited_once_with("msg-1")
+        mock_update.assert_not_awaited()

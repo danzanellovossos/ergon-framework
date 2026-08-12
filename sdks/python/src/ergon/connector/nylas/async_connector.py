@@ -112,6 +112,10 @@ class AsyncNylasConnector(AsyncConnector):
         if config is None:
             return
 
+        if config.delete:
+            await self.service.delete_message(transaction.id)
+            return
+
         body = build_ack_request_body(config)
         if not body:
             return

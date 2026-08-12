@@ -82,6 +82,13 @@ class AckActionConfig(BaseModel):
     move_to_folder_id: Optional[str] = Field(default=None, description="Folder ID to move message to")
     add_star: bool = Field(default=False, description="Star message on ack")
     archive: bool = Field(default=False, description="Archive message on ack (provider-specific)")
+    delete: bool = Field(
+        default=False,
+        description=(
+            "Permanently delete message on ack via messages.destroy. "
+            "When True, other ack actions (mark_as_read, move, star, archive) are skipped."
+        ),
+    )
 
 
 class NylasAuthClient(BaseModel):
