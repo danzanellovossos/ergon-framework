@@ -116,6 +116,9 @@ class AsyncNylasService:
     async def update_message(self, message_id: str, request_body: Dict[str, Any]) -> Dict[str, Any]:
         return await asyncio.to_thread(self._sync.update_message, message_id, request_body)
 
+    async def delete_message(self, message_id: str) -> None:
+        await asyncio.to_thread(self._sync.delete_message, message_id)
+
     async def list_folders(self) -> List[Dict[str, Any]]:
         return await asyncio.to_thread(self._sync.list_folders)
 

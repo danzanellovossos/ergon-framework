@@ -65,7 +65,7 @@ Após obter o `grant_id`, passe-o para `NylasClient` nas operações do connecto
 | `NylasClient` | Credenciais (`api_key`, `grant_id`, `api_uri`) |
 | `NylasConsumerConfig` | Filtros de fetch, batch, download de anexos, ack |
 | `NylasProducerConfig` | Modo de envio (`send` ou `draft`), remetente padrão |
-| `AckActionConfig` | Ações pós-processamento (marcar lido, mover pasta, star) |
+| `AckActionConfig` | Ações pós-processamento (marcar lido, mover pasta, star, delete) |
 
 ## Async Nylas Connector (recomendado)
 
@@ -142,7 +142,9 @@ Use `service.list_folders()` para descobrir IDs de pasta para o filtro `in_`.
 
 1. **Fetch**: `fetch_transactions_async` retorna `Transaction` com payload da mensagem e metadata (`thread_id`, `attachments`, `unread`).
 2. **Process**: A task executa a lógica de negócio.
-3. **Ack**: `ack_transaction` aplica `AckActionConfig` (marcar lido, mover pasta, star).
+3. **Ack**: `ack_transaction` aplica `AckActionConfig` (marcar lido, mover pasta, star, ou hard-delete).
+
+Com `AckActionConfig(delete=True)`, o connector chama o endpoint de hard-delete de mensagens com `hard_delete=true` e **ignora** as demais ações de update (mark_as_read / move / star / archive). É necessário habilitar **Enable hard delete** no Nylas Dashboard. Essa opção é suportada apenas quando `fetch_unit="message"`; com `fetch_unit="thread"`, o ack falha explicitamente porque o ID da transação é um thread ID. Para remoção suave (sem hard-delete), use `move_to_folder_id` apontando para a pasta Trash/Lixeira do provedor.
 
 `nack_transaction` é no-op para Nylas — mensagens permanecem disponíveis para refetch.
 

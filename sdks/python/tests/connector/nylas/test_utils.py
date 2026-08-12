@@ -28,6 +28,33 @@ class TestMergeQueryFilter:
         query = merge_query_filter(config, MessageQueryFilter(subject="Override"))
         assert query.subject == "Override"
 
+    def test_preserves_aliased_fields(self):
+        config = NylasConsumerConfig(
+            in_="Label_7008109963921275738",
+            from_=["sender@example.com"],
+            unread=True,
+            batch_size=10,
+            download_attachments=True,
+            ack_config=AckActionConfig(mark_as_read=True),
+        )
+        merged = merge_query_filter(config)
+        assert merged.in_ == "Label_7008109963921275738"
+        assert merged.from_ == ["sender@example.com"]
+        assert merged.to_query_params(limit=10) == {
+            "in": "Label_7008109963921275738",
+            "from": ["sender@example.com"],
+            "unread": True,
+            "limit": 10,
+        }
+
+    def test_override_preserves_aliased_fields(self):
+        config = NylasConsumerConfig(in_="INBOX", unread=True)
+        overrides = MessageQueryFilter(in_="Label_override", from_=["a@b.com"])
+        merged = merge_query_filter(config, overrides)
+        assert merged.in_ == "Label_override"
+        assert merged.from_ == ["a@b.com"]
+        assert merged.unread is True
+
 
 class TestClientSideFilter:
     def test_subject_contains_case_insensitive(self):

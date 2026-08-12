@@ -112,6 +112,12 @@ class AsyncNylasConnector(AsyncConnector):
         if config is None:
             return
 
+        if config.delete:
+            if transaction.metadata.get("fetch_unit") == "thread":
+                raise ValueError("AckActionConfig(delete=True) is only supported for message transactions")
+            await self.service.delete_message(transaction.id)
+            return
+
         body = build_ack_request_body(config)
         if not body:
             return

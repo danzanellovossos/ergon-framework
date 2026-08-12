@@ -88,6 +88,20 @@ class TestSendMessage:
         service._nylas.messages.send.assert_called_once()
 
 
+class TestDeleteMessage:
+    def test_hard_deletes_message_via_sdk_http_client(self):
+        service = _make_service()
+
+        service.delete_message("message/1")
+
+        service._nylas.http_client._execute.assert_called_once_with(
+            method="DELETE",
+            path="/v3/grants/grant-1/messages/message%2F1",
+            query_params={"hard_delete": "true"},
+        )
+        service._nylas.messages.destroy.assert_not_called()
+
+
 class TestGetMessagesCount:
     def test_counts_across_pages(self):
         service = _make_service()
