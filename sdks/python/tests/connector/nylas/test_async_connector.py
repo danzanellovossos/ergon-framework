@@ -128,3 +128,14 @@ class TestAckTransaction:
 
         mock_delete.assert_awaited_once_with("msg-1")
         mock_update.assert_not_awaited()
+
+    async def test_ack_delete_rejects_thread_transactions(self):
+        config = NylasConsumerConfig(ack_config=AckActionConfig(delete=True))
+        connector = _make_connector(consumer_config=config)
+        tx = Transaction(id="thread-1", payload={}, metadata={"fetch_unit": "thread"})
+
+        with patch.object(connector.service, "delete_message", new_callable=AsyncMock) as mock_delete:
+            with pytest.raises(ValueError, match="only supported for message transactions"):
+                await connector.ack_transaction(tx)
+
+        mock_delete.assert_not_awaited()

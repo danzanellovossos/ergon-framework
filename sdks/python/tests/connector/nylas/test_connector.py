@@ -143,6 +143,17 @@ class TestAckTransaction:
         mock_delete.assert_called_once_with("msg-1")
         mock_update.assert_not_called()
 
+    def test_ack_delete_rejects_thread_transactions(self):
+        config = NylasConsumerConfig(ack_config=AckActionConfig(delete=True))
+        connector = _make_connector(consumer_config=config)
+        tx = Transaction(id="thread-1", payload={}, metadata={"fetch_unit": "thread"})
+
+        with patch.object(connector.service, "delete_message") as mock_delete:
+            with pytest.raises(ValueError, match="only supported for message transactions"):
+                connector.ack_transaction(tx)
+
+        mock_delete.assert_not_called()
+
 
 class TestFetchById:
     def test_fetch_transaction_by_id(self):

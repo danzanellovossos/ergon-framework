@@ -85,7 +85,8 @@ class AckActionConfig(BaseModel):
     delete: bool = Field(
         default=False,
         description=(
-            "Permanently delete message on ack via messages.destroy. "
+            "Permanently delete message on ack via the Nylas hard_delete API. "
+            "Requires hard delete to be enabled in the Nylas Dashboard. "
             "When True, other ack actions (mark_as_read, move, star, archive) are skipped."
         ),
     )

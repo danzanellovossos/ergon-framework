@@ -44,7 +44,7 @@ Filtros mais usados em `NylasConsumerConfig`:
 - `has_attachment=True` — mensagens com anexos
 - `in_="<FOLDER_ID>"` — pasta ou label (use `service.list_folders()` para descobrir IDs)
 - `download_attachments=True` — baixa bytes dos anexos no fetch
-- `ack_config=AckActionConfig(mark_as_read=True, move_to_folder_id="...")` — ações pós-processamento; use `delete=True` para hard-delete no ack
+- `ack_config=AckActionConfig(mark_as_read=True, move_to_folder_id="...")` — ações pós-processamento; use `delete=True` para hard-delete no ack de mensagens (habilite **Enable hard delete** no Nylas Dashboard)
 
 Envio via `NylasProducerConfig(send_mode="send")` ou `"draft"`. O framework **não** faz ack automático para Nylas — chame `ack_transaction` em `handle_process_success`.
 

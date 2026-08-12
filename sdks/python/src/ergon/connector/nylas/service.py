@@ -1,5 +1,6 @@
 import logging
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 from ..transaction import Transaction
 from .models import (
@@ -260,7 +261,12 @@ class NylasService:
         return data if isinstance(data, dict) else serialize_nylas_object(data)
 
     def delete_message(self, message_id: str) -> None:
-        self._nylas.messages.destroy(self.grant_id, message_id)
+        # nylas>=6 does not expose DELETE query parameters on messages.destroy().
+        self._nylas.http_client._execute(
+            method="DELETE",
+            path=f"/v3/grants/{self.grant_id}/messages/{quote(message_id, safe='')}",
+            query_params={"hard_delete": "true"},
+        )
 
     def list_folders(self) -> List[Dict[str, Any]]:
         response = self._nylas.folders.list(self.grant_id)

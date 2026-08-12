@@ -103,6 +103,8 @@ class NylasConnector(Connector):
             return
 
         if config.delete:
+            if transaction.metadata.get("fetch_unit") == "thread":
+                raise ValueError("AckActionConfig(delete=True) is only supported for message transactions")
             self.service.delete_message(transaction.id)
             return
 

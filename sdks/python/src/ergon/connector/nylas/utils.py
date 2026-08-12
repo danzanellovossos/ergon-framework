@@ -62,13 +62,9 @@ def merge_query_filter(
     query_field_names = set(MessageQueryFilter.model_fields.keys())
     merged: Dict[str, Any] = {}
     if base is not None:
-        merged.update(
-            {k: v for k, v in base.model_dump(exclude_none=True).items() if k in query_field_names}
-        )
+        merged.update({k: v for k, v in base.model_dump(exclude_none=True).items() if k in query_field_names})
     if overrides is not None:
-        merged.update(
-            {k: v for k, v in overrides.model_dump(exclude_none=True).items() if k in query_field_names}
-        )
+        merged.update({k: v for k, v in overrides.model_dump(exclude_none=True).items() if k in query_field_names})
     for key, value in kwargs.items():
         if value is not None and key in query_field_names:
             merged[key] = value
