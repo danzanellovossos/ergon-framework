@@ -29,3 +29,5 @@ cp examples/ergon_platform/.env.example examples/ergon_platform/.env
 
 - `uso_direto_async.py` — uso direto do connector (fetch → processa → ack), sem runner.
 - `task_consumer.py` — integração completa com `TaskConfig` + `AsyncConsumerTask` + runner em loop contínuo.
+
+No nack com `requeue=True`, o default de `delay_seconds` é `0` (sem override no item). Valores `> 0` são arredondados para cima em minutos (`10` → 1 min). Detalhes: [README do módulo](../../src/ergon/connector/ergon_platform/README.md#nack).
