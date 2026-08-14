@@ -413,11 +413,7 @@ class _ErgonPlatformChannelsOperations:
         if not event_id:
             raise ValueError("transaction.id is required to download attachments")
 
-        dest_dir: Optional[Path] = None
-        if dest is not None:
-            dest_dir = Path(dest) / str(event_id)
-            dest_dir.mkdir(parents=True, exist_ok=True)
-
+        dest_dir = Path(dest) / str(event_id) if dest is not None else None
         downloaded: List[InboxAttachmentFile] = []
         for meta in inbox_attachments(transaction):
             attachment_id = inbox_attachment_id(meta)
@@ -428,6 +424,7 @@ class _ErgonPlatformChannelsOperations:
             content = self.download_inbox_attachment(config_id, event_id, attachment_id)
             path: Optional[str] = None
             if dest_dir is not None:
+                dest_dir.mkdir(parents=True, exist_ok=True)
                 file_path = dest_dir / filename
                 file_path.write_bytes(content)
                 path = str(file_path)

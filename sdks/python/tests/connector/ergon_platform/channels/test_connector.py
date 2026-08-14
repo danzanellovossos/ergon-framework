@@ -657,6 +657,22 @@ class TestLifecycle:
             ("cfg-jsl", "evt-1", "att-1", {}),
         ]
 
+    def test_download_attachments_skips_dest_when_empty(self, tmp_path):
+        config = ErgonPlatformChannelsConsumerConfig(address=INBOX)
+        sdk_client = _Client()
+        _seed_addresses(sdk_client)
+        connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
+        tx = event_to_transaction(
+            {"id": "evt-empty", "payload": {"attachments": []}},
+            source="config_activity",
+        )
+
+        files = connector.download_attachments(tx, dest=tmp_path)
+
+        assert files == []
+        assert not (tmp_path / "evt-empty").exists()
+        assert sdk_client.channels.configs.attachment_calls == []
+
     def test_optional_client_side_dedup_still_skips_seen_ids(self):
         config = ErgonPlatformChannelsConsumerConfig(
             address=INBOX,

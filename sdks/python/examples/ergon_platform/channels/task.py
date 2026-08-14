@@ -42,8 +42,6 @@ class ChannelsEventTask(AsyncConsumerTask):
             )
 
         saved = await self.consumer_connector.download_attachments(transaction, dest=DOWNLOAD_DIR)
-        for file in saved:
-            logger.info("Baixou anexo %s (%s bytes) -> %s", file.filename, len(file.content), file.path)
 
         return {
             "event_id": transaction.id,

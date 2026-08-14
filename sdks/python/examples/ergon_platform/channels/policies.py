@@ -19,7 +19,6 @@ def build_consumer_policy(
     policy.fetch.empty.backoff = poll_seconds
     policy.fetch.empty.backoff_multiplier = 1.0
     policy.fetch.empty.backoff_cap = poll_seconds
-    # Attachment bytes come from the provider CDN through the platform (up to 120s).
     policy.transaction_runtime.timeout = 180.0
 
     return policy
