@@ -5,10 +5,10 @@ Uso:
     cd sdks/python
     pip install -e .
     # instale/disponibilize o pacote ergon-platform-sdk no mesmo ambiente
-    cp examples/ergon_platform/.env.example examples/ergon_platform/.env
+    cp examples/ergon_platform/workflows/.env.example examples/ergon_platform/workflows/.env
     # preencha ERGON_CLIENT_ID, ERGON_CLIENT_SECRET, ERGON_WORKFLOW_ID, ERGON_PHASE_ID
     # opcional: ERGON_UNASSIGNED=true|false e ERGON_ASSIGNED_TO=<uuid>
-    py examples/ergon_platform/task_consumer.py
+    py examples/ergon_platform/workflows/task_consumer.py
 """
 
 from __future__ import annotations
@@ -22,9 +22,9 @@ from typing import Any, Dict, Optional
 from dotenv import load_dotenv
 
 from ergon.connector import ConnectorConfig, Transaction
-from ergon.connector.ergon_platform import (
+from ergon.connector.ergon_platform import ErgonPlatformClient
+from ergon.connector.ergon_platform.workflows import (
     AsyncErgonPlatformConnector,
-    ErgonPlatformClient,
     ErgonPlatformConsumerConfig,
 )
 from ergon.task import policies

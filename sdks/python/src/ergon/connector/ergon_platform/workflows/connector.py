@@ -1,13 +1,13 @@
 import logging
 from typing import Any, Dict, List, Optional
 
-from ..connector import Connector
-from ..transaction import Transaction
-from ._client import create_ergon_client
+from ...connector import Connector
+from ...transaction import Transaction
+from .._client import create_ergon_client
+from ..models import ErgonPlatformClient
 from ._operations import _ErgonPlatformOperations
 from .models import (
     CreateItemPayload,
-    ErgonPlatformClient,
     ErgonPlatformConsumerConfig,
     ErgonPlatformProducerConfig,
 )

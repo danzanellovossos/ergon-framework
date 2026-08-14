@@ -2,7 +2,7 @@ import base64
 import json
 from typing import Any, Dict, List, Optional
 
-from ..transaction import Transaction
+from ...transaction import Transaction
 from .models import (
     FAILURE_STATUSES,
     PROCESSING_STATUSES,

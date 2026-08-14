@@ -1,31 +1,30 @@
 # Exemplos — Connector Ergon Platform
 
-Exemplos de uso do `ErgonPlatformConnector` / `AsyncErgonPlatformConnector`, que envolvem o SDK `ergon-platform-sdk` (`ErgonClient`).
+Exemplos de uso dos connectors da **Ergon Platform**. Cada sub-connector tem seu próprio conjunto de scripts e `.env.example` em uma subpasta.
 
 ## Instalação
 
 ```bash
 cd sdks/python
-pip install -e .
-# instale/disponibilize o pacote ergon-platform-sdk no mesmo ambiente
-cp examples/ergon_platform/.env.example examples/ergon_platform/.env
-# preencha as credenciais e IDs de workflow/fase no .env
+pip install -e '.[ergon-platform]'
 ```
 
-## Variáveis de ambiente
+O extra `ergon-platform` cobre workflows **e** channels — não precisa instalar nada adicional.
 
-| Variável | Obrigatória | Descrição |
-|----------|-------------|-----------|
-| `ERGON_CLIENT_ID` | sim | API key id (`ek_...`) |
-| `ERGON_CLIENT_SECRET` | sim | API key secret (`eks_...`) |
-| `ERGON_COMPANY_ID` | não | Inferido do token quando omitido |
-| `ERGON_WORKFLOW_ID` | sim | Workflow consumido |
-| `ERGON_PHASE_ID` | sim | Fase de onde os itens são lidos |
-| `ERGON_ACK_PHASE_ID` | não | Fase de destino aplicada no ack |
-| `ERGON_CREATE_PHASE_ID` | não | Fase usada ao criar itens (dispatch) |
-| `ERGON_ATTACHMENT_FIELD_ID` | não | Field ID que recebe o anexo |
+## Sub-connectors
 
-## Scripts
+| Sub-connector | Pasta | Descrição |
+|---------------|-------|-----------|
+| Workflows | [`workflows/`](workflows/) | Consumo de itens de fase, dispatch de itens (com anexo), ack/nack, filhos, pipeline de anexo |
+| Channels | [`channels/`](channels/) | Consumo do feed de atividade / mensagens de thread; envio de mensagens (`channels.send`) |
 
-- `uso_direto_async.py` — uso direto do connector (fetch → processa → ack), sem runner.
-- `task_consumer.py` — integração completa com `TaskConfig` + `AsyncConsumerTask` + runner em loop contínuo.
+Cada pasta traz:
+
+- `.env.example` — variáveis específicas do sub-connector (copie para `.env` e preencha)
+- `uso_direto_async.py` — uso direto do connector (fetch → processa → dispatch/ack), sem runner
+- `task_consumer.py` — integração com `TaskConfig` + `AsyncConsumerTask` + `run_task` em loop contínuo
+- `README.md` — descrição das variáveis de ambiente e do que cada script faz
+
+## Credenciais compartilhadas
+
+Todos os sub-connectors usam o mesmo `ErgonPlatformClient` (API key da Ergon Platform). Você pode reaproveitar as credenciais entre os `.env` de cada subpasta.

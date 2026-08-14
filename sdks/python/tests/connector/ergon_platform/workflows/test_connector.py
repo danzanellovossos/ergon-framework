@@ -1,13 +1,13 @@
-"""Tests for AsyncErgonPlatformConnector with direct SDK client usage."""
+"""Tests for ErgonPlatformConnector with direct SDK client usage."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from ergon.connector.ergon_platform.async_connector import AsyncErgonPlatformConnector
-from ergon.connector.ergon_platform.models import (
+from ergon.connector.ergon_platform.models import ErgonPlatformClient
+from ergon.connector.ergon_platform.workflows.connector import ErgonPlatformConnector
+from ergon.connector.ergon_platform.workflows.models import (
     CreateItemInput,
-    ErgonPlatformClient,
     ErgonPlatformConsumerConfig,
     ErgonPlatformProducerConfig,
 )
@@ -92,10 +92,13 @@ def _make_client_config() -> ErgonPlatformClient:
     return ErgonPlatformClient(client_id="ek_test", client_secret="eks_test", base_url="https://api.test")
 
 
-def _make_connector(consumer_config=None, producer_config=None, sdk_client=None) -> AsyncErgonPlatformConnector:
+def _make_connector(consumer_config=None, producer_config=None, sdk_client=None) -> ErgonPlatformConnector:
     sdk_client = sdk_client or _Client()
-    with patch("ergon.connector.ergon_platform.async_connector.create_ergon_client", return_value=sdk_client):
-        return AsyncErgonPlatformConnector(
+    with patch(
+        "ergon.connector.ergon_platform.workflows.connector.create_ergon_client",
+        return_value=sdk_client,
+    ):
+        return ErgonPlatformConnector(
             client=_make_client_config(),
             consumer_config=consumer_config,
             producer_config=producer_config,
@@ -103,33 +106,36 @@ def _make_connector(consumer_config=None, producer_config=None, sdk_client=None)
 
 
 class TestFetchTransactions:
-    async def test_fetch_uses_sdk_items_endpoint(self):
+    def test_fetch_uses_sdk_items_endpoint(self):
         config = ErgonPlatformConsumerConfig(
             workflow_id="wf-1",
             phase_id="ph-1",
-            batch_size=7,
+            batch_size=5,
             list_params={"assigned_to": "44444444-4444-4444-4444-444444444444"},
         )
         sdk_client = _Client()
-        sdk_client.workflows.workflow_obj.items_response = {"items": [{"id": "item-1", "phase_id": "ph-1"}]}
+        sdk_client.workflows.workflow_obj.items_response = {
+            "items": [{"id": "item-1", "phase_id": "ph-1", "title": "T1"}]
+        }
         connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
 
-        txns = await connector.fetch_transactions_async()
+        txns = connector.fetch_transactions(batch_size=5)
 
         assert [tx.id for tx in txns] == ["item-1"]
+        assert sdk_client.workflows.workflow_calls == ["wf-1"]
         assert sdk_client.workflows.workflow_obj.last_items_kwargs == {
             "phase_id": "ph-1",
-            "limit": 7,
+            "limit": 5,
             "offset": 0,
             "assigned_to": "44444444-4444-4444-4444-444444444444",
         }
 
-    async def test_fetch_requires_consumer_config(self):
+    def test_fetch_requires_consumer_config(self):
         connector = _make_connector()
         with pytest.raises(ValueError, match="consumer_config"):
-            await connector.fetch_transactions_async()
+            connector.fetch_transactions()
 
-    async def test_fetch_unassigned_forces_assigned_no_and_claims_items(self):
+    def test_fetch_unassigned_forces_assigned_no_and_claims_items(self):
         config = ErgonPlatformConsumerConfig(
             workflow_id="wf-1",
             phase_id="ph-1",
@@ -141,18 +147,16 @@ class TestFetchTransactions:
         connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
         claimed_tx = Transaction(id="item-1", payload={"id": "item-1", "assigned_to": "worker"}, metadata={})
 
-        with patch.object(
-            connector, "fetch_transaction_by_id_async", new=AsyncMock(return_value=claimed_tx)
-        ) as mock_refresh:
-            txns = await connector.fetch_transactions_async()
+        with patch.object(connector, "fetch_transaction_by_id", return_value=claimed_tx) as mock_refresh:
+            txns = connector.fetch_transactions()
 
         assert txns == [claimed_tx]
         assert sdk_client.workflows.workflow_obj.last_items_kwargs["assigned"] == "no"
         assert "assigned_to" not in sdk_client.workflows.workflow_obj.last_items_kwargs
         assert sdk_client.workflows.items.claim_calls == [("item-1", {})]
-        mock_refresh.assert_awaited_once_with("item-1")
+        mock_refresh.assert_called_once_with("item-1")
 
-    async def test_fetch_unassigned_skips_item_when_claim_fails(self):
+    def test_fetch_unassigned_skips_item_when_claim_fails(self):
         config = ErgonPlatformConsumerConfig(workflow_id="wf-1", phase_id="ph-1", unassigned=True)
         sdk_client = _Client()
         sdk_client.workflows.workflow_obj.items_response = {"items": [{"id": "item-1", "phase_id": "ph-1"}]}
@@ -160,24 +164,24 @@ class TestFetchTransactions:
 
         with (
             patch.object(sdk_client.workflows.items, "claim", side_effect=RuntimeError("race")),
-            patch.object(connector, "fetch_transaction_by_id_async", new=AsyncMock()) as mock_refresh,
+            patch.object(connector, "fetch_transaction_by_id") as mock_refresh,
         ):
-            txns = await connector.fetch_transactions_async()
+            txns = connector.fetch_transactions()
 
         assert txns == []
-        mock_refresh.assert_not_awaited()
+        mock_refresh.assert_not_called()
 
 
 class TestDispatchTransactions:
-    async def test_dispatch_creates_item_with_sdk_workflow(self):
+    def test_dispatch_creates_item_with_sdk_workflow(self):
         producer = ErgonPlatformProducerConfig(workflow_id="wf-1", phase_id="ph-1")
         sdk_client = _Client()
         connector = _make_connector(producer_config=producer, sdk_client=sdk_client)
-        tx = Transaction(id="new", payload=CreateItemInput(title="Ticket"))
 
-        created = await connector.dispatch_transactions_async([tx])
+        created = connector.dispatch_transactions([Transaction(id="new", payload=CreateItemInput(title="Ticket"))])
 
         assert created == ["item-99"]
+        assert sdk_client.workflows.workflow_calls == ["wf-1"]
         assert sdk_client.workflows.workflow_obj.last_create_kwargs == {
             "title": "Ticket",
             "phase_id": "ph-1",
@@ -185,20 +189,37 @@ class TestDispatchTransactions:
             "field_values": None,
         }
 
-    async def test_dispatch_passes_parent_item_id_from_payload(self):
+    def test_dispatch_requires_workflow_id(self):
+        connector = _make_connector(producer_config=ErgonPlatformProducerConfig())
+        tx = Transaction(id="new", payload=CreateItemInput(title="NoWf"))
+        with pytest.raises(ValueError, match="workflow_id"):
+            connector.dispatch_transactions([tx])
+
+    def test_dispatch_passes_parent_item_id_from_payload(self):
         producer = ErgonPlatformProducerConfig(workflow_id="wf-1", phase_id="ph-1")
         sdk_client = _Client()
         connector = _make_connector(producer_config=producer, sdk_client=sdk_client)
         tx = Transaction(id="new", payload=CreateItemInput(title="Child", parent_item_id="parent-123"))
 
-        created = await connector.dispatch_transactions_async([tx])
-
-        assert created == ["item-99"]
+        assert connector.dispatch_transactions([tx]) == ["item-99"]
         assert sdk_client.workflows.workflow_obj.last_create_kwargs["parent_item_id"] == "parent-123"
+
+    def test_dispatch_passes_parent_item_id_from_producer_default(self):
+        producer = ErgonPlatformProducerConfig(
+            workflow_id="wf-1",
+            phase_id="ph-1",
+            parent_item_id="parent-default",
+        )
+        sdk_client = _Client()
+        connector = _make_connector(producer_config=producer, sdk_client=sdk_client)
+        tx = Transaction(id="new", payload=CreateItemInput(title="Child"))
+
+        assert connector.dispatch_transactions([tx]) == ["item-99"]
+        assert sdk_client.workflows.workflow_obj.last_create_kwargs["parent_item_id"] == "parent-default"
 
 
 class TestChildItems:
-    async def test_fetch_child_transactions_uses_sdk_children_and_get(self):
+    def test_fetch_child_transactions_uses_sdk_children_and_get(self):
         sdk_client = _Client()
         sdk_client.workflows.items.children_response = [{"child_item_id": "child-1"}]
         sdk_client.workflows.items.items_by_id = {
@@ -206,66 +227,66 @@ class TestChildItems:
         }
         connector = _make_connector(sdk_client=sdk_client)
 
-        txns = await connector.fetch_child_transactions_async("parent-1", include_archived=True)
+        txns = connector.fetch_child_transactions("parent-1", include_archived=True)
 
         assert [tx.id for tx in txns] == ["child-1"]
         assert txns[0].metadata["workflow_id"] == "wf-child"
 
 
 class TestFetchItemsByQuery:
-    async def test_fetch_items_by_query_uses_sdk_query_items(self):
+    def test_fetch_items_by_query_uses_sdk_query_items(self):
         sdk_client = _Client()
         sdk_client.workflows.workflow_obj.query_response = {"items": [{"id": "i1", "title": "Found"}]}
         connector = _make_connector(sdk_client=sdk_client)
 
-        txns = await connector.fetch_items_by_query("wf-1", {"search": "abc"})
+        txns = connector.fetch_items_by_query("wf-1", {"search": "abc"})
 
         assert [tx.id for tx in txns] == ["i1"]
         assert sdk_client.workflows.workflow_obj.last_query_payload == {"search": "abc"}
 
 
 class TestGetTransactionsCount:
-    async def test_count_reads_total_from_sdk_page(self):
+    def test_count_reads_total_from_sdk_page(self):
         config = ErgonPlatformConsumerConfig(workflow_id="wf-1", phase_id="ph-1")
         sdk_client = _Client()
         sdk_client.workflows.workflow_obj.items_response = {"items": [], "total": 42}
         connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
 
-        assert await connector.get_transactions_count_async() == 42
+        assert connector.get_transactions_count() == 42
         assert sdk_client.workflows.workflow_obj.last_items_kwargs == {"phase_id": "ph-1", "limit": 1, "offset": 0}
 
-    async def test_count_requires_consumer_config(self):
+    def test_count_requires_consumer_config(self):
         connector = _make_connector()
         with pytest.raises(ValueError, match="consumer_config"):
-            await connector.get_transactions_count_async()
+            connector.get_transactions_count()
 
 
 class TestAckTransaction:
-    async def test_ack_routes_to_configured_phase_with_sdk(self):
+    def test_ack_routes_to_configured_phase_with_sdk(self):
         config = ErgonPlatformConsumerConfig(workflow_id="wf", phase_id="ph", ack_phase_id="done")
         sdk_client = _Client()
         connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
 
-        await connector.ack_transaction(Transaction(id="item-1", payload={}))
+        connector.ack_transaction(Transaction(id="item-1", payload={}))
 
         assert sdk_client.workflows.items.route_calls == [("item-1", "done")]
 
-    async def test_ack_noop_without_ack_phase(self):
+    def test_ack_noop_without_ack_phase(self):
         config = ErgonPlatformConsumerConfig(workflow_id="wf", phase_id="ph")
         sdk_client = _Client()
         connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
 
-        await connector.ack_transaction(Transaction(id="item-1", payload={}))
+        connector.ack_transaction(Transaction(id="item-1", payload={}))
 
         assert sdk_client.workflows.items.route_calls == []
 
 
 class TestReleaseItem:
-    async def test_release_forwards_delay_seconds_to_domain_operation(self):
+    def test_release_forwards_delay_seconds_to_domain_operation(self):
         sdk_client = _Client()
         connector = _make_connector(sdk_client=sdk_client)
 
-        result = await connector.release_item("item-1", delay_seconds=75)
+        result = connector.release_item("item-1", delay_seconds=75)
 
         assert result == {"id": "item-1", "released": True}
         assert sdk_client.workflows.items.update_calls == [("item-1", {"visibility_timeout_on_release_minutes": 2})]
@@ -273,36 +294,67 @@ class TestReleaseItem:
 
 
 class TestNackTransaction:
-    async def test_nack_requeue_releases_item_with_delay_seconds(self):
+    def test_nack_requeue_releases_item_with_delay_seconds(self):
         sdk_client = _Client()
         connector = _make_connector(sdk_client=sdk_client)
 
-        await connector.nack_transaction(Transaction(id="item-1", payload={}), requeue=True, delay_seconds=0)
+        connector.nack_transaction(Transaction(id="item-1", payload={}), requeue=True, delay_seconds=0)
 
         assert sdk_client.workflows.items.release_calls == [("item-1", {})]
         assert sdk_client.workflows.items.update_calls == []
 
-    async def test_nack_requeue_updates_release_delay_before_release(self):
+    def test_nack_requeue_updates_release_delay_before_release(self):
         sdk_client = _Client()
         connector = _make_connector(sdk_client=sdk_client)
 
-        await connector.nack_transaction(Transaction(id="item-1", payload={}), requeue=True, delay_seconds=75)
+        connector.nack_transaction(Transaction(id="item-1", payload={}), requeue=True, delay_seconds=75)
 
         assert sdk_client.workflows.items.update_calls == [("item-1", {"visibility_timeout_on_release_minutes": 2})]
         assert sdk_client.workflows.items.release_calls == [("item-1", {})]
 
-    async def test_nack_without_requeue_moves_to_nack_phase(self):
+    def test_nack_without_requeue_moves_to_nack_phase(self):
         config = ErgonPlatformConsumerConfig(workflow_id="wf", phase_id="ph", nack_phase_id="err")
         sdk_client = _Client()
         connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
 
-        await connector.nack_transaction(Transaction(id="item-1", payload={}), requeue=False)
+        connector.nack_transaction(Transaction(id="item-1", payload={}), requeue=False)
 
         assert sdk_client.workflows.items.route_calls == [("item-1", "err")]
 
-    async def test_nack_without_requeue_requires_nack_phase(self):
+    def test_nack_without_requeue_requires_nack_phase(self):
         config = ErgonPlatformConsumerConfig(workflow_id="wf", phase_id="ph")
         connector = _make_connector(consumer_config=config)
 
         with pytest.raises(ValueError, match="nack_phase_id"):
-            await connector.nack_transaction(Transaction(id="item-1", payload={}), requeue=False)
+            connector.nack_transaction(Transaction(id="item-1", payload={}), requeue=False)
+
+
+class TestBackwardCompatImports:
+    def test_workflow_names_are_reexported_at_ergon_platform_root(self):
+        """Legacy imports keep working after the workflows/ split."""
+        from ergon.connector.ergon_platform import (
+            AsyncErgonPlatformConnector as RootAsync,
+        )
+        from ergon.connector.ergon_platform import (
+            CreateItemInput as RootCreateItemInput,
+        )
+        from ergon.connector.ergon_platform import (
+            ErgonPlatformConnector as RootConnector,
+        )
+        from ergon.connector.ergon_platform import (
+            ErgonPlatformConsumerConfig as RootConsumerConfig,
+        )
+        from ergon.connector.ergon_platform import (
+            ErgonPlatformProducerConfig as RootProducerConfig,
+        )
+
+        assert RootConnector is ErgonPlatformConnector
+        assert RootConsumerConfig is ErgonPlatformConsumerConfig
+        assert RootProducerConfig is ErgonPlatformProducerConfig
+        assert RootCreateItemInput is CreateItemInput
+
+        from ergon.connector.ergon_platform.workflows.async_connector import (
+            AsyncErgonPlatformConnector,
+        )
+
+        assert RootAsync is AsyncErgonPlatformConnector

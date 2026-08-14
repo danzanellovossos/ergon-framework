@@ -5,8 +5,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from ..transaction import Transaction
-from .models import ErgonPlatformClient
+from ...transaction import Transaction
+from ..models import ErgonPlatformClient
 from .utils import (
     as_payload,
     classify_status,

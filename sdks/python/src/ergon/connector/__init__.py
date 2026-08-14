@@ -7,13 +7,23 @@ from .transaction import Transaction
 
 if TYPE_CHECKING:
     from .ergon_platform import (
+        AsyncErgonPlatformChannelsConnector,
         AsyncErgonPlatformConnector,
         CreateItemInput,
+        ErgonPlatformChannelsConfig,
+        ErgonPlatformChannelsConsumerConfig,
+        ErgonPlatformChannelsConnector,
+        ErgonPlatformChannelsProducerConfig,
         ErgonPlatformClient,
         ErgonPlatformConnector,
         ErgonPlatformConsumerConfig,
         ErgonPlatformProducerConfig,
     )
+
+    # NOTE: ``SendMessageInput`` is defined by both Nylas and Channels with
+    # different shapes. The top-level alias here points to the Nylas type
+    # (matches the pre-split lazy-export map); channels users must import it
+    # from ``ergon.connector.ergon_platform.channels``.
     from .excel import ExcelConnector, ExcelFetchConfig, ExcelRow, ExcelService
     from .nylas import (
         AckActionConfig,
@@ -76,6 +86,7 @@ _CONNECTOR_SUBPACKAGES = (
 
 _LAZY_EXPORTS = {
     "AckActionConfig": "nylas",
+    "AsyncErgonPlatformChannelsConnector": "ergon_platform",
     "AsyncErgonPlatformConnector": "ergon_platform",
     "AsyncNylasAuthService": "nylas",
     "AsyncNylasConnector": "nylas",
@@ -94,6 +105,10 @@ _LAZY_EXPORTS = {
     "AuthUrlConfig": "nylas",
     "CodeExchangeInput": "nylas",
     "CreateItemInput": "ergon_platform",
+    "ErgonPlatformChannelsConfig": "ergon_platform",
+    "ErgonPlatformChannelsConnector": "ergon_platform",
+    "ErgonPlatformChannelsConsumerConfig": "ergon_platform",
+    "ErgonPlatformChannelsProducerConfig": "ergon_platform",
     "ErgonPlatformClient": "ergon_platform",
     "ErgonPlatformConnector": "ergon_platform",
     "ErgonPlatformConsumerConfig": "ergon_platform",
@@ -148,6 +163,7 @@ def __dir__() -> list[str]:
 __all__ = [
     "AckActionConfig",
     "AsyncConnector",
+    "AsyncErgonPlatformChannelsConnector",
     "AsyncErgonPlatformConnector",
     "AsyncNylasAuthService",
     "AsyncNylasConnector",
@@ -169,6 +185,10 @@ __all__ = [
     "Connector",
     "ConnectorConfig",
     "CreateItemInput",
+    "ErgonPlatformChannelsConfig",
+    "ErgonPlatformChannelsConnector",
+    "ErgonPlatformChannelsConsumerConfig",
+    "ErgonPlatformChannelsProducerConfig",
     "ErgonPlatformClient",
     "ErgonPlatformConnector",
     "ErgonPlatformConsumerConfig",
