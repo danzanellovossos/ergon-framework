@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
+from ergon.connector.ergon_platform.channels._activity import ActivityAdapter
 from ergon.connector.ergon_platform.channels.async_connector import (
     AsyncErgonPlatformChannelsConnector,
 )
@@ -13,9 +14,10 @@ from ergon.connector.ergon_platform.channels.models import (
     ErgonPlatformChannelsProducerConfig,
     SendMessageInput,
 )
-from ergon.connector.ergon_platform.channels.utils import event_to_transaction
 from ergon.connector.ergon_platform.models import ErgonPlatformClient
 from ergon.connector.transaction import Transaction
+
+event_to_transaction = ActivityAdapter.to_transaction
 
 INBOX = "jsl-xxx@inbox.ergondata.ai"
 

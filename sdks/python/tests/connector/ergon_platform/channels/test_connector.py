@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
+from ergon.connector.ergon_platform.channels._activity import ActivityAdapter
 from ergon.connector.ergon_platform.channels.connector import ErgonPlatformChannelsConnector
 from ergon.connector.ergon_platform.channels.models import (
     ChannelsActivityFilter,
@@ -12,9 +13,10 @@ from ergon.connector.ergon_platform.channels.models import (
     ErgonPlatformChannelsProducerConfig,
     SendMessageInput,
 )
-from ergon.connector.ergon_platform.channels.utils import event_to_transaction
 from ergon.connector.ergon_platform.models import ErgonPlatformClient
 from ergon.connector.transaction import Transaction
+
+event_to_transaction = ActivityAdapter.to_transaction
 
 INBOX = "jsl-xxx@inbox.ergondata.ai"
 
@@ -189,6 +191,69 @@ class TestFetchTransactions:
             ),
         ]
         assert len(sdk_client.channels.addresses_calls) == 1
+
+    def test_fetch_hydrates_attachments_when_enabled(self):
+        config = ErgonPlatformChannelsConsumerConfig(
+            address=INBOX,
+            download_attachments=True,
+        )
+        sdk_client = _Client()
+        _seed_addresses(sdk_client)
+        sdk_client.channels.configs.activity_response = {
+            "items": [
+                {
+                    "id": "evt-1",
+                    "channel": "email",
+                    "payload": {
+                        "attachments": [
+                            {
+                                "resend_attachment_id": "att-1",
+                                "filename": "a.pdf",
+                                "content_type": "application/pdf",
+                            }
+                        ]
+                    },
+                }
+            ],
+            "total": 1,
+        }
+        connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
+
+        txns = connector.fetch_transactions()
+
+        assert len(txns) == 1
+        assert txns[0].metadata["has_attachment"] is True
+        assert txns[0].metadata["attachments"][0]["id"] == "att-1"
+        assert txns[0].metadata["attachments"][0]["filename"] == "a.pdf"
+        assert txns[0].metadata["attachments"][0]["content"] == b"pdf-bytes"
+        assert "resend_attachment_id" not in txns[0].metadata["attachments"][0]
+        assert sdk_client.channels.configs.attachment_calls == [
+            ("cfg-jsl", "evt-1", "att-1", {}),
+        ]
+
+    def test_fetch_skips_attachment_download_by_default(self):
+        config = ErgonPlatformChannelsConsumerConfig(address=INBOX)
+        sdk_client = _Client()
+        _seed_addresses(sdk_client)
+        sdk_client.channels.configs.activity_response = {
+            "items": [
+                {
+                    "id": "evt-1",
+                    "payload": {
+                        "attachments": [{"resend_attachment_id": "att-1", "filename": "a.pdf"}]
+                    },
+                }
+            ],
+            "total": 1,
+        }
+        connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
+
+        txns = connector.fetch_transactions()
+
+        assert txns[0].metadata["attachments"][0]["id"] == "att-1"
+        assert txns[0].metadata["attachments"][0]["filename"] == "a.pdf"
+        assert "content" not in txns[0].metadata["attachments"][0]
+        assert sdk_client.channels.configs.attachment_calls == []
 
     def test_fetch_requires_consumer_config(self):
         connector = _make_connector()
@@ -470,6 +535,70 @@ class TestFetchTransactionById:
 
         assert tx.id == "evt-1"
         assert sdk_client.channels.configs.event_calls == [("cfg-jsl", "evt-1", {})]
+        assert sdk_client.channels.configs.attachment_calls == []
+
+    def test_hydrates_attachments_when_enabled(self):
+        config = ErgonPlatformChannelsConsumerConfig(
+            address=INBOX,
+            download_attachments=True,
+        )
+        sdk_client = _Client()
+        _seed_addresses(sdk_client)
+        sdk_client.channels.configs.event_response = {
+            "id": "evt-1",
+            "channel": "email",
+            "payload": {
+                "attachments": [
+                    {
+                        "resend_attachment_id": "att-1",
+                        "filename": "a.pdf",
+                        "content_type": "application/pdf",
+                    }
+                ]
+            },
+        }
+        connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
+
+        tx = connector.fetch_transaction_by_id("evt-1")
+
+        assert tx.metadata["attachments"][0]["id"] == "att-1"
+        assert tx.metadata["attachments"][0]["content"] == b"pdf-bytes"
+        assert sdk_client.channels.configs.attachment_calls == [
+            ("cfg-jsl", "evt-1", "att-1", {}),
+        ]
+
+    def test_skips_attachment_when_download_fails(self):
+        config = ErgonPlatformChannelsConsumerConfig(
+            address=INBOX,
+            download_attachments=True,
+        )
+        sdk_client = _Client()
+        _seed_addresses(sdk_client)
+        sdk_client.channels.configs.event_response = {
+            "id": "evt-1",
+            "channel": "email",
+            "payload": {
+                "attachments": [
+                    {
+                        "resend_attachment_id": "att-1",
+                        "filename": "a.pdf",
+                        "content_type": "application/pdf",
+                    }
+                ]
+            },
+        }
+
+        def _boom(*args, **kwargs):
+            raise TimeoutError("cdn hung")
+
+        sdk_client.channels.configs.activity_attachment_file = _boom
+        connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
+
+        tx = connector.fetch_transaction_by_id("evt-1")
+
+        assert tx.id == "evt-1"
+        assert tx.metadata["attachments"][0]["filename"] == "a.pdf"
+        assert "content" not in tx.metadata["attachments"][0]
 
 
 class TestGetTransactionsCount:

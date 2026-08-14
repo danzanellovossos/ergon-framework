@@ -15,10 +15,13 @@ def build_consumer_policy(
     policy.loop.streaming = streaming
     policy.loop.limit = None if streaming else policy.fetch.batch.size
 
-    poll_seconds = 5.0
+    poll_seconds = 5 * 60
     policy.fetch.empty.backoff = poll_seconds
     policy.fetch.empty.backoff_multiplier = 1.0
     policy.fetch.empty.backoff_cap = poll_seconds
+    policy.fetch.batch.interval.backoff = poll_seconds
+    policy.fetch.batch.interval.backoff_multiplier = 1.0
+    policy.fetch.batch.interval.backoff_cap = poll_seconds
     policy.transaction_runtime.timeout = 180.0
 
     return policy

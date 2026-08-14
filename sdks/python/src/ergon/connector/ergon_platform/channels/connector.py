@@ -18,12 +18,6 @@ from .models import (
     SendMessageInput,
     SendMessagePayload,
 )
-from .utils import (
-    _normalize_recipients,
-    deliver_fetched_transactions,
-    filter_activity_transactions,
-    normalize_send_payload,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +38,11 @@ class ErgonPlatformChannelsConnector(Connector):
         self._consumer_config = consumer_config
         self._producer_config = producer_config or ErgonPlatformChannelsProducerConfig()
         self.client = create_ergon_client(client)
-        self._operations = _ErgonPlatformChannelsOperations(client, self.client)
+        self._operations = _ErgonPlatformChannelsOperations(
+            client,
+            self.client,
+            download_client=self._attachment_download_client(client),
+        )
         self._seen_event_ids: set[str] = set()
 
     def fetch_transactions(
@@ -65,24 +63,30 @@ class ErgonPlatformChannelsConnector(Connector):
             offset=config.offset,
             **params,
         )
-        return self._finalize_fetched_transactions(config, transactions)
+        transactions = self._operations.finalize_fetched_transactions(
+            transactions,
+            config,
+            seen_ids=self._seen_event_ids if config.deduplicate_fetched_events else None,
+        )
+        return self._hydrate_fetched_transactions(config, inbox.config_id, transactions)
 
-    def _finalize_fetched_transactions(
+    def _hydrate_fetched_transactions(
         self,
         config: ErgonPlatformChannelsConsumerConfig,
+        config_id: str,
         transactions: List[Transaction],
     ) -> List[Transaction]:
-        """Finalize fetched transactions by applying activity filters and deduplication."""
-        transactions = filter_activity_transactions(transactions, config.effective_activity_filter())
-        if config.deduplicate_fetched_events:
-            transactions = deliver_fetched_transactions(transactions, self._seen_event_ids)
-        return transactions
+        if not config.download_attachments:
+            return transactions
+        return [self._operations.hydrate_inbox_attachments(config_id, tx) for tx in transactions]
 
     def fetch_transaction_by_id(self, transaction_id: str, *args, **kwargs) -> Transaction:
         config = self._require_consumer_config("fetch a transaction by id")
         inbox = self._resolve_inbox(config)
         inbox.ensure_can_receive()
-        return self._operations.get_inbox_event(inbox.config_id, transaction_id, **kwargs)
+        transaction = self._operations.get_inbox_event(inbox.config_id, transaction_id, **kwargs)
+        hydrated = self._hydrate_fetched_transactions(config, inbox.config_id, [transaction])
+        return hydrated[0]
 
     def get_transactions_count(self, *args, **kwargs) -> int:
         config = self._require_consumer_config("count transactions")
@@ -119,7 +123,7 @@ class ErgonPlatformChannelsConnector(Connector):
     ) -> str:
         """Send one email and return the platform log/message id."""
         payload = SendMessageInput(
-            to=_normalize_recipients(to),
+            to=self._operations.normalize_recipients(to),
             subject=subject,
             text=text,
             html=html,
@@ -195,7 +199,15 @@ class ErgonPlatformChannelsConnector(Connector):
         return self._operations.download_inbox_attachments(inbox.config_id, transaction, dest=dest)
 
     def close(self) -> None:
+        self._operations.close()
         self.client.close()
+
+    def _attachment_download_client(self, config: ErgonPlatformClient) -> Any:
+        timeout = 20.0
+        if self._consumer_config is not None:
+            timeout = self._consumer_config.attachment_download_timeout
+        download_config = config.model_copy(update={"timeout": timeout, "max_retries": 0})
+        return create_ergon_client(download_config)
 
     def _require_consumer_config(self, action: str) -> ErgonPlatformChannelsConsumerConfig:
         if self._consumer_config is None:
@@ -225,7 +237,7 @@ class ErgonPlatformChannelsConnector(Connector):
         return self._producer_config.address
 
     def _send_from_payload(self, payload: SendMessagePayload) -> Any:
-        parts = normalize_send_payload(payload)
+        parts = self._operations.normalize_send_payload(payload)
         top = parts["top"]
         config: Dict[str, Any] = parts["config"]
         producer = self._producer_config

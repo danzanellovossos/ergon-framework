@@ -12,19 +12,93 @@ O extra `ergon-platform` cobre workflows **e** channels — não precisa instala
 
 ## Arquitetura
 
+O connector é a fachada pública do framework (`fetch_transactions`, `send_email`, `ack_transaction`). Ele não fala com a API sozinho: delega para `_ErgonPlatformChannelsOperations`, que por sua vez orquestra objetos com uma responsabilidade cada. Sync e async compartilham esses objetos — o async só envolve as chamadas em `asyncio.to_thread`.
+
+```
+task / app
+    │
+    ▼
+ErgonPlatformChannelsConnector  (sync)     AsyncErgonPlatformChannelsConnector
+    │                                         │
+    └──────────────┬──────────────────────────┘
+                   ▼
+        _ErgonPlatformChannelsOperations     ← Facade
+                   │
+     ┌─────────────┼──────────────┬────────────────┐
+     ▼             ▼              ▼                ▼
+ InboxAddressBook  ActivityAdapter  InboxAttachments  OutboundMessage
+     │             │              │                │
+     └─────────────┴──────────────┴────────────────┘
+                   ▼
+              SdkRecord  →  ErgonClient.channels.*  (SDK HTTP)
+```
+
+Arquivos com `_` no nome são internos. Apps e tasks importam só `connector`, `async_connector` e `models`.
+
 ```
 ergon_platform/
 ├── models.py               # ErgonPlatformClient (credenciais compartilhadas)
 ├── _client.py              # Factory compartilhada do ErgonClient
 └── channels/
-    ├── models.py           # ErgonPlatformChannelsConsumerConfig/ProducerConfig, SendMessageInput
-    ├── _operations.py      # Helpers privados de domínio (wrappers de client.channels.*)
-    ├── connector.py        # ErgonPlatformChannelsConnector (sync)
-    ├── async_connector.py  # AsyncErgonPlatformChannelsConnector (async)
-    └── utils.py            # Helpers públicos (normalize_send_payload, event_to_transaction, ...)
+    ├── models.py           # configs, SendMessageInput, ChannelsActivityFilter
+    ├── connector.py        # API pública sync
+    ├── async_connector.py  # API pública async (mesmo contrato)
+    ├── _operations.py      # Facade HTTP
+    ├── _sdk.py             # Adapter de resposta do SDK
+    ├── _activity.py        # Adapter evento → Transaction
+    ├── _addresses.py       # Resolução + cache de inbox
+    ├── _attachments.py     # Download / hydrate de anexos
+    └── _outbound.py        # Builder do POST /send
 ```
 
-O connector reusa a mesma factory de `ErgonClient` do workflows. Toda operação passa por `connector.client.channels.*`, que é a instância `ErgonClient` exposta em `connector.client`.
+O connector reusa a mesma factory de `ErgonClient` do workflows. Toda ida à rede passa por `connector.client.channels.*`.
+
+### Padrões
+
+
+| Padrão | Onde | O que resolve |
+|--------|------|----------------|
+| **Facade** | `_ErgonPlatformChannelsOperations` | Um ponto só para o connector chamar. Fetch, ack, send e resolve inbox não espalham HTTP pelo sync/async. |
+| **Adapter** | `SdkRecord` | O SDK devolve dict, objeto Pydantic ou Page. `get` / `items` / `total` / `serialize` escondem isso. |
+| **Adapter** | `ActivityAdapter` | Evento da activity da plataforma → `Transaction` do framework (`id`, `payload`, `metadata`). |
+| **Strategy** | `ChannelsActivityFilter.matches` / `select` | O filtro client-side (`from_address`, `subject_contains`) vive no próprio filtro. O fetch só pergunta “esta transação entra?”. |
+| **Builder** | `OutboundMessage` | `SendMessageInput` ou `dict` vira o body de `POST /send` (roteamento `top` + bloco `config`). |
+
+`InboxAddressBook` e `InboxAttachments` são cache/resolução de endereço e bytes de anexo saíram da facade para não voltar a ser uma classe só.
+
+Não há Factory/Singleton/Visitor aqui — o `ErgonClient` já é criado em `_client.py`, compartilhado com workflows.
+
+### Responsabilidades
+
+| Peça | Arquivo | Faz | Não faz |
+|------|---------|-----|---------|
+| `ErgonPlatformChannelsConnector` | `connector.py` | Contrato do framework: fetch, send, ack/nack, hydrate se `download_attachments=True`, estado `_seen_event_ids`. | Montar JSON da API, parsear Page, achar `address_id`. |
+| `AsyncErgonPlatformChannelsConnector` | `async_connector.py` | O mesmo contrato, I/O em thread. | Lógica de domínio diferente da sync. |
+| `_ErgonPlatformChannelsOperations` | `_operations.py` | Encaminha cada método do connector ao colaborador certo e dispara `client.channels.*`. | Guardar regra de filtro, de anexo ou de endereço. |
+| `SdkRecord` | `_sdk.py` | Ler um payload heterogêneo (`obj.get` vs `getattr`, lista em `items`/`data`/`messages`). | Conhecer activity, inbox ou send. |
+| `ActivityAdapter` | `_activity.py` | `to_transaction`, listar anexos no metadata, `finalize_fetch` (filtro + dedup). | Chamar HTTP. |
+| `InboxAddressBook` | `_addresses.py` | Email/`config_id` → `ResolvedInboxAddress` (cache, `configs.addresses`, fallback na activity). | Fetch de email nem send. |
+| `InboxAttachments` | `_attachments.py` | `GET .../attachments/{id}/file`; hidrata `content` na transação ou grava em `dest`. | Decidir *se* baixa (isso é flag do consumer no connector). |
+| `OutboundMessage` | `_outbound.py` | Normalizar destinatários e payload de envio; extrair `log_id` da resposta. | Resolver inbox de origem. |
+| `ChannelsActivityFilter` | `models.py` | Query server-side (`event_type`, `correlation_id`) **e** match client-side. | HTTP. |
+| `ResolvedInboxAddress` | `models.py` | `can_send` / `can_receive` e erros claros (`ensure_can_send`, `ensure_can_receive`). | Buscar o endereço na API. |
+
+### Fluxo de fetch
+
+1. Connector exige `consumer_config`, pede o inbox a `InboxAddressBook` e recusa send-only (`ensure_can_receive`).
+2. Facade chama `GET /configs/{id}/activity` e `SdkRecord.items` puxa a página.
+3. `ActivityAdapter.to_transaction` vira cada evento em `Transaction` (`metadata.attachments` ainda só metadados).
+4. `ActivityAdapter.finalize_fetch` aplica `ChannelsActivityFilter.select` e, se `deduplicate_fetched_events`, o set `_seen_event_ids` do connector.
+5. Se `download_attachments=True`, `InboxAttachments.hydrate` busca os bytes e coloca `content` em cada anexo. Arquivo lento/falho é **pulado** (sem `content`) para não travar ack/nack. Timeout por arquivo: `attachment_download_timeout` (default 20s, client dedicado, sem retry).
+
+`fetch_transaction_by_id` é o mesmo caminho para um único `GET .../activity/{event_id}`.
+
+### Fluxo de send
+
+1. Connector monta `SendMessageInput` (ou recebe `dict`).
+2. `OutboundMessage.normalize` separa roteamento (`address_id`, `channel`, …) do corpo (`to`, `subject`, `html`/`text`, anexos).
+3. `InboxAddressBook` resolve o remetente; `ensure_can_send` recusa receive-only.
+4. Facade faz `POST /send`. `OutboundMessage.response_id` lê `log_id` (ou fallback) da resposta.
 
 ## Configuração
 
@@ -51,7 +125,7 @@ Não informe `address_id` — o connector resolve o UUID a partir do email + `co
 | `dispatch_transactions` / `dispatch_transactions_async` | `POST /send` para cada `Transaction` (framework Ergon) |
 | `send_message` / `send_message_async` | `POST /send` com `SendMessageInput` ou `dict` |
 | `ack_transaction` / `nack_transaction` | `POST .../activity/{id}/ack` e `.../nack` (estado em `channel_activity_consumptions`) |
-| `download_attachments` | Lê anexos do `Transaction` e chama `GET .../attachments/{id}/file` |
+| `download_attachments` | On-demand: lê anexos do `Transaction` e chama `GET .../attachments/{id}/file` |
 | `close` | `ErgonClient.close()` |
 
 ### API direta do SDK
@@ -100,14 +174,24 @@ Cada `Transaction` retornado carrega:
 
 - `id` = `id` / `log_id` / `provider_message_id` do evento
 - `payload` = evento serializado (dict)
-- `metadata` = `{ source, event_type, channel, direction, status, thread_id, correlation_id, provider_message_id, subject, from_address, to_addresses }`
-- `metadata["message_payload"]["attachments"]` = metadados (`resend_attachment_id`, `filename`, `content_type`, `size`) — sem bytes. O connector resolve isso em `download_attachments`.
+- `metadata` = `{ source, event_type, channel, direction, status, thread_id, correlation_id, provider_message_id, subject, from_address, to_addresses, attachments, has_attachment }`
+- `metadata["attachments"]` = lista de dicts no mesmo formato do Nylas: `{id, filename, content_type, size}`. O `id` é o `resend_attachment_id` da plataforma. Com `download_attachments=True`, cada item ganha `content` (**bytes**). O payload cru da activity continua em `payload` / `metadata["message_payload"]`.
 
 ```python
-tx = connector.fetch_transaction_by_id(event_id)
-files = connector.download_attachments(tx, dest="downloads")
-# files[0].content / files[0].path → downloads/{event_id}/{filename}
+connector = ErgonPlatformChannelsConnector(
+    client=client,
+    consumer_config=ErgonPlatformChannelsConsumerConfig(
+        address="caixa@inbox.ergondata.ai",
+        config_id="...",
+        download_attachments=True,
+    ),
+)
+for tx in connector.fetch_transactions():
+    for att in tx.metadata.get("attachments") or []:
+        print(att["id"], att["filename"], len(att.get("content") or b""))
 ```
+
+`download_attachments(tx, dest=...)` continua disponível se você quiser gravar em disco depois do fetch.
 
 ## Profundidade do feed
 
@@ -143,7 +227,7 @@ Com o framework Ergon (`dispatch_transactions`), monte um ``Transaction`` com ``
 
 Fluxo:
 
-1. `normalize_send_payload` separa os campos de roteamento (`address_id`, `channel`, `resource_id`, `service_name`) do bloco `config` (assunto, corpo, `to`, `cc`, `bcc`, ...).
+1. O connector normaliza o payload (``SendMessageInput`` ou ``dict``) em roteamento (`address_id`, `channel`, `resource_id`, `service_name`) e bloco `config` (assunto, corpo, `to`, `cc`, `bcc`, ...).
 2. Defaults do `producer_config` / `channels_config` preenchem roteamento (`address`, `channel`, `service_name`, `default_reply_to`). Payload `dict` ainda aceita overrides avançados.
 3. `client.channels.send({...})` é chamado.
 4. O ID retornado (`log_id` / `provider_message_id` / `thread_id` / `id`) é adicionado à lista de retorno.

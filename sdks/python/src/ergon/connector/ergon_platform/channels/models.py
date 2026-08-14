@@ -1,6 +1,9 @@
+import unicodedata
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
+
+from ...transaction import Transaction
 
 ChannelName = Literal["email"]
 DEFAULT_CHANNEL: ChannelName = "email"
@@ -37,7 +40,7 @@ class ChannelsActivityFilter(BaseModel):
     )
     subject_contains: Optional[str] = Field(
         default=None,
-        description="Case-insensitive substring match on subject (client-side).",
+        description="Substring match on subject (client-side; case and accent insensitive).",
     )
 
     @property
@@ -54,6 +57,40 @@ class ChannelsActivityFilter(BaseModel):
         if self.thread_id is not None:
             params["thread_id"] = self.thread_id
         return params
+
+    @staticmethod
+    def _field(transaction: Transaction, key: str) -> Any:
+        metadata = transaction.metadata or {}
+        if key in metadata:
+            return metadata[key]
+        payload = transaction.payload
+        if isinstance(payload, dict):
+            return payload.get(key)
+        return getattr(payload, key, None)
+
+    @staticmethod
+    def _fold_text(value: str) -> str:
+        """Lowercase and strip combining marks so ``código`` matches ``codigo``."""
+        decomposed = unicodedata.normalize("NFKD", value)
+        return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).lower()
+
+    def matches(self, transaction: Transaction) -> bool:
+        """Return True when *transaction* satisfies the client-side filter fields."""
+        if self.from_address is not None:
+            sender = str(self._field(transaction, "from_address") or "").strip().lower()
+            if sender != self.from_address.strip().lower():
+                return False
+        if self.subject_contains is not None:
+            subject = str(self._field(transaction, "subject") or "")
+            if self._fold_text(self.subject_contains) not in self._fold_text(subject):
+                return False
+        return True
+
+    def select(self, transactions: List[Transaction]) -> List[Transaction]:
+        """Select transactions that satisfy the client-side filter fields."""
+        if not self.has_client_side_filters:
+            return transactions
+        return [tx for tx in transactions if self.matches(tx)]
 
 
 class ResolvedInboxAddress(BaseModel):
@@ -202,6 +239,16 @@ class ErgonPlatformChannelsConfig(BaseModel):
         default=None,
         description="Advanced activity filter; overrides ``received_only`` when set.",
     )
+    download_attachments: bool = Field(
+        default=False,
+        description="Download attachment bytes onto each fetched Transaction.",
+    )
+    attachment_download_timeout: float = Field(
+        default=20.0,
+        ge=1.0,
+        le=120.0,
+        description="HTTP timeout in seconds for each inbound attachment download.",
+    )
 
     def to_consumer_config(self) -> "ErgonPlatformChannelsConsumerConfig":
         return ErgonPlatformChannelsConsumerConfig(
@@ -210,6 +257,8 @@ class ErgonPlatformChannelsConfig(BaseModel):
             batch_size=self.batch_size,
             received_only=self.received_only,
             activity_filter=self.activity_filter,
+            download_attachments=self.download_attachments,
+            attachment_download_timeout=self.attachment_download_timeout,
         )
 
     def to_producer_config(self) -> "ErgonPlatformChannelsProducerConfig":
@@ -264,6 +313,19 @@ class ErgonPlatformChannelsConsumerConfig(BaseModel):
     activity_filter: Optional[ChannelsActivityFilter] = Field(
         default=None,
         description="Advanced activity filter; overrides ``received_only`` when set.",
+    )
+    download_attachments: bool = Field(
+        default=False,
+        description="Download attachment bytes onto each fetched Transaction (like Nylas).",
+    )
+    attachment_download_timeout: float = Field(
+        default=20.0,
+        ge=1.0,
+        le=120.0,
+        description=(
+            "Per-file HTTP timeout for attachment downloads. Uses a dedicated client "
+            "(no retries) so a stuck Resend CDN cannot block ack/nack."
+        ),
     )
     offset: int = Field(default=0, ge=0, description="Pagination offset.")
     list_params: Dict[str, Any] = Field(

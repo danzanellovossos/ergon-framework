@@ -2,6 +2,9 @@
 
 import pytest
 
+from ergon.connector.ergon_platform.channels._activity import ActivityAdapter
+from ergon.connector.ergon_platform.channels._outbound import OutboundMessage
+from ergon.connector.ergon_platform.channels._sdk import SdkRecord
 from ergon.connector.ergon_platform.channels.models import (
     INBOUND_RECEIVED_EVENT_TYPE,
     ChannelsActivityFilter,
@@ -9,18 +12,15 @@ from ergon.connector.ergon_platform.channels.models import (
     SendMessageAttachment,
     SendMessageInput,
 )
-from ergon.connector.ergon_platform.channels.utils import (
-    deliver_fetched_transactions,
-    event_to_transaction,
-    extract_items,
-    extract_total,
-    filter_activity_transactions,
-    inbox_attachment_id,
-    inbox_attachments,
-    matches_activity_filter,
-    normalize_send_payload,
-)
 from ergon.connector.transaction import Transaction
+
+deliver_fetched_transactions = ActivityAdapter.unseen
+event_to_transaction = ActivityAdapter.to_transaction
+extract_items = SdkRecord.items
+extract_total = SdkRecord.total
+inbox_attachment_id = ActivityAdapter.attachment_id
+inbox_attachments = ActivityAdapter.attachments
+normalize_send_payload = OutboundMessage.normalize
 
 
 class TestResolvedInboxCapabilities:
@@ -81,19 +81,27 @@ class TestChannelsActivityFilter:
             {"id": "1", "from_address": "client@x.com", "subject": "Hi"},
             source="activity",
         )
-        assert matches_activity_filter(tx, filt) is True
+        assert filt.matches(tx) is True
 
     def test_matches_subject_contains(self):
         filt = ChannelsActivityFilter(subject_contains="nf-e")
         tx = event_to_transaction({"id": "1", "subject": "Sua NF-e chegou"}, source="activity")
-        assert matches_activity_filter(tx, filt) is True
+        assert filt.matches(tx) is True
         assert (
-            matches_activity_filter(
+            filt.matches(
                 event_to_transaction({"id": "2", "subject": "Outro assunto"}, source="activity"),
-                filt,
             )
             is False
         )
+
+    def test_matches_subject_contains_ignores_accents(self):
+        filt = ChannelsActivityFilter(subject_contains="código de acesso")
+        tx = event_to_transaction(
+            {"id": "1", "subject": "ENC: Seu codigo de acesso | ASSDI25"},
+            source="activity",
+        )
+        assert filt.matches(tx) is True
+        assert ChannelsActivityFilter(subject_contains="codigo").matches(tx) is True
 
     def test_filter_activity_transactions(self):
         filt = ChannelsActivityFilter(from_address="a@x.com")
@@ -101,7 +109,7 @@ class TestChannelsActivityFilter:
             event_to_transaction({"id": "1", "from_address": "a@x.com"}, source="activity"),
             event_to_transaction({"id": "2", "from_address": "b@x.com"}, source="activity"),
         ]
-        assert [tx.id for tx in filter_activity_transactions(txns, filt)] == ["1"]
+        assert [tx.id for tx in filt.select(txns)] == ["1"]
 
 
 class TestDeliverFetchedTransactions:
@@ -199,6 +207,39 @@ class TestEventToTransaction:
         tx = event_to_transaction(event, source="activity")
 
         assert tx.metadata["message_payload"] == event["payload"]
+        assert tx.metadata["attachments"] == [{"filename": "a.pdf"}]
+        assert tx.metadata["has_attachment"] is True
+
+    def test_normalizes_platform_attachments_to_nylas_shape(self):
+        event = {
+            "id": "evt-1",
+            "payload": {
+                "attachments": [
+                    {
+                        "resend_attachment_id": "att-1",
+                        "filename": "a.pdf",
+                        "content_type": "application/pdf",
+                        "size": 12,
+                    },
+                    {"name": "b.txt"},
+                    {"resend_attachment_id": "skip-me"},
+                ]
+            },
+        }
+
+        tx = event_to_transaction(event, source="config_activity")
+
+        assert tx.metadata["attachments"] == [
+            {
+                "id": "att-1",
+                "filename": "a.pdf",
+                "content_type": "application/pdf",
+                "size": 12,
+            },
+            {"filename": "b.txt"},
+        ]
+        assert "content" not in tx.metadata["attachments"][0]
+        assert tx.metadata["message_payload"]["attachments"][0]["resend_attachment_id"] == "att-1"
 
     def test_falls_back_to_log_id_when_no_id(self):
         event = {"log_id": "log-1", "channel": "email"}
@@ -293,7 +334,7 @@ class TestNormalizeSendPayload:
 
     def test_raises_for_unsupported_payload_type(self):
         with pytest.raises(TypeError, match="Unsupported send payload type"):
-            normalize_send_payload("bad")  # type: ignore[arg-type]
+            normalize_send_payload("bad")
 
 
 class TestBackwardCompatImports:
@@ -352,3 +393,39 @@ class TestInboxAttachments:
         tx = event_to_transaction({"id": "evt-2", "payload": {"text": "hi"}}, source="config_activity")
         assert inbox_attachments(tx) == []
         assert inbox_attachment_id({"filename": "x"}) is None
+
+
+class TestHydrateSkipsFailedDownloads:
+    def test_keeps_metadata_when_download_raises(self):
+        from ergon.connector.ergon_platform.channels._attachments import InboxAttachments
+
+        class _Configs:
+            def activity_attachment_file(self, *args, **kwargs):
+                raise TimeoutError("cdn hung")
+
+        class _Client:
+            def __init__(self):
+                self.channels = type("Channels", (), {})()
+                self.channels.configs = _Configs()
+
+        tx = event_to_transaction(
+            {
+                "id": "evt-1",
+                "payload": {
+                    "attachments": [
+                        {
+                            "resend_attachment_id": "att-1",
+                            "filename": "a.pdf",
+                            "content_type": "application/pdf",
+                        }
+                    ]
+                },
+            },
+            source="config_activity",
+        )
+
+        out = InboxAttachments(_Client()).hydrate("cfg-1", tx)
+
+        assert out.metadata["attachments"][0]["id"] == "att-1"
+        assert out.metadata["attachments"][0]["filename"] == "a.pdf"
+        assert "content" not in out.metadata["attachments"][0]
