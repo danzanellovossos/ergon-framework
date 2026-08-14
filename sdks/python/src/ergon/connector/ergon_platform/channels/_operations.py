@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Optional, Union
 
@@ -17,6 +18,8 @@ from .utils import (
     inbox_attachment_id,
     inbox_attachments,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _ErgonPlatformChannelsOperations:
@@ -421,6 +424,7 @@ class _ErgonPlatformChannelsOperations:
             if not attachment_id:
                 continue
             filename = PurePosixPath(str(meta.get("filename") or attachment_id)).name or attachment_id
+            logger.info("Downloading attachment %s (%s)", filename, attachment_id)
             content = self.download_inbox_attachment(config_id, event_id, attachment_id)
             path: Optional[str] = None
             if dest_dir is not None:
