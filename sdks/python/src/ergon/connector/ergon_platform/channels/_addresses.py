@@ -249,8 +249,8 @@ class InboxAddressBook:
     def _parse_config_entry(cls, entry: Any, config_id: str) -> Optional[ResolvedInboxAddress]:
         """Parse a config entry into a ``ResolvedInboxAddress``."""
         record = SdkRecord(entry)
-        entry_email = cls._get_value(record, "address")
-        entry_id = cls._get_value(record, "id") or cls._get_value(record, "channel_address_id")
+        entry_email = record.get("address")
+        entry_id = record.get("id") or record.get("channel_address_id")
         if not entry_email or not entry_id:
             return None
         return ResolvedInboxAddress(

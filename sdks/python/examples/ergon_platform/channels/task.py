@@ -11,6 +11,7 @@ Com ``download_attachments=True`` no consumer (ver ``config.py``),
 
 Depois: ``ack_transaction`` em sucesso, ``nack_transaction`` em erro.
 """
+
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -80,10 +81,7 @@ class ChannelsEventTask(AsyncConsumerTask):
 
         metadata = transaction.metadata or {}
         message = metadata.get("message_payload") or {}
-        attachments = [
-            ChannelEventAttachment.from_item(item)
-            for item in metadata.get("attachments") or []
-        ]
+        attachments = [ChannelEventAttachment.from_item(item) for item in metadata.get("attachments") or []]
 
         logger.info(
             "Evento %s | %s | de %s | %s anexo(s)",

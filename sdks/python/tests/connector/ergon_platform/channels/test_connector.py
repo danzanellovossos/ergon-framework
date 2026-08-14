@@ -239,9 +239,7 @@ class TestFetchTransactions:
             "items": [
                 {
                     "id": "evt-1",
-                    "payload": {
-                        "attachments": [{"resend_attachment_id": "att-1", "filename": "a.pdf"}]
-                    },
+                    "payload": {"attachments": [{"resend_attachment_id": "att-1", "filename": "a.pdf"}]},
                 }
             ],
             "total": 1,
