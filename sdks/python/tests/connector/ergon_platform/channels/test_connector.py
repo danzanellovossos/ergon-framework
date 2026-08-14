@@ -226,7 +226,6 @@ class TestFetchTransactions:
             ),
         ]
 
-
     def test_activity_filter_passes_server_params_and_filters_client_side(self):
         config = ErgonPlatformChannelsConsumerConfig(
             address=INBOX,
@@ -300,7 +299,6 @@ class TestFetchTransactions:
 
         assert [tx.id for tx in txns] == ["evt-1"]
         assert sdk_client.channels.addresses_calls == []
-
 
     def test_resolves_address_from_config_id_and_email_via_activity(self):
         config = ErgonPlatformChannelsConsumerConfig(

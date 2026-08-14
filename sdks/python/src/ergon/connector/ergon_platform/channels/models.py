@@ -19,7 +19,9 @@ class ChannelsActivityFilter(BaseModel):
 
     received_only: bool = Field(
         default=True,
-        description=f"When ``True`` (default), fetch inbound emails only (``event_type={INBOUND_RECEIVED_EVENT_TYPE}``).",
+        description=(
+            f"When ``True`` (default), fetch inbound emails only (``event_type={INBOUND_RECEIVED_EVENT_TYPE}``)."
+        ),
     )
     correlation_id: Optional[str] = Field(
         default=None,
@@ -119,10 +121,7 @@ class ResolvedInboxAddress(BaseModel):
             lines.append(f"  Channel config: {self._channel_label()}")
         lines.append(f"  Address direction: {self.direction}")
         if self.config_can_receive is not None or self.config_can_send is not None:
-            lines.append(
-                f"  Platform: inbound_enabled={self.config_can_receive}, "
-                f"can_send={self.config_can_send}"
-            )
+            lines.append(f"  Platform: inbound_enabled={self.config_can_receive}, can_send={self.config_can_send}")
 
         if self.config_can_receive is False:
             lines.append(
@@ -130,14 +129,9 @@ class ResolvedInboxAddress(BaseModel):
                 "inbound enabled (receive or both)."
             )
         elif self.direction == "send":
-            lines.append(
-                "Fix: this address is send-only — point consumer_config to a receive "
-                "or both inbox."
-            )
+            lines.append("Fix: this address is send-only — point consumer_config to a receive or both inbox.")
         else:
-            lines.append(
-                "Fix: use ErgonPlatformChannelsConsumerConfig with a receive-capable inbox."
-            )
+            lines.append("Fix: use ErgonPlatformChannelsConsumerConfig with a receive-capable inbox.")
         raise ValueError("\n".join(lines))
 
     def ensure_can_send(self) -> None:
@@ -153,10 +147,7 @@ class ResolvedInboxAddress(BaseModel):
             lines.append(f"  Channel config: {self._channel_label()}")
         lines.append(f"  Address direction: {self.direction}")
         if self.config_can_receive is not None or self.config_can_send is not None:
-            lines.append(
-                f"  Platform: inbound_enabled={self.config_can_receive}, "
-                f"can_send={self.config_can_send}"
-            )
+            lines.append(f"  Platform: inbound_enabled={self.config_can_receive}, can_send={self.config_can_send}")
 
         if self.config_can_send is False:
             lines.append(
@@ -165,14 +156,9 @@ class ResolvedInboxAddress(BaseModel):
                 "In the example app, set CHANNELS_SEND_CONFIG_ID / CHANNELS_SEND_ADDRESS."
             )
         elif self.direction == "receive":
-            lines.append(
-                "Fix: this address is receive-only — point producer_config to a send "
-                "or both inbox."
-            )
+            lines.append("Fix: this address is receive-only — point producer_config to a send or both inbox.")
         else:
-            lines.append(
-                "Fix: use ErgonPlatformChannelsProducerConfig with a send-capable inbox."
-            )
+            lines.append("Fix: use ErgonPlatformChannelsProducerConfig with a send-capable inbox.")
         raise ValueError("\n".join(lines))
 
     def as_info_dict(self) -> Dict[str, Any]:
@@ -271,7 +257,9 @@ class ErgonPlatformChannelsConsumerConfig(BaseModel):
     )
     received_only: bool = Field(
         default=True,
-        description=f"When ``True`` (default), fetch inbound emails only (``event_type={INBOUND_RECEIVED_EVENT_TYPE}``).",
+        description=(
+            f"When ``True`` (default), fetch inbound emails only (``event_type={INBOUND_RECEIVED_EVENT_TYPE}``)."
+        ),
     )
     activity_filter: Optional[ChannelsActivityFilter] = Field(
         default=None,

@@ -59,14 +59,13 @@ class _ErgonPlatformChannelsOperations:
             verified = self.client.channels.configs.verify(inbox.config_id)
         except Exception:
             return inbox
-        if not isinstance(verified, dict):
-            model_dump = getattr(verified, "model_dump", None)
-            verified = model_dump(mode="json") if callable(model_dump) else {}
-        capabilities = verified.get("capabilities") or {}
-        inbound_enabled = verified.get("inbound_enabled")
+        capabilities = get_value(verified, "capabilities") or {}
+        if not isinstance(capabilities, dict):
+            capabilities = {}
+        inbound_enabled = get_value(verified, "inbound_enabled")
         return inbox.model_copy(
             update={
-                "config_name": verified.get("name"),
+                "config_name": get_value(verified, "name"),
                 "config_can_send": capabilities.get("can_send"),
                 "config_can_receive": inbound_enabled if inbound_enabled is not None else None,
             }
@@ -397,10 +396,8 @@ class _ErgonPlatformChannelsOperations:
         return event_to_transaction(event, source="config_activity")
 
     def download_inbox_attachment(self, config_id: str, event_id: str, attachment_id: str) -> bytes:
-        """Download an inbox attachment.""" 
-        return self.client.channels.configs.activity_attachment_file(
-            config_id, event_id, attachment_id
-        )
+        """Download an inbox attachment."""
+        return self.client.channels.configs.activity_attachment_file(config_id, event_id, attachment_id)
 
     def download_inbox_attachments(
         self,
@@ -423,9 +420,7 @@ class _ErgonPlatformChannelsOperations:
             attachment_id = inbox_attachment_id(meta)
             if not attachment_id:
                 continue
-            filename = (
-                PurePosixPath(str(meta.get("filename") or attachment_id)).name or attachment_id
-            )
+            filename = PurePosixPath(str(meta.get("filename") or attachment_id)).name or attachment_id
             content = self.download_inbox_attachment(config_id, event_id, attachment_id)
             path: Optional[str] = None
             if dest_dir is not None:

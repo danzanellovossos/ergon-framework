@@ -192,9 +192,7 @@ class ErgonPlatformChannelsConnector(Connector):
         config = self._require_consumer_config("download attachments")
         inbox = self._resolve_inbox(config)
         inbox.ensure_can_receive()
-        return self._operations.download_inbox_attachments(
-            inbox.config_id, transaction, dest=dest
-        )
+        return self._operations.download_inbox_attachments(inbox.config_id, transaction, dest=dest)
 
     def close(self) -> None:
         self.client.close()
@@ -217,8 +215,7 @@ class ErgonPlatformChannelsConnector(Connector):
             address=address,
             address_id=address_id,
             config_id=(
-                self._producer_config.config_id
-                or (self._consumer_config.config_id if self._consumer_config else None)
+                self._producer_config.config_id or (self._consumer_config.config_id if self._consumer_config else None)
             ),
         )
 

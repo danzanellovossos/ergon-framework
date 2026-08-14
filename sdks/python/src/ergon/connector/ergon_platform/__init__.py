@@ -27,8 +27,8 @@ if TYPE_CHECKING:
     from .channels import (
         AsyncErgonPlatformChannelsConnector,
         ErgonPlatformChannelsConfig,
-        ErgonPlatformChannelsConsumerConfig,
         ErgonPlatformChannelsConnector,
+        ErgonPlatformChannelsConsumerConfig,
         ErgonPlatformChannelsProducerConfig,
         SendMessageInput,
         SendMessagePayload,

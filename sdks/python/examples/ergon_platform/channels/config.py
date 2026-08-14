@@ -7,6 +7,9 @@ from env import (
     ERGON_CLIENT_ID,
     ERGON_CLIENT_SECRET,
 )
+from policies import build_consumer_policy
+from task import ChannelsEventTask
+
 from ergon import task
 from ergon.connector import ConnectorConfig
 from ergon.connector.ergon_platform import ErgonPlatformClient
@@ -14,8 +17,6 @@ from ergon.connector.ergon_platform.channels import (
     AsyncErgonPlatformChannelsConnector,
     ErgonPlatformChannelsConsumerConfig,
 )
-from policies import build_consumer_policy
-from task import ChannelsEventTask
 
 ERGON_PLATFORM_CLIENT = ErgonPlatformClient(
     client_id=ERGON_CLIENT_ID,

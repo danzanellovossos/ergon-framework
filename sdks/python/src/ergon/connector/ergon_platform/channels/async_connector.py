@@ -166,9 +166,7 @@ class AsyncErgonPlatformChannelsConnector(AsyncConnector):
         """Acknowledge a processed inbox event on the platform."""
         config = self._require_consumer_config("ack a transaction")
         inbox = await self._resolve_inbox_async(config)
-        await asyncio.to_thread(
-            lambda: self._operations.ack_inbox_event(inbox.config_id, transaction.id)
-        )
+        await asyncio.to_thread(lambda: self._operations.ack_inbox_event(inbox.config_id, transaction.id))
         if transaction.id:
             self._seen_event_ids.add(transaction.id)
 
@@ -207,9 +205,7 @@ class AsyncErgonPlatformChannelsConnector(AsyncConnector):
         inbox = await self._resolve_inbox_async(config)
         inbox.ensure_can_receive()
         return await asyncio.to_thread(
-            lambda: self._operations.download_inbox_attachments(
-                inbox.config_id, transaction, dest=dest
-            )
+            lambda: self._operations.download_inbox_attachments(inbox.config_id, transaction, dest=dest)
         )
 
     async def close(self) -> None:
@@ -239,8 +235,7 @@ class AsyncErgonPlatformChannelsConnector(AsyncConnector):
             address=address,
             address_id=address_id,
             config_id=(
-                self._producer_config.config_id
-                or (self._consumer_config.config_id if self._consumer_config else None)
+                self._producer_config.config_id or (self._consumer_config.config_id if self._consumer_config else None)
             ),
         )
 

@@ -87,10 +87,13 @@ class TestChannelsActivityFilter:
         filt = ChannelsActivityFilter(subject_contains="nf-e")
         tx = event_to_transaction({"id": "1", "subject": "Sua NF-e chegou"}, source="activity")
         assert matches_activity_filter(tx, filt) is True
-        assert matches_activity_filter(
-            event_to_transaction({"id": "2", "subject": "Outro assunto"}, source="activity"),
-            filt,
-        ) is False
+        assert (
+            matches_activity_filter(
+                event_to_transaction({"id": "2", "subject": "Outro assunto"}, source="activity"),
+                filt,
+            )
+            is False
+        )
 
     def test_filter_activity_transactions(self):
         filt = ChannelsActivityFilter(from_address="a@x.com")
