@@ -242,16 +242,27 @@ result = connector.get_pipeline_result("wf-1", "item-1", "field-1")
 
 ## Ack
 
-Ao contrário dos brokers, o ack tem **semântica de domínio**: move o item para `ack_phase_id`. Sem `ack_phase_id` configurado, o ack é no-op. Em uma `AsyncConsumerTask`, chame `ack_transaction` em `handle_process_success`.
+Ao contrário dos brokers, o ack tem **semântica de domínio**: move o item para `ack_phase_id` via `items.route`. Sem `ack_phase_id` configurado, o ack é no-op. Em uma `AsyncConsumerTask`, chame `ack_transaction` em `handle_process_success`.
+
+O caminho de ack **não** escreve `visibility_timeout_on_release_minutes` / `visible_after` no connector. Se um `route`/`comment` retornar `409 Item is in visibility cooldown`, a causa costuma ser cooldown de **transição** ou de um **release anterior** (nack / auto-release por `timeout_minutes` da fase) — não o próprio `ack_transaction`.
 
 ## Nack
 
 `nack_transaction` também usa semântica de domínio:
 
-- `requeue=True`: faz `release_item`, mantendo o mesmo card. Quando `delay_seconds > 0`, o connector converte o valor para minutos com arredondamento para cima, atualiza o item com `visibility_timeout_on_release_minutes` e só então chama `release`. A plataforma usa esse valor para preencher `visible_after`.
+- `requeue=True`: faz `release_item`, mantendo o mesmo card. O default de `delay_seconds` é **`0`** (sem override no item).
 - `requeue=False`: move o item para `nack_phase_id` (fase de erro), que deve estar configurada no `ErgonPlatformConsumerConfig`.
 
-O delay efetivo da plataforma é em minutos. Por isso, `delay_seconds=1` até `60` vira `visibility_timeout_on_release_minutes=1`; `delay_seconds=61` até `120` vira `2`, e assim por diante. Se o update do timeout falhar, o release não deve prosseguir, para evitar reentrada imediata na fila.
+### Semântica de `delay_seconds` no release
+
+| Valor | Efeito no connector | Efeito na Platform |
+|-------|---------------------|--------------------|
+| `None` / omitido / `0` | Não faz PATCH de `visibility_timeout_on_release_minutes` | Aplica o cooldown da **fase** (se houver). **Não** força “sem cooldown”. |
+| `> 0` | `PATCH` com `ceil(delay_seconds / 60)` minutos, depois `release` | Usa o override do item para preencher `visible_after` |
+
+O delay efetivo da plataforma é em **minutos**. Por isso, `delay_seconds=1` até `60` vira `visibility_timeout_on_release_minutes=1` (incluindo o antigo default `10` → **1 minuto**). `61`–`120` vira `2`, e assim por diante. Se o update do timeout falhar, o release não deve prosseguir, para evitar reentrada imediata na fila.
+
+Para RPAs longos: aumente `timeout_minutes` da fase (evita auto-release mid-run) e não confie só em `delay_seconds=0` para desligar cooldown — isso ainda depende da config da fase / suporte da Platform a override `0`.
 
 ## Recomendações de uso
 

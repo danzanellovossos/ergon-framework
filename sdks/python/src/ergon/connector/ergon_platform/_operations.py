@@ -140,6 +140,15 @@ class _ErgonPlatformOperations:
         delay_seconds: Optional[int] = None,
         **fields: Any,
     ) -> Any:
+        """Release an item, optionally setting an item-level visibility cooldown.
+
+        ``delay_seconds`` semantics:
+        - ``None`` or ``0``: do **not** PATCH ``visibility_timeout_on_release_minutes``.
+          Platform still applies the **phase** ``visibility_timeout_on_release_minutes``
+          on release (item override ``0`` is not expressible as "force no cooldown").
+        - ``> 0``: PATCH ``visibility_timeout_on_release_minutes = ceil(delay_seconds / 60)``
+          then release. Sub-minute values (e.g. 10s) become **1 minute**.
+        """
         if delay_seconds is not None:
             if delay_seconds < 0:
                 raise ValueError("delay_seconds must be a non-negative integer")

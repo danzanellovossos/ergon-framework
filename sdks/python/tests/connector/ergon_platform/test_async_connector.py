@@ -259,6 +259,17 @@ class TestAckTransaction:
 
         assert sdk_client.workflows.items.route_calls == []
 
+    async def test_ack_does_not_set_release_visibility_cooldown(self):
+        config = ErgonPlatformConsumerConfig(workflow_id="wf", phase_id="ph", ack_phase_id="done")
+        sdk_client = _Client()
+        connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
+
+        await connector.ack_transaction(Transaction(id="item-1", payload={}))
+
+        assert sdk_client.workflows.items.update_calls == []
+        assert sdk_client.workflows.items.release_calls == []
+        assert sdk_client.workflows.items.route_calls == [("item-1", "done")]
+
 
 class TestReleaseItem:
     async def test_release_forwards_delay_seconds_to_domain_operation(self):
@@ -269,6 +280,15 @@ class TestReleaseItem:
 
         assert result == {"id": "item-1", "released": True}
         assert sdk_client.workflows.items.update_calls == [("item-1", {"visibility_timeout_on_release_minutes": 2})]
+        assert sdk_client.workflows.items.release_calls == [("item-1", {})]
+
+    async def test_release_with_delay_seconds_zero_skips_visibility_override(self):
+        sdk_client = _Client()
+        connector = _make_connector(sdk_client=sdk_client)
+
+        await connector.release_item("item-1", delay_seconds=0)
+
+        assert sdk_client.workflows.items.update_calls == []
         assert sdk_client.workflows.items.release_calls == [("item-1", {})]
 
 
@@ -282,6 +302,15 @@ class TestNackTransaction:
         assert sdk_client.workflows.items.release_calls == [("item-1", {})]
         assert sdk_client.workflows.items.update_calls == []
 
+    async def test_nack_default_delay_does_not_set_visibility_override(self):
+        sdk_client = _Client()
+        connector = _make_connector(sdk_client=sdk_client)
+
+        await connector.nack_transaction(Transaction(id="item-1", payload={}), requeue=True)
+
+        assert sdk_client.workflows.items.release_calls == [("item-1", {})]
+        assert sdk_client.workflows.items.update_calls == []
+
     async def test_nack_requeue_updates_release_delay_before_release(self):
         sdk_client = _Client()
         connector = _make_connector(sdk_client=sdk_client)
@@ -289,6 +318,15 @@ class TestNackTransaction:
         await connector.nack_transaction(Transaction(id="item-1", payload={}), requeue=True, delay_seconds=75)
 
         assert sdk_client.workflows.items.update_calls == [("item-1", {"visibility_timeout_on_release_minutes": 2})]
+        assert sdk_client.workflows.items.release_calls == [("item-1", {})]
+
+    async def test_nack_sub_minute_delay_rounds_up_to_one_minute(self):
+        sdk_client = _Client()
+        connector = _make_connector(sdk_client=sdk_client)
+
+        await connector.nack_transaction(Transaction(id="item-1", payload={}), requeue=True, delay_seconds=10)
+
+        assert sdk_client.workflows.items.update_calls == [("item-1", {"visibility_timeout_on_release_minutes": 1})]
         assert sdk_client.workflows.items.release_calls == [("item-1", {})]
 
     async def test_nack_without_requeue_moves_to_nack_phase(self):

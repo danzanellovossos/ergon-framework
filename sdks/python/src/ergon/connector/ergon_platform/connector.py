@@ -126,7 +126,14 @@ class ErgonPlatformConnector(Connector):
             **fields,
         )
 
-    def nack_transaction(self, transaction: Transaction, requeue: bool = True, delay_seconds: int = 10) -> None:
+    def nack_transaction(self, transaction: Transaction, requeue: bool = True, delay_seconds: int = 0) -> None:
+        """Nack a transaction.
+
+        When ``requeue=True``, releases the item. ``delay_seconds`` defaults to ``0``
+        (no item-level override; Platform phase cooldown still applies if configured).
+        Values ``> 0`` are rounded up to whole minutes via ``ceil(delay_seconds / 60)``
+        before release — e.g. ``10`` becomes **1 minute**, not 10 seconds.
+        """
         if requeue:
             self._operations.release_item(transaction.id, delay_seconds=delay_seconds)
             return

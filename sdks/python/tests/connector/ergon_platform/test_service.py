@@ -213,6 +213,25 @@ class TestReleaseWithDelaySeconds:
             ("release", "item-1", {}),
         ]
 
+    def test_release_with_delay_seconds_zero_does_not_update_visibility_timeout(self):
+        operations = _make_operations()
+
+        operations.release_item("item-1", delay_seconds=0)
+
+        assert operations.client.workflows.items.calls == [
+            ("release", "item-1", {}),
+        ]
+
+    def test_release_sub_minute_delay_rounds_up_to_one_minute(self):
+        operations = _make_operations()
+
+        operations.release_item("item-1", delay_seconds=10)
+
+        assert operations.client.workflows.items.calls == [
+            ("update", "item-1", {"visibility_timeout_on_release_minutes": 1}),
+            ("release", "item-1", {}),
+        ]
+
     def test_release_rejects_negative_delay_seconds(self):
         operations = _make_operations()
 
