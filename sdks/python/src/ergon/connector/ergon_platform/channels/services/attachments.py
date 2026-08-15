@@ -109,7 +109,7 @@ class ChannelsAttachmentService:
             thread_name_prefix="channels-attachment",
         ) as executor:
             for job in jobs:
-                transaction_index, attachment_index, event_id, attachment_id, filename = tuple(job)
+                transaction_index, attachment_index, event_id, attachment_id, filename = job
                 future = executor.submit(
                     self._download_attachment,
                     config_id,
