@@ -5,7 +5,7 @@ from ...connector import Connector
 from ...transaction import Transaction
 from .._client import create_ergon_client
 from ..models import ErgonPlatformClient
-from ._operations import _ErgonPlatformOperations
+from ._operations import ErgonPlatformWorkflowsService
 from .models import (
     CreateItemPayload,
     ErgonPlatformConsumerConfig,
@@ -24,7 +24,8 @@ class ErgonPlatformConnector(Connector):
         producer_config: Optional[ErgonPlatformProducerConfig] = None,
     ) -> None:
         self.client = create_ergon_client(client)
-        self._operations = _ErgonPlatformOperations(client, self.client)
+        self.service = ErgonPlatformWorkflowsService(client, self.client)
+        self._operations = self.service
         self._consumer_config = consumer_config
         self._producer_config = producer_config or ErgonPlatformProducerConfig()
 

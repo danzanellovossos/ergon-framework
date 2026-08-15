@@ -15,10 +15,12 @@ from .models import (
 if TYPE_CHECKING:
     from .async_connector import AsyncErgonPlatformChannelsConnector
     from .connector import ErgonPlatformChannelsConnector
+    from .services import ErgonPlatformChannelsService
 
 _LAZY_EXPORTS = {
     "AsyncErgonPlatformChannelsConnector": "async_connector",
     "ErgonPlatformChannelsConnector": "connector",
+    "ErgonPlatformChannelsService": "services",
 }
 
 
@@ -44,6 +46,7 @@ __all__ = [
     "ErgonPlatformChannelsConfig",
     "ErgonPlatformChannelsConsumerConfig",
     "ErgonPlatformChannelsProducerConfig",
+    "ErgonPlatformChannelsService",
     "InboxAttachmentFile",
     "SendMessageAttachment",
     "SendMessageInput",

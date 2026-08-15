@@ -6,7 +6,6 @@ from ...connector import Connector
 from ...transaction import Transaction
 from .._client import create_ergon_client
 from ..models import ErgonPlatformClient
-from ._operations import _ErgonPlatformChannelsOperations
 from .models import (
     DEFAULT_CHANNEL,
     ErgonPlatformChannelsConfig,
@@ -18,6 +17,7 @@ from .models import (
     SendMessageInput,
     SendMessagePayload,
 )
+from .services import ErgonPlatformChannelsService
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class ErgonPlatformChannelsConnector(Connector):
         self._consumer_config = consumer_config
         self._producer_config = producer_config or ErgonPlatformChannelsProducerConfig()
         self.client = create_ergon_client(client)
-        self._operations = _ErgonPlatformChannelsOperations(
+        self.service = ErgonPlatformChannelsService(
             client,
             self.client,
             download_client=self._attachment_download_client(client),
@@ -55,20 +55,27 @@ class ErgonPlatformChannelsConnector(Connector):
         inbox = self._resolve_inbox(config)
         inbox.ensure_can_receive()
         limit = batch_size or config.batch_size
-        params: Dict[str, Any] = {**config.activity_query_params(), **kwargs}
-        transactions = self._operations.fetch_inbox_events(
-            inbox.config_id,
+        if kwargs:
+            raise TypeError(f"Unsupported inbox claim options: {', '.join(sorted(kwargs))}")
+        transactions = self.service.activity.claim_inbox_transactions(
+            config_id=inbox.config_id,
             address_id=inbox.address_id,
+            config=config,
             limit=limit,
-            offset=config.offset,
-            **params,
-        )
-        transactions = self._operations.finalize_fetched_transactions(
-            transactions,
-            config,
             seen_ids=self._seen_event_ids if config.deduplicate_fetched_events else None,
         )
-        return self._hydrate_fetched_transactions(config, inbox.config_id, transactions)
+        try:
+            return self._hydrate_fetched_transactions(config, inbox.config_id, transactions)
+        except Exception:
+            self.service.activity.release_claims(
+                inbox.config_id,
+                transactions,
+                delay_seconds=config.nack_delay_seconds,
+            )
+            for transaction in transactions:
+                if transaction.id:
+                    self._seen_event_ids.discard(transaction.id)
+            raise
 
     def _hydrate_fetched_transactions(
         self,
@@ -78,13 +85,21 @@ class ErgonPlatformChannelsConnector(Connector):
     ) -> List[Transaction]:
         if not config.download_attachments:
             return transactions
-        return [self._operations.hydrate_inbox_attachments(config_id, tx) for tx in transactions]
+        return self.service.attachments.hydrate_inbox_transactions(
+            config_id,
+            transactions,
+            failure_policy=config.attachment_failure_policy,
+        )
 
     def fetch_transaction_by_id(self, transaction_id: str, *args, **kwargs) -> Transaction:
         config = self._require_consumer_config("fetch a transaction by id")
         inbox = self._resolve_inbox(config)
         inbox.ensure_can_receive()
-        transaction = self._operations.get_inbox_event(inbox.config_id, transaction_id, **kwargs)
+        transaction = self.service.activity.get_inbox_event(
+            inbox.config_id,
+            transaction_id,
+            **kwargs,
+        )
         hydrated = self._hydrate_fetched_transactions(config, inbox.config_id, [transaction])
         return hydrated[0]
 
@@ -92,18 +107,17 @@ class ErgonPlatformChannelsConnector(Connector):
         config = self._require_consumer_config("count transactions")
         inbox = self._resolve_inbox(config)
         inbox.ensure_can_receive()
-        params: Dict[str, Any] = {**config.activity_query_params(), **kwargs}
-        return self._operations.get_inbox_events_count(
+        return self.service.activity.get_inbox_events_count(
             inbox.config_id,
             address_id=inbox.address_id,
-            **params,
+            **kwargs,
         )
 
     def dispatch_transactions(self, transactions: List[Transaction], *args, **kwargs) -> List[str]:
         sent_ids: List[str] = []
         for transaction in transactions:
             result = self._send_from_payload(transaction.payload)
-            sent_ids.append(self._operations.send_response_id(result))
+            sent_ids.append(self.service.messages.send_response_id(result))
         return sent_ids
 
     def send_message(self, payload: SendMessagePayload) -> Any:
@@ -123,7 +137,7 @@ class ErgonPlatformChannelsConnector(Connector):
     ) -> str:
         """Send one email and return the platform log/message id."""
         payload = SendMessageInput(
-            to=self._operations.normalize_recipients(to),
+            to=self.service.messages.normalize_recipients(to),
             subject=subject,
             text=text,
             html=html,
@@ -134,15 +148,15 @@ class ErgonPlatformChannelsConnector(Connector):
             attachments=attachments,
         )
         result = self._send_from_payload(payload)
-        return self._operations.send_response_id(result)
+        return self.service.messages.send_response_id(result)
 
     def list_thread_messages(self, thread_id: str, **params: Any) -> List[Transaction]:
         """Read messages of a specific thread (outside the normal consumer loop)."""
-        return self._operations.fetch_thread_messages(thread_id, **params)
+        return self.service.messages.fetch_thread_messages(thread_id, **params)
 
     def list_company_activity(self, **params: Any) -> List[Transaction]:
         """Read the company-wide channels activity feed (admin/reporting)."""
-        return self._operations.fetch_activity_events(**params)
+        return self.service.activity.fetch_activity_events(**params)
 
     def resolve_inbox(self) -> ResolvedInboxAddress:
         """Resolve ``address`` (+ optional ``config_id``) to platform routing metadata."""
@@ -156,11 +170,22 @@ class ErgonPlatformChannelsConnector(Connector):
             config = config.model_copy(update={"address": address})
         return self._resolve_inbox(config).as_info_dict()
 
-    def ack_transaction(self, transaction: Transaction) -> None:
+    def ack_transaction(
+        self,
+        transaction: Transaction,
+        *,
+        allow_attachment_failures: bool = False,
+    ) -> None:
         """Acknowledge a processed inbox event on the platform."""
         config = self._require_consumer_config("ack a transaction")
         inbox = self._resolve_inbox(config)
-        self._operations.ack_inbox_event(inbox.config_id, transaction.id)
+        failures = (transaction.metadata or {}).get("attachment_failures")
+        if failures and not allow_attachment_failures:
+            raise ValueError(
+                "Transaction has failed attachment downloads; nack it or pass "
+                "allow_attachment_failures=True to acknowledge explicitly"
+            )
+        self.service.activity.ack_inbox_event(inbox.config_id, transaction)
         if transaction.id:
             self._seen_event_ids.add(transaction.id)
 
@@ -174,9 +199,9 @@ class ErgonPlatformChannelsConnector(Connector):
         config = self._require_consumer_config("nack a transaction")
         inbox = self._resolve_inbox(config)
         delay = config.nack_delay_seconds if delay_seconds is None else delay_seconds
-        self._operations.nack_inbox_event(
+        self.service.activity.nack_inbox_event(
             inbox.config_id,
-            transaction.id,
+            transaction,
             requeue=requeue,
             delay_seconds=delay,
         )
@@ -196,10 +221,14 @@ class ErgonPlatformChannelsConnector(Connector):
         config = self._require_consumer_config("download attachments")
         inbox = self._resolve_inbox(config)
         inbox.ensure_can_receive()
-        return self._operations.download_inbox_attachments(inbox.config_id, transaction, dest=dest)
+        return self.service.attachments.download_inbox_attachments(
+            inbox.config_id,
+            transaction,
+            dest=dest,
+        )
 
     def close(self) -> None:
-        self._operations.close()
+        self.service.close()
         self.client.close()
 
     def _attachment_download_client(self, config: ErgonPlatformClient) -> Any:
@@ -215,7 +244,7 @@ class ErgonPlatformChannelsConnector(Connector):
         return self._consumer_config
 
     def _resolve_inbox(self, config: ErgonPlatformChannelsConsumerConfig) -> ResolvedInboxAddress:
-        return self._operations.resolve_consumer_inbox(config)
+        return self.service.addresses.resolve_consumer_inbox(config)
 
     def _resolve_send_inbox(
         self,
@@ -223,7 +252,7 @@ class ErgonPlatformChannelsConnector(Connector):
         address_id: Optional[str],
         address: Optional[str],
     ) -> ResolvedInboxAddress:
-        return self._operations.resolve_sender_inbox(
+        return self.service.addresses.resolve_sender_inbox(
             address=address,
             address_id=address_id,
             config_id=(
@@ -237,7 +266,7 @@ class ErgonPlatformChannelsConnector(Connector):
         return self._producer_config.address
 
     def _send_from_payload(self, payload: SendMessagePayload) -> Any:
-        parts = self._operations.normalize_send_payload(payload)
+        parts = self.service.messages.normalize_send_payload(payload)
         top = parts["top"]
         config: Dict[str, Any] = parts["config"]
         producer = self._producer_config
@@ -256,7 +285,7 @@ class ErgonPlatformChannelsConnector(Connector):
         if producer.default_reply_to and not config.get("reply_to"):
             config["reply_to"] = producer.default_reply_to
 
-        return self._operations.send_message(
+        return self.service.messages.send_message(
             address_id=inbox.address_id,
             channel=channel,
             config=config,

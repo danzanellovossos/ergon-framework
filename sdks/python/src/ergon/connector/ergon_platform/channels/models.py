@@ -1,4 +1,6 @@
+import json
 import unicodedata
+import uuid
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
@@ -10,14 +12,15 @@ DEFAULT_CHANNEL: ChannelName = "email"
 AddressDirection = Literal["send", "receive", "both"]
 
 INBOUND_RECEIVED_EVENT_TYPE = "channels.email.received"
+_SUBSCRIPTION_NAMESPACE = uuid.UUID("a62613cf-d5f8-4d46-b69d-d120766942eb")
 
 
 class ChannelsActivityFilter(BaseModel):
     """Filter inbox activity events by type and metadata.
 
-    Server-side fields are sent as activity query params. Client-side fields
-    (``from_address``, ``subject_contains``) are applied after fetch on each
-    :class:`~ergon.connector.transaction.Transaction`.
+    Claim responses contain complete events, so filters are evaluated before a
+    transaction is handed to the task. Non-matches are acknowledged only for
+    this subscription, preventing them from starving later matching events.
     """
 
     received_only: bool = Field(
@@ -28,11 +31,11 @@ class ChannelsActivityFilter(BaseModel):
     )
     correlation_id: Optional[str] = Field(
         default=None,
-        description="Filter by platform correlation id (server-side).",
+        description="Filter by platform correlation id.",
     )
     thread_id: Optional[str] = Field(
         default=None,
-        description="Filter by thread id (server-side when supported by the API).",
+        description="Filter by thread id.",
     )
     from_address: Optional[str] = Field(
         default=None,
@@ -75,7 +78,17 @@ class ChannelsActivityFilter(BaseModel):
         return "".join(ch for ch in decomposed if not unicodedata.combining(ch)).lower()
 
     def matches(self, transaction: Transaction) -> bool:
-        """Return True when *transaction* satisfies the client-side filter fields."""
+        """Return True when *transaction* satisfies this subscription filter."""
+        if self.received_only:
+            event_type = str(self._field(transaction, "event_type") or "")
+            if event_type and event_type != INBOUND_RECEIVED_EVENT_TYPE:
+                return False
+        if self.correlation_id is not None:
+            if str(self._field(transaction, "correlation_id") or "") != self.correlation_id:
+                return False
+        if self.thread_id is not None:
+            if str(self._field(transaction, "thread_id") or "") != self.thread_id:
+                return False
         if self.from_address is not None:
             sender = str(self._field(transaction, "from_address") or "").strip().lower()
             if sender != self.from_address.strip().lower():
@@ -231,6 +244,13 @@ class ErgonPlatformChannelsConfig(BaseModel):
         description="Separate sender inbox; defaults to ``address``.",
     )
     batch_size: int = Field(default=50, ge=1, description="Max emails per fetch.")
+    subscription_id: Optional[str] = Field(
+        default=None,
+        description="Optional stable inbox subscription UUID.",
+    )
+    consumer_id: str = Field(default="ergon-framework", min_length=1, max_length=255)
+    visibility_timeout_seconds: int = Field(default=300, ge=1, le=3600)
+    nack_delay_seconds: int = Field(default=0, ge=0)
     received_only: bool = Field(
         default=True,
         description=f"Fetch inbound emails only (``{INBOUND_RECEIVED_EVENT_TYPE}``).",
@@ -243,6 +263,7 @@ class ErgonPlatformChannelsConfig(BaseModel):
         default=False,
         description="Download attachment bytes onto each fetched Transaction.",
     )
+    attachment_failure_policy: Literal["raise", "best_effort"] = "raise"
     attachment_download_timeout: float = Field(
         default=20.0,
         ge=1.0,
@@ -255,9 +276,14 @@ class ErgonPlatformChannelsConfig(BaseModel):
             address=self.address,
             config_id=self.config_id,
             batch_size=self.batch_size,
+            subscription_id=self.subscription_id,
+            consumer_id=self.consumer_id,
+            visibility_timeout_seconds=self.visibility_timeout_seconds,
+            nack_delay_seconds=self.nack_delay_seconds,
             received_only=self.received_only,
             activity_filter=self.activity_filter,
             download_attachments=self.download_attachments,
+            attachment_failure_policy=self.attachment_failure_policy,
             attachment_download_timeout=self.attachment_download_timeout,
         )
 
@@ -280,17 +306,31 @@ class ErgonPlatformChannelsConsumerConfig(BaseModel):
         description="Channel UUID from the console URL. Set together with ``address`` (recommended).",
     )
     batch_size: int = Field(default=50, ge=1, description="Max events per fetch.")
-    pending_only: bool = Field(
-        default=True,
-        description="Fetch only events not yet acknowledged (platform consumption state).",
-    )
-    include_acked: bool = Field(
-        default=False,
-        description="Include acknowledged events (history/audit). Overrides pending_only on the API.",
-    )
-    since: Optional[str] = Field(
+    subscription_id: Optional[str] = Field(
         default=None,
-        description="ISO timestamp; return events created strictly after this instant.",
+        description=(
+            "Stable inbox subscription UUID. When omitted, the connector derives one "
+            "from the channel, address, and filter contract so credential rotation "
+            "does not reset delivery state."
+        ),
+    )
+    consumer_id: str = Field(
+        default="ergon-framework",
+        min_length=1,
+        max_length=255,
+        description="Worker/replica label recorded on the current delivery lease.",
+    )
+    visibility_timeout_seconds: int = Field(
+        default=300,
+        ge=1,
+        le=3600,
+        description="Duration of each atomic claim before another replica may retry it.",
+    )
+    claim_page_size: int = Field(
+        default=100,
+        ge=1,
+        le=100,
+        description="Claim page size used while scanning past filtered events.",
     )
     nack_delay_seconds: int = Field(
         default=0,
@@ -300,8 +340,8 @@ class ErgonPlatformChannelsConsumerConfig(BaseModel):
     deduplicate_fetched_events: bool = Field(
         default=False,
         description=(
-            "Optional in-process skip of already-fetched ids. Prefer platform ack "
-            "(``pending_only``) — this is only a local fallback."
+            "Optional in-process skip of already-fetched ids. Prefer the platform "
+            "subscription claim state — this is only a local fallback."
         ),
     )
     received_only: bool = Field(
@@ -318,6 +358,13 @@ class ErgonPlatformChannelsConsumerConfig(BaseModel):
         default=False,
         description="Download attachment bytes onto each fetched Transaction (like Nylas).",
     )
+    attachment_failure_policy: Literal["raise", "best_effort"] = Field(
+        default="raise",
+        description=(
+            "Attachment failure policy. 'raise' nacks every claim in the failed fetch; "
+            "'best_effort' exposes attachment_failures and blocks ack unless explicitly overridden."
+        ),
+    )
     attachment_download_timeout: float = Field(
         default=20.0,
         ge=1.0,
@@ -327,11 +374,6 @@ class ErgonPlatformChannelsConsumerConfig(BaseModel):
             "(no retries) so a stuck Resend CDN cannot block ack/nack."
         ),
     )
-    offset: int = Field(default=0, ge=0, description="Pagination offset.")
-    list_params: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Advanced: extra activity query params (merged after ``activity_filter``).",
-    )
 
     def effective_activity_filter(self) -> ChannelsActivityFilter:
         if self.activity_filter is not None:
@@ -339,15 +381,26 @@ class ErgonPlatformChannelsConsumerConfig(BaseModel):
         return ChannelsActivityFilter(received_only=self.received_only)
 
     def activity_query_params(self) -> Dict[str, Any]:
-        """Build inbox activity query params from friendly config fields."""
+        """Build the immutable filter identity for this subscription."""
         params = self.effective_activity_filter().activity_query_params()
-        params["pending_only"] = self.pending_only
-        if self.include_acked:
-            params["include_acked"] = True
-        if self.since:
-            params["since"] = self.since
-        params.update(self.list_params)
         return params
+
+    def resolved_subscription_id(self, config_id: str, address_id: str) -> str:
+        """Return an explicit or deterministic subscription UUID."""
+
+        if self.subscription_id is not None:
+            return str(uuid.UUID(self.subscription_id))
+        identity = json.dumps(
+            {
+                "config_id": config_id,
+                "address_id": address_id,
+                "filter": self.effective_activity_filter().model_dump(mode="json"),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        return str(uuid.uuid5(_SUBSCRIPTION_NAMESPACE, identity))
 
 
 class ErgonPlatformChannelsProducerConfig(BaseModel):

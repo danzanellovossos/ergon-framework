@@ -1,9 +1,13 @@
 from env import (
+    CHANNELS_ATTACHMENT_DOWNLOAD_TIMEOUT,
     CHANNELS_AUTH_CODE_ADDRESS,
     CHANNELS_BATCH_SIZE,
+    CHANNELS_CLAIM_PAGE_SIZE,
     CHANNELS_CONFIG_ID,
     CHANNELS_INSTRUCTIONS_ADDRESS,
+    CHANNELS_NACK_DELAY_SECONDS,
     CHANNELS_STREAMING,
+    CHANNELS_VISIBILITY_TIMEOUT_SECONDS,
     ERGON_BASE_URL,
     ERGON_CLIENT_ID,
     ERGON_CLIENT_SECRET,
@@ -26,19 +30,28 @@ ERGON_PLATFORM_CLIENT = ErgonPlatformClient(
     base_url=ERGON_BASE_URL,
 )
 
+# ``subscription_id`` is intentionally omitted. The connector derives a stable
+# UUID from config + address + filter, so these two consumers remain independent.
 CHANNELS_INSTRUCTIONS_CONSUMER_CONFIG = ErgonPlatformChannelsConsumerConfig(
     address=CHANNELS_INSTRUCTIONS_ADDRESS,
     config_id=CHANNELS_CONFIG_ID,
     batch_size=CHANNELS_BATCH_SIZE,
+    visibility_timeout_seconds=CHANNELS_VISIBILITY_TIMEOUT_SECONDS,
+    claim_page_size=CHANNELS_CLAIM_PAGE_SIZE,
+    nack_delay_seconds=CHANNELS_NACK_DELAY_SECONDS,
     download_attachments=True,
+    attachment_failure_policy="raise",
+    attachment_download_timeout=CHANNELS_ATTACHMENT_DOWNLOAD_TIMEOUT,
 )
 
 CHANNELS_AUTH_CODE_CONSUMER_CONFIG = ErgonPlatformChannelsConsumerConfig(
     address=CHANNELS_AUTH_CODE_ADDRESS,
     config_id=CHANNELS_CONFIG_ID,
     batch_size=CHANNELS_BATCH_SIZE,
+    visibility_timeout_seconds=CHANNELS_VISIBILITY_TIMEOUT_SECONDS,
+    claim_page_size=CHANNELS_CLAIM_PAGE_SIZE,
+    nack_delay_seconds=CHANNELS_NACK_DELAY_SECONDS,
     download_attachments=False,
-    pending_only=True,
     activity_filter=ChannelsActivityFilter(
         received_only=True,
         from_address="atendimentocbt@jsl.com.br",

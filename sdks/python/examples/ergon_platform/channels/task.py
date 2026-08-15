@@ -1,12 +1,9 @@
 """Exemplo: como usar ``AsyncErgonPlatformChannelsConnector`` numa task.
 
-O framework chama ``fetch_transactions`` (lista da inbox). A lista da API não
-traz corpo nem anexos — por isso o processamento começa no detalhe:
-
-    tx = await connector.fetch_transaction_by_id_async(tx.id)
-
+O framework recebe cada evento completo por uma claim atômica. Corpo, anexos e
+o lease de ACK/NACK pertencem à mesma ``Transaction``; não há um segundo GET.
 Com ``download_attachments=True`` no consumer (ver ``config.py``),
-``tx.metadata["attachments"]`` já vem com os bytes dos anexos.
+``transaction.metadata["attachments"]`` já vem com os bytes dos anexos.
 (``id``, ``filename``, ``content_type``, ``size``, ``content: bytes``).
 
 Depois: ``ack_transaction`` em sucesso, ``nack_transaction`` em erro.
@@ -77,22 +74,25 @@ class ChannelsEventTask(AsyncConsumerTask):
         return await self.consume_transactions(self.consumer_policy)
 
     async def process_transaction(self, transaction: Transaction) -> ProcessedChannelEvent:
-        transaction = await self.consumer_connector.fetch_transaction_by_id_async(transaction.id)
-
         metadata = transaction.metadata or {}
+        delivery = metadata.get("delivery") or {}
         message = metadata.get("message_payload") or {}
         attachments = [ChannelEventAttachment.from_item(item) for item in metadata.get("attachments") or []]
 
         logger.info(
-            "Evento %s | %s | de %s | %s anexo(s)",
+            "Evento %s | %s | de %s | %s anexo(s) | subscription=%s | tentativa=%s",
             transaction.id,
             metadata.get("subject"),
             metadata.get("from_address"),
             len(attachments),
+            delivery.get("subscription_id"),
+            delivery.get("attempt_count"),
         )
 
         inbox_events = await self.auth_code_connector.fetch_transactions_async()
         logger.info("Caixa secundária: %s evento(s)", len(inbox_events))
+        for auth_event in inbox_events:
+            await self.auth_code_connector.ack_transaction(auth_event)
 
         return ProcessedChannelEvent(
             event_id=transaction.id or "",

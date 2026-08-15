@@ -8,11 +8,12 @@ Connector que integra o framework Ergon com o módulo **Channels** da Ergon Plat
 pip install 'ergon-framework-python[ergon-platform]'
 ```
 
-O extra `ergon-platform` cobre workflows **e** channels — não precisa instalar nada adicional.
+O extra `ergon-platform` cobre workflows **e** channels e exige
+`ergon-platform-sdk>=0.2.0`, primeira versão com claim/lease e attachment file.
 
 ## Arquitetura
 
-O connector é a fachada pública do framework (`fetch_transactions`, `send_email`, `ack_transaction`). Ele não fala com a API sozinho: delega para `_ErgonPlatformChannelsOperations`, que por sua vez orquestra objetos com uma responsabilidade cada. Sync e async compartilham esses objetos — o async só envolve as chamadas em `asyncio.to_thread`.
+O connector é o adapter público do framework (`fetch_transactions`, `send_email`, `ack_transaction`). Ele não fala com a API sozinho: compõe `ErgonPlatformChannelsService`, que agrupa services menores por domínio. Sync e async compartilham esses Services — o async só envolve as chamadas em `asyncio.to_thread`.
 
 ```
 task / app
@@ -22,11 +23,11 @@ ErgonPlatformChannelsConnector  (sync)     AsyncErgonPlatformChannelsConnector
     │                                         │
     └──────────────┬──────────────────────────┘
                    ▼
-        _ErgonPlatformChannelsOperations     ← Facade
+         ErgonPlatformChannelsService        ← composição
                    │
      ┌─────────────┼──────────────┬────────────────┐
      ▼             ▼              ▼                ▼
- InboxAddressBook  ActivityAdapter  InboxAttachments  OutboundMessage
+ ActivityService  AddressService  AttachmentService  MessageService
      │             │              │                │
      └─────────────┴──────────────┴────────────────┘
                    ▼
@@ -43,12 +44,15 @@ ergon_platform/
     ├── models.py           # configs, SendMessageInput, ChannelsActivityFilter
     ├── connector.py        # API pública sync
     ├── async_connector.py  # API pública async (mesmo contrato)
-    ├── _operations.py      # Facade HTTP
-    ├── _sdk.py             # Adapter de resposta do SDK
-    ├── _activity.py        # Adapter evento → Transaction
-    ├── _addresses.py       # Resolução + cache de inbox
-    ├── _attachments.py     # Download / hydrate de anexos
-    └── _outbound.py        # Builder do POST /send
+    ├── adapters.py         # Evento da plataforma → Transaction
+    ├── services/           # Operações HTTP separadas por domínio
+    │   ├── activity.py     # History, claim, ack/nack e lease
+    │   ├── addresses.py    # Resolução de inbox
+    │   ├── attachments.py  # Hydrate e download
+    │   ├── messages.py     # Threads e envio
+    │   ├── records.py      # Adapter das respostas do SDK
+    │   └── service.py      # Composição dos services
+    └── utils.py            # Helpers gerais compartilhados
 ```
 
 O connector reusa a mesma factory de `ErgonClient` do workflows. Toda ida à rede passa por `connector.client.channels.*`.
@@ -58,13 +62,11 @@ O connector reusa a mesma factory de `ErgonClient` do workflows. Toda ida à red
 
 | Padrão | Onde | O que resolve |
 |--------|------|----------------|
-| **Facade** | `_ErgonPlatformChannelsOperations` | Um ponto só para o connector chamar. Fetch, ack, send e resolve inbox não espalham HTTP pelo sync/async. |
+| **Services por domínio** | `services/` | Activity, addresses, attachments e messages não ficam concentrados em uma classe única nem espalhados pelo sync/async. |
 | **Adapter** | `SdkRecord` | O SDK devolve dict, objeto Pydantic ou Page. `get` / `items` / `total` / `serialize` escondem isso. |
 | **Adapter** | `ActivityAdapter` | Evento da activity da plataforma → `Transaction` do framework (`id`, `payload`, `metadata`). |
 | **Strategy** | `ChannelsActivityFilter.matches` / `select` | O filtro client-side (`from_address`, `subject_contains`) vive no próprio filtro. O fetch só pergunta “esta transação entra?”. |
-| **Builder** | `OutboundMessage` | `SendMessageInput` ou `dict` vira o body de `POST /send` (roteamento `top` + bloco `config`). |
-
-`InboxAddressBook` e `InboxAttachments` são cache/resolução de endereço e bytes de anexo saíram da facade para não voltar a ser uma classe só.
+| **Builder** | `ChannelsMessageService.normalize_send_payload` | `SendMessageInput` ou `dict` vira o body de `POST /send` (roteamento `top` + bloco `config`). |
 
 Não há Factory/Singleton/Visitor aqui — o `ErgonClient` já é criado em `_client.py`, compartilhado com workflows.
 
@@ -74,31 +76,32 @@ Não há Factory/Singleton/Visitor aqui — o `ErgonClient` já é criado em `_c
 |------|---------|-----|---------|
 | `ErgonPlatformChannelsConnector` | `connector.py` | Contrato do framework: fetch, send, ack/nack, hydrate se `download_attachments=True`, estado `_seen_event_ids`. | Montar JSON da API, parsear Page, achar `address_id`. |
 | `AsyncErgonPlatformChannelsConnector` | `async_connector.py` | O mesmo contrato, I/O em thread. | Lógica de domínio diferente da sync. |
-| `_ErgonPlatformChannelsOperations` | `_operations.py` | Encaminha cada método do connector ao colaborador certo e dispara `client.channels.*`. | Guardar regra de filtro, de anexo ou de endereço. |
-| `SdkRecord` | `_sdk.py` | Ler um payload heterogêneo (`obj.get` vs `getattr`, lista em `items`/`data`/`messages`). | Conhecer activity, inbox ou send. |
-| `ActivityAdapter` | `_activity.py` | `to_transaction`, listar anexos no metadata, `finalize_fetch` (filtro + dedup). | Chamar HTTP. |
-| `InboxAddressBook` | `_addresses.py` | Email/`config_id` → `ResolvedInboxAddress` (cache, `configs.addresses`, fallback na activity). | Fetch de email nem send. |
-| `InboxAttachments` | `_attachments.py` | `GET .../attachments/{id}/file`; hidrata `content` na transação ou grava em `dest`. | Decidir *se* baixa (isso é flag do consumer no connector). |
-| `OutboundMessage` | `_outbound.py` | Normalizar destinatários e payload de envio; extrair `log_id` da resposta. | Resolver inbox de origem. |
-| `ChannelsActivityFilter` | `models.py` | Query server-side (`event_type`, `correlation_id`) **e** match client-side. | HTTP. |
+| `ErgonPlatformChannelsService` | `services/service.py` | Compartilha o client e compõe `activity`, `addresses`, `attachments` e `messages`. | Concentrar as operações de todos os domínios. |
+| `ChannelsActivityService` | `services/activity.py` | Histórico, paginação da claim e settlement de leases. | Resolver endereços ou enviar mensagens. |
+| `ChannelsAddressService` | `services/addresses.py` | Resolução e cache de inbox. | Consumir activity. |
+| `ChannelsAttachmentService` | `services/attachments.py` | Hydrate e download seguro de anexos. | Decidir a política do consumer. |
+| `ChannelsMessageService` | `services/messages.py` | Ler threads, normalizar payload e enviar mensagens. | Gerenciar leases. |
+| `SdkRecord` | `services/records.py` | Ler um payload heterogêneo (`obj.get` vs `getattr`, lista em `items`/`data`/`messages`). | Conhecer activity, inbox ou send. |
+| `ActivityAdapter` | `adapters.py` | `to_transaction`, anexos no metadata e preservação do lease. | Chamar HTTP. |
+| `ChannelsActivityFilter` | `models.py` | Define a identidade/filtro estável da subscription; não-matches são ackados só nessa subscription. | HTTP. |
 | `ResolvedInboxAddress` | `models.py` | `can_send` / `can_receive` e erros claros (`ensure_can_send`, `ensure_can_receive`). | Buscar o endereço na API. |
 
 ### Fluxo de fetch
 
-1. Connector exige `consumer_config`, pede o inbox a `InboxAddressBook` e recusa send-only (`ensure_can_receive`).
-2. Facade chama `GET /configs/{id}/activity` e `SdkRecord.items` puxa a página.
-3. `ActivityAdapter.to_transaction` vira cada evento em `Transaction` (`metadata.attachments` ainda só metadados).
-4. `ActivityAdapter.finalize_fetch` aplica `ChannelsActivityFilter.select` e, se `deduplicate_fetched_events`, o set `_seen_event_ids` do connector.
-5. Se `download_attachments=True`, `InboxAttachments.hydrate` busca os bytes e coloca `content` em cada anexo. Arquivo lento/falho é **pulado** (sem `content`) para não travar ack/nack. Timeout por arquivo: `attachment_download_timeout` (default 20s, client dedicado, sem retry).
+1. Connector exige `consumer_config`, pede o inbox a `ChannelsAddressService` e recusa send-only (`ensure_can_receive`).
+2. O Service chama `POST /configs/{id}/activity/claims` com `subscription_id`, `consumer_id`, limite, cursor e visibility timeout.
+3. Cada item já traz o `ActivityLogDetail` completo e o lease; `ActivityAdapter.claimed_transaction` preserva ambos na mesma `Transaction`.
+4. O Service percorre cursores até completar o batch. Eventos fora do filtro/endereço são ackados apenas nessa subscription, então não bloqueiam eventos válidos posteriores.
+5. Se `download_attachments=True`, `ChannelsAttachmentService` busca os bytes com até quatro downloads concorrentes por batch, preservando a ordem de eventos e anexos. Falha faz o fetch requeue de todas as claims e propaga a exceção por padrão. `attachment_failure_policy="best_effort"` é explícito, expõe `metadata["attachment_failures"]` e bloqueia ACK sem `allow_attachment_failures=True`.
 
-`fetch_transaction_by_id` é o mesmo caminho para um único `GET .../activity/{event_id}`.
+`fetch_transaction_by_id` continua como leitura avulsa de detalhe, mas não cria lease e portanto não pode ser usado para ACK/NACK.
 
 ### Fluxo de send
 
 1. Connector monta `SendMessageInput` (ou recebe `dict`).
-2. `OutboundMessage.normalize` separa roteamento (`address_id`, `channel`, …) do corpo (`to`, `subject`, `html`/`text`, anexos).
-3. `InboxAddressBook` resolve o remetente; `ensure_can_send` recusa receive-only.
-4. Facade faz `POST /send`. `OutboundMessage.response_id` lê `log_id` (ou fallback) da resposta.
+2. `ChannelsMessageService.normalize_send_payload` separa roteamento (`address_id`, `channel`, …) do corpo (`to`, `subject`, `html`/`text`, anexos).
+3. `ChannelsAddressService` resolve o remetente; `ensure_can_send` recusa receive-only.
+4. `ChannelsMessageService` faz `POST /send` e extrai o `log_id` (ou fallback) da resposta.
 
 ## Configuração
 
@@ -118,13 +121,13 @@ Não informe `address_id` — o connector resolve o UUID a partir do email + `co
 
 | Método do connector | Operação na plataforma |
 |---------------------|------------------------|
-| `fetch_transactions` / `fetch_transactions_async` | `GET /configs/{config_id}/activity?address_id=...` → `Transaction` por evento |
+| `fetch_transactions` / `fetch_transactions_async` | `POST /configs/{config_id}/activity/claims` → evento completo + lease por `Transaction` |
 | `fetch_transaction_by_id` / `fetch_transaction_by_id_async` | `GET /configs/{config_id}/activity/{event_id}` → `Transaction` |
 | `get_transactions_count` / `get_transactions_count_async` | Total do feed de activity da inbox |
 | `send_email` / `send_email_async` | Atalho: `to`, `subject`, `text`/`html` → `POST /send` |
 | `dispatch_transactions` / `dispatch_transactions_async` | `POST /send` para cada `Transaction` (framework Ergon) |
 | `send_message` / `send_message_async` | `POST /send` com `SendMessageInput` ou `dict` |
-| `ack_transaction` / `nack_transaction` | `POST .../activity/{id}/ack` e `.../nack` (estado em `channel_activity_consumptions`) |
+| `ack_transaction` / `nack_transaction` | `POST .../activity/{id}/ack` e `.../nack` com `subscription_id` + `lease_token` |
 | `download_attachments` | On-demand: lê anexos do `Transaction` e chama `GET .../attachments/{id}/file` |
 | `close` | `ErgonClient.close()` |
 
@@ -174,7 +177,7 @@ Cada `Transaction` retornado carrega:
 
 - `id` = `id` / `log_id` / `provider_message_id` do evento
 - `payload` = evento serializado (dict)
-- `metadata` = `{ source, event_type, channel, direction, status, thread_id, correlation_id, provider_message_id, subject, from_address, to_addresses, attachments, has_attachment }`
+- `metadata` = `{ source, event_type, channel, direction, status, thread_id, correlation_id, provider_message_id, subject, from_address, to_addresses, attachments, has_attachment, delivery }`
 - `metadata["attachments"]` = lista de dicts no mesmo formato do Nylas: `{id, filename, content_type, size}`. O `id` é o `resend_attachment_id` da plataforma. Com `download_attachments=True`, cada item ganha `content` (**bytes**). O payload cru da activity continua em `payload` / `metadata["message_payload"]`.
 
 ```python
@@ -191,7 +194,9 @@ for tx in connector.fetch_transactions():
         print(att["id"], att["filename"], len(att.get("content") or b""))
 ```
 
-`download_attachments(tx, dest=...)` continua disponível se você quiser gravar em disco depois do fetch.
+`download_attachments(tx, dest=...)` continua disponível para gravação. Nomes
+absolutos/drive/UNC são rejeitados, controles Unicode são neutralizados, a
+contenção em `{dest}/{event_id}` é validada e o `attachment_id` desambigua nomes.
 
 ## Profundidade do feed
 
@@ -295,18 +300,18 @@ payload = SendMessageInput(
 
 ## Ack / Nack
 
-A activity continua sendo histórico imutável. O estado de consumo fica em `channel_activity_consumptions` (permissão `channels:activity:consume`).
+A activity continua sendo histórico imutável. O estado de consumo é independente por `subscription_id` e fica em `channel_activity_consumptions` (permissão `channels:activity:consume`).
 
-- `fetch_transactions` envia `pending_only=true` por default — só eventos ainda não ackados (e com `available_at` vencido).
-- `ack_transaction` → `POST /configs/{config_id}/activity/{event_id}/ack`
-- `nack_transaction(requeue=True, delay_seconds=30)` → nack com requeue; `requeue=False` marca `failed`
+- `fetch_transactions` cria leases atômicos via `/activity/claims`; réplicas da mesma subscription não recebem o mesmo evento.
+- `ack_transaction` envia o `subscription_id` + `lease_token` guardados em `metadata["delivery"]`.
+- `nack_transaction(requeue=True, delay_seconds=30)` libera para retry; `requeue=False` marca a delivery como `failed`.
 
 ```python
 await connector.ack_transaction(transaction)
 await connector.nack_transaction(transaction, requeue=True, delay_seconds=30)
 ```
 
-`include_acked=true` lista o histórico (UI). `since` filtra por `created_at`. Dedup em memória (`deduplicate_fetched_events`) é fallback opcional — o ack da plataforma é a fonte da verdade.
+O feed histórico (`GET /activity`) não é usado como fila. Dedup em memória (`deduplicate_fetched_events`) é fallback opcional; a claim da plataforma é a fonte da verdade.
 
 ## Retrocompatibilidade
 

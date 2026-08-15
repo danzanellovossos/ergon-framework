@@ -22,7 +22,9 @@ from .utils import (
 )
 
 
-class _ErgonPlatformOperations:
+class ErgonPlatformWorkflowsService:
+    """Workflows HTTP, pagination, claim, and attachment service."""
+
     def __init__(self, config: ErgonPlatformClient, client: Any) -> None:
         self.config = config
         self.client = client
@@ -262,3 +264,6 @@ class _ErgonPlatformOperations:
                 seen_ids.add(field_id)
             merged.append(field)
         return merged
+
+
+_ErgonPlatformOperations = ErgonPlatformWorkflowsService

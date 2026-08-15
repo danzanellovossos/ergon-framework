@@ -12,12 +12,14 @@ from .models import (
 )
 
 if TYPE_CHECKING:
+    from ._operations import ErgonPlatformWorkflowsService
     from .async_connector import AsyncErgonPlatformConnector
     from .connector import ErgonPlatformConnector
 
 _LAZY_EXPORTS = {
     "AsyncErgonPlatformConnector": "async_connector",
     "ErgonPlatformConnector": "connector",
+    "ErgonPlatformWorkflowsService": "_operations",
 }
 
 
@@ -43,6 +45,7 @@ __all__ = [
     "ErgonPlatformConnector",
     "ErgonPlatformConsumerConfig",
     "ErgonPlatformProducerConfig",
+    "ErgonPlatformWorkflowsService",
     "FAILURE_STATUSES",
     "PROCESSING_STATUSES",
     "SUCCESS_STATUSES",

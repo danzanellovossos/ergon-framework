@@ -1,17 +1,26 @@
 """Tests for Ergon Platform channels connector utilities."""
 
+import threading
+import time
+
 import pytest
 
-from ergon.connector.ergon_platform.channels._activity import ActivityAdapter
-from ergon.connector.ergon_platform.channels._outbound import OutboundMessage
-from ergon.connector.ergon_platform.channels._sdk import SdkRecord
+from ergon.connector.ergon_platform.channels.adapters import ActivityAdapter
 from ergon.connector.ergon_platform.channels.models import (
     INBOUND_RECEIVED_EVENT_TYPE,
     ChannelsActivityFilter,
+    ErgonPlatformChannelsConsumerConfig,
     ResolvedInboxAddress,
     SendMessageAttachment,
     SendMessageInput,
 )
+from ergon.connector.ergon_platform.channels.services.attachments import (
+    ChannelsAttachmentService,
+)
+from ergon.connector.ergon_platform.channels.services.messages import (
+    ChannelsMessageService,
+)
+from ergon.connector.ergon_platform.channels.services.records import SdkRecord
 from ergon.connector.transaction import Transaction
 
 deliver_fetched_transactions = ActivityAdapter.unseen
@@ -20,7 +29,21 @@ extract_items = SdkRecord.items
 extract_total = SdkRecord.total
 inbox_attachment_id = ActivityAdapter.attachment_id
 inbox_attachments = ActivityAdapter.attachments
-normalize_send_payload = OutboundMessage.normalize
+normalize_send_payload = ChannelsMessageService.normalize_send_payload
+
+
+class TestSubscriptionIdentity:
+    def test_is_stable_and_changes_with_filter_contract(self):
+        base = ErgonPlatformChannelsConsumerConfig(address="inbox@x.ai")
+        filtered = ErgonPlatformChannelsConsumerConfig(
+            address="inbox@x.ai",
+            activity_filter=ChannelsActivityFilter(from_address="sender@x.com"),
+        )
+
+        first = base.resolved_subscription_id("cfg-1", "addr-1")
+
+        assert first == base.resolved_subscription_id("cfg-1", "addr-1")
+        assert first != filtered.resolved_subscription_id("cfg-1", "addr-1")
 
 
 class TestResolvedInboxCapabilities:
@@ -395,10 +418,58 @@ class TestInboxAttachments:
         assert inbox_attachment_id({"filename": "x"}) is None
 
 
-class TestHydrateSkipsFailedDownloads:
-    def test_keeps_metadata_when_download_raises(self):
-        from ergon.connector.ergon_platform.channels._attachments import InboxAttachments
+class TestHydrateFailedDownloads:
+    def test_batch_downloads_attachments_concurrently_and_preserves_order(self):
+        class _Configs:
+            def __init__(self):
+                self.active = 0
+                self.max_active = 0
+                self.lock = threading.Lock()
 
+            def activity_attachment_file(
+                self,
+                config_id,
+                event_id,
+                attachment_id,
+            ):
+                with self.lock:
+                    self.active += 1
+                    self.max_active = max(self.max_active, self.active)
+                time.sleep(0.05)
+                with self.lock:
+                    self.active -= 1
+                return attachment_id.encode()
+
+        configs = _Configs()
+        client = type(
+            "Client",
+            (),
+            {"channels": type("Channels", (), {"configs": configs})()},
+        )()
+        transactions = [
+            event_to_transaction(
+                {
+                    "id": f"evt-{index}",
+                    "payload": {
+                        "attachments": [
+                            {
+                                "resend_attachment_id": f"att-{index}",
+                                "filename": f"{index}.pdf",
+                            }
+                        ]
+                    },
+                },
+                source="config_activity",
+            )
+            for index in (1, 2)
+        ]
+
+        hydrated = ChannelsAttachmentService(client).hydrate_inbox_transactions("cfg-1", transactions)
+
+        assert configs.max_active == 2
+        assert [transaction.metadata["attachments"][0]["content"] for transaction in hydrated] == [b"att-1", b"att-2"]
+
+    def test_best_effort_exposes_failed_attachments(self):
         class _Configs:
             def activity_attachment_file(self, *args, **kwargs):
                 raise TimeoutError("cdn hung")
@@ -424,8 +495,37 @@ class TestHydrateSkipsFailedDownloads:
             source="config_activity",
         )
 
-        out = InboxAttachments(_Client()).hydrate("cfg-1", tx)
+        out = ChannelsAttachmentService(_Client()).hydrate_inbox_attachments(
+            "cfg-1",
+            tx,
+            failure_policy="best_effort",
+        )
 
         assert out.metadata["attachments"][0]["id"] == "att-1"
         assert out.metadata["attachments"][0]["filename"] == "a.pdf"
         assert "content" not in out.metadata["attachments"][0]
+        assert out.metadata["attachment_failures"][0]["attachment_id"] == "att-1"
+
+    def test_default_propagates_download_failure(self):
+        class _Configs:
+            def activity_attachment_file(self, *args, **kwargs):
+                raise TimeoutError("cdn hung")
+
+        client = type(
+            "Client",
+            (),
+            {"channels": type("Channels", (), {"configs": _Configs()})()},
+        )()
+        tx = event_to_transaction(
+            {
+                "id": "evt-1",
+                "payload": {"attachments": [{"resend_attachment_id": "att-1", "filename": "a.pdf"}]},
+            },
+            source="config_activity",
+        )
+
+        with pytest.raises(TimeoutError, match="cdn hung"):
+            ChannelsAttachmentService(client).hydrate_inbox_attachments(
+                "cfg-1",
+                tx,
+            )

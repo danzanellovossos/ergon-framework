@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ergon.connector.ergon_platform.channels._activity import ActivityAdapter
+from ergon.connector.ergon_platform.channels.adapters import ActivityAdapter
 from ergon.connector.ergon_platform.channels.connector import ErgonPlatformChannelsConnector
 from ergon.connector.ergon_platform.channels.models import (
     ChannelsActivityFilter,
@@ -32,6 +32,9 @@ class _ConfigAddresses:
 class _Configs:
     def __init__(self):
         self.activity_calls = []
+        self.claim_calls = []
+        self.claim_responses = []
+        self.claim_response = None
         self.event_calls = []
         self.ack_calls = []
         self.nack_calls = []
@@ -44,6 +47,34 @@ class _Configs:
     def activity(self, config_id, **params):
         self.activity_calls.append((config_id, params))
         return self.activity_response
+
+    def activity_claim(self, config_id, **params):
+        self.claim_calls.append((config_id, params))
+        response = (
+            self.claim_responses.pop(0) if self.claim_responses else self.claim_response or self.activity_response
+        )
+        return {
+            "items": [
+                {
+                    "event": {
+                        "event_type": "channels.email.received",
+                        **event,
+                    },
+                    "delivery": {
+                        "event_id": event.get("id"),
+                        "config_id": config_id,
+                        "subscription_id": params["subscription_id"],
+                        "status": "claimed",
+                        "lease_token": f"lease-{event.get('id')}",
+                        "lease_expires_at": "2026-08-15T18:00:00Z",
+                        "consumer_id": params["consumer_id"],
+                        "attempt_count": 1,
+                    },
+                }
+                for event in response.get("items", [])
+            ],
+            "next_cursor": response.get("next_cursor"),
+        }
 
     def activity_event(self, config_id, event_id, **params):
         self.event_calls.append((config_id, event_id, params))
@@ -160,6 +191,18 @@ def _seed_producer_address(sdk_client: _Client, *, address_id: str, direction: s
     ]
 
 
+def _claimed_transaction(event_id: str = "evt-1") -> Transaction:
+    return ActivityAdapter.claimed_transaction(
+        {
+            "event": {"id": event_id, "event_type": "channels.email.received"},
+            "delivery": {
+                "subscription_id": "11111111-1111-1111-1111-111111111111",
+                "lease_token": "22222222-2222-2222-2222-222222222222",
+            },
+        }
+    )
+
+
 class TestFetchTransactions:
     def test_fetches_inbox_activity_for_configured_address(self):
         config = ErgonPlatformChannelsConsumerConfig(
@@ -177,19 +220,14 @@ class TestFetchTransactions:
         txns = connector.fetch_transactions()
 
         assert [tx.id for tx in txns] == ["evt-1"]
-        assert sdk_client.channels.configs.activity_calls == [
-            (
-                "cfg-jsl",
-                {
-                    "channel": "email",
-                    "event_type": "channels.email.received",
-                    "address_id": "addr-jsl",
-                    "pending_only": True,
-                    "limit": 25,
-                    "offset": 0,
-                },
-            ),
-        ]
+        assert len(sdk_client.channels.configs.claim_calls) == 1
+        claim_config_id, claim = sdk_client.channels.configs.claim_calls[0]
+        assert claim_config_id == "cfg-jsl"
+        assert claim["limit"] == 25
+        assert claim["consumer_id"] == "ergon-framework"
+        assert claim["visibility_timeout_seconds"] == 300
+        assert claim["cursor"] is None
+        assert txns[0].metadata["delivery"]["lease_token"] == "lease-evt-1"
         assert len(sdk_client.channels.addresses_calls) == 1
 
     def test_fetch_hydrates_attachments_when_enabled(self):
@@ -253,6 +291,96 @@ class TestFetchTransactions:
         assert "content" not in txns[0].metadata["attachments"][0]
         assert sdk_client.channels.configs.attachment_calls == []
 
+    def test_filter_scans_claim_cursor_until_batch_is_filled(self):
+        config = ErgonPlatformChannelsConsumerConfig(
+            address=INBOX,
+            batch_size=1,
+            activity_filter=ChannelsActivityFilter(from_address="wanted@x.com"),
+        )
+        sdk_client = _Client()
+        _seed_addresses(sdk_client)
+        sdk_client.channels.configs.claim_responses = [
+            {
+                "items": [{"id": "evt-skip", "from_address": "other@x.com"}],
+                "next_cursor": "cursor-1",
+            },
+            {
+                "items": [{"id": "evt-wanted", "from_address": "wanted@x.com"}],
+                "next_cursor": None,
+            },
+        ]
+        connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
+
+        transactions = connector.fetch_transactions()
+
+        assert [transaction.id for transaction in transactions] == ["evt-wanted"]
+        assert [call[1]["cursor"] for call in sdk_client.channels.configs.claim_calls] == [
+            None,
+            "cursor-1",
+        ]
+        assert sdk_client.channels.configs.ack_calls[0][1] == "evt-skip"
+
+    def test_attachment_failure_requeues_every_claim_in_failed_fetch(self):
+        config = ErgonPlatformChannelsConsumerConfig(
+            address=INBOX,
+            batch_size=2,
+            download_attachments=True,
+        )
+        sdk_client = _Client()
+        _seed_addresses(sdk_client)
+        sdk_client.channels.configs.activity_response = {
+            "items": [
+                {
+                    "id": event_id,
+                    "payload": {"attachments": [{"resend_attachment_id": f"att-{event_id}", "filename": "a.pdf"}]},
+                }
+                for event_id in ("evt-1", "evt-2")
+            ]
+        }
+
+        def _boom(*args, **kwargs):
+            raise TimeoutError("cdn hung")
+
+        sdk_client.channels.configs.activity_attachment_file = _boom
+        connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
+
+        with pytest.raises(TimeoutError, match="cdn hung"):
+            connector.fetch_transactions()
+
+        assert [call[1] for call in sdk_client.channels.configs.nack_calls] == [
+            "evt-1",
+            "evt-2",
+        ]
+
+    def test_best_effort_attachment_failure_blocks_ack_by_default(self):
+        config = ErgonPlatformChannelsConsumerConfig(
+            address=INBOX,
+            download_attachments=True,
+            attachment_failure_policy="best_effort",
+        )
+        sdk_client = _Client()
+        _seed_addresses(sdk_client)
+        sdk_client.channels.configs.activity_response = {
+            "items": [
+                {
+                    "id": "evt-1",
+                    "payload": {"attachments": [{"resend_attachment_id": "att-1", "filename": "a.pdf"}]},
+                }
+            ]
+        }
+
+        def _boom(*args, **kwargs):
+            raise TimeoutError("cdn hung")
+
+        sdk_client.channels.configs.activity_attachment_file = _boom
+        connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
+        transaction = connector.fetch_transactions()[0]
+
+        assert transaction.metadata["attachment_failures"][0]["attachment_id"] == "att-1"
+        with pytest.raises(ValueError, match="failed attachment"):
+            connector.ack_transaction(transaction)
+        connector.ack_transaction(transaction, allow_attachment_failures=True)
+
     def test_fetch_requires_consumer_config(self):
         connector = _make_connector()
 
@@ -268,7 +396,7 @@ class TestFetchTransactions:
         with pytest.raises(ValueError, match="missing@inbox.ergondata.ai"):
             connector.fetch_transactions()
 
-    def test_received_only_false_omits_direction_filter(self):
+    def test_received_only_false_still_uses_claim_contract(self):
         config = ErgonPlatformChannelsConsumerConfig(address=INBOX, received_only=False)
         sdk_client = _Client()
         _seed_addresses(sdk_client)
@@ -276,20 +404,10 @@ class TestFetchTransactions:
 
         connector.fetch_transactions()
 
-        assert sdk_client.channels.configs.activity_calls == [
-            (
-                "cfg-jsl",
-                {
-                    "channel": "email",
-                    "address_id": "addr-jsl",
-                    "pending_only": True,
-                    "limit": 50,
-                    "offset": 0,
-                },
-            ),
-        ]
+        assert sdk_client.channels.configs.claim_calls[0][0] == "cfg-jsl"
+        assert sdk_client.channels.configs.claim_calls[0][1]["limit"] == 50
 
-    def test_activity_filter_passes_server_params_and_filters_client_side(self):
+    def test_activity_filter_settles_nonmatches_without_starving_later_events(self):
         config = ErgonPlatformChannelsConsumerConfig(
             address=INBOX,
             activity_filter=ChannelsActivityFilter(
@@ -304,12 +422,14 @@ class TestFetchTransactions:
                 {
                     "id": "evt-1",
                     "channel": "email",
+                    "correlation_id": "order-42",
                     "from_address": "cliente@x.com",
                     "subject": "Pedido",
                 },
                 {
                     "id": "evt-2",
                     "channel": "email",
+                    "correlation_id": "order-42",
                     "from_address": "outro@x.com",
                     "subject": "Spam",
                 },
@@ -321,19 +441,15 @@ class TestFetchTransactions:
         txns = connector.fetch_transactions()
 
         assert [tx.id for tx in txns] == ["evt-1"]
-        assert sdk_client.channels.configs.activity_calls == [
+        assert sdk_client.channels.configs.ack_calls == [
             (
                 "cfg-jsl",
+                "evt-2",
                 {
-                    "channel": "email",
-                    "event_type": "channels.email.received",
-                    "correlation_id": "order-42",
-                    "address_id": "addr-jsl",
-                    "pending_only": True,
-                    "limit": 50,
-                    "offset": 0,
+                    "subscription_id": sdk_client.channels.configs.claim_calls[0][1]["subscription_id"],
+                    "lease_token": "lease-evt-2",
                 },
-            ),
+            )
         ]
 
     def test_fetch_with_config_id_skips_global_addresses_lookup(self):
@@ -388,24 +504,25 @@ class TestFetchTransactions:
                 "channel_address_id": "addr-jsl",
             },
         }
+        sdk_client.channels.configs.claim_response = {
+            "items": [
+                {
+                    "id": "evt-inbound",
+                    "event_type": "channels.email.received",
+                    "payload": {"address_id": "addr-jsl", "text": "complete body"},
+                }
+            ]
+        }
         connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
 
         txns = connector.fetch_transactions()
 
-        assert [tx.id for tx in txns] == ["evt-created"]
+        assert [tx.id for tx in txns] == ["evt-inbound"]
+        assert txns[0].metadata["message_payload"]["text"] == "complete body"
         assert sdk_client.channels.addresses_calls == []
         assert sdk_client.channels.configs.event_calls == [("cfg-jsl", "evt-created", {})]
-        assert sdk_client.channels.configs.activity_calls[-1] == (
-            "cfg-jsl",
-            {
-                "channel": "email",
-                "event_type": "channels.email.received",
-                "address_id": "addr-jsl",
-                "pending_only": True,
-                "limit": 5,
-                "offset": 0,
-            },
-        )
+        assert sdk_client.channels.configs.claim_calls[-1][0] == "cfg-jsl"
+        assert sdk_client.channels.configs.claim_calls[-1][1]["limit"] == 5
 
     def test_resolve_inbox_from_config_id_and_email(self):
         config = ErgonPlatformChannelsConsumerConfig(
@@ -460,7 +577,7 @@ class TestUnifiedChannelsConfig:
         txns = connector.fetch_transactions()
 
         assert [tx.id for tx in txns] == ["evt-1"]
-        assert sdk_client.channels.configs.activity_calls[-1][1]["event_type"] == "channels.email.received"
+        assert sdk_client.channels.configs.claim_calls[-1][1]["limit"] == 10
 
     def test_send_email(self):
         channels_config = ErgonPlatformChannelsConfig(
@@ -565,7 +682,7 @@ class TestFetchTransactionById:
             ("cfg-jsl", "evt-1", "att-1", {}),
         ]
 
-    def test_skips_attachment_when_download_fails(self):
+    def test_raises_when_attachment_download_fails(self):
         config = ErgonPlatformChannelsConsumerConfig(
             address=INBOX,
             download_attachments=True,
@@ -592,11 +709,8 @@ class TestFetchTransactionById:
         sdk_client.channels.configs.activity_attachment_file = _boom
         connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
 
-        tx = connector.fetch_transaction_by_id("evt-1")
-
-        assert tx.id == "evt-1"
-        assert tx.metadata["attachments"][0]["filename"] == "a.pdf"
-        assert "content" not in tx.metadata["attachments"][0]
+        with pytest.raises(TimeoutError, match="cdn hung"):
+            connector.fetch_transaction_by_id("evt-1")
 
 
 class TestGetTransactionsCount:
@@ -612,12 +726,9 @@ class TestGetTransactionsCount:
             (
                 "cfg-jsl",
                 {
-                    "channel": "email",
-                    "event_type": "channels.email.received",
                     "address_id": "addr-jsl",
-                    "pending_only": True,
                     "limit": 1,
-                    "offset": 0,
+                    "page": 1,
                 },
             ),
         ]
@@ -705,7 +816,7 @@ class TestAdvancedHelpers:
         txns = connector.list_thread_messages("th-1", limit=5)
 
         assert [tx.id for tx in txns] == ["msg-1"]
-        assert sdk_client.channels.thread_calls == [("th-1", {"limit": 5, "offset": 0})]
+        assert sdk_client.channels.thread_calls == [("th-1", {})]
 
     def test_list_company_activity(self):
         sdk_client = _Client()
@@ -732,9 +843,27 @@ class TestLifecycle:
         _seed_addresses(sdk_client)
         connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
 
-        connector.ack_transaction(Transaction(id="evt-1", payload={}))
+        connector.ack_transaction(_claimed_transaction())
 
-        assert sdk_client.channels.configs.ack_calls == [("cfg-jsl", "evt-1", {})]
+        assert sdk_client.channels.configs.ack_calls == [
+            (
+                "cfg-jsl",
+                "evt-1",
+                {
+                    "subscription_id": "11111111-1111-1111-1111-111111111111",
+                    "lease_token": "22222222-2222-2222-2222-222222222222",
+                },
+            )
+        ]
+
+    def test_ack_rejects_unclaimed_detail_transaction(self):
+        config = ErgonPlatformChannelsConsumerConfig(address=INBOX)
+        sdk_client = _Client()
+        _seed_addresses(sdk_client)
+        connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
+
+        with pytest.raises(ValueError, match="not claimed"):
+            connector.ack_transaction(Transaction(id="evt-1", payload={}))
 
     def test_nack_calls_platform_activity_nack(self):
         config = ErgonPlatformChannelsConsumerConfig(
@@ -745,10 +874,19 @@ class TestLifecycle:
         _seed_addresses(sdk_client)
         connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
 
-        connector.nack_transaction(Transaction(id="evt-1", payload={}), requeue=True)
+        connector.nack_transaction(_claimed_transaction(), requeue=True)
 
         assert sdk_client.channels.configs.nack_calls == [
-            ("cfg-jsl", "evt-1", {"requeue": True, "delay_seconds": 30}),
+            (
+                "cfg-jsl",
+                "evt-1",
+                {
+                    "subscription_id": "11111111-1111-1111-1111-111111111111",
+                    "lease_token": "22222222-2222-2222-2222-222222222222",
+                    "requeue": True,
+                    "delay_seconds": 30,
+                },
+            ),
         ]
 
     def test_download_attachments_uses_transaction_metadata(self, tmp_path):
@@ -776,13 +914,66 @@ class TestLifecycle:
 
         assert len(files) == 1
         assert files[0].attachment_id == "att-1"
-        assert files[0].filename == "a.pdf"
+        assert files[0].filename == "a--att-1.pdf"
         assert files[0].content == b"pdf-bytes"
-        assert files[0].path == str(tmp_path / "evt-1" / "a.pdf")
-        assert (tmp_path / "evt-1" / "a.pdf").read_bytes() == b"pdf-bytes"
+        assert files[0].path == str(tmp_path / "evt-1" / "a--att-1.pdf")
+        assert (tmp_path / "evt-1" / "a--att-1.pdf").read_bytes() == b"pdf-bytes"
         assert sdk_client.channels.configs.attachment_calls == [
             ("cfg-jsl", "evt-1", "att-1", {}),
         ]
+
+    def test_download_rejects_windows_absolute_and_unc_filenames(self, tmp_path):
+        config = ErgonPlatformChannelsConsumerConfig(address=INBOX)
+        sdk_client = _Client()
+        _seed_addresses(sdk_client)
+        connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
+
+        for filename in (r"C:\Windows\system.ini", r"\\server\share\file.txt"):
+            transaction = event_to_transaction(
+                {
+                    "id": "evt-unsafe",
+                    "payload": {
+                        "attachments": [
+                            {
+                                "resend_attachment_id": "att-unsafe",
+                                "filename": filename,
+                            }
+                        ]
+                    },
+                },
+                source="config_activity",
+            )
+            with pytest.raises(ValueError, match="Unsafe absolute"):
+                connector.download_attachments(transaction, dest=tmp_path)
+
+        assert not (tmp_path / "evt-unsafe").exists()
+
+    def test_download_neutralizes_windows_traversal_and_disambiguates(self, tmp_path):
+        config = ErgonPlatformChannelsConsumerConfig(address=INBOX)
+        sdk_client = _Client()
+        _seed_addresses(sdk_client)
+        connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
+        transaction = event_to_transaction(
+            {
+                "id": "evt-safe",
+                "payload": {
+                    "attachments": [
+                        {
+                            "resend_attachment_id": "att-safe",
+                            "filename": r"..\..\invoice.pdf",
+                        }
+                    ]
+                },
+            },
+            source="config_activity",
+        )
+
+        files = connector.download_attachments(transaction, dest=tmp_path)
+
+        expected = tmp_path / "evt-safe" / "invoice--att-safe.pdf"
+        assert files[0].path == str(expected)
+        assert expected.read_bytes() == b"pdf-bytes"
+        assert not (tmp_path.parent / "invoice.pdf").exists()
 
     def test_download_attachments_skips_dest_when_empty(self, tmp_path):
         config = ErgonPlatformChannelsConsumerConfig(address=INBOX)

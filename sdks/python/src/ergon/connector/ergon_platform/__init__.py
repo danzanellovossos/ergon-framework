@@ -30,6 +30,7 @@ if TYPE_CHECKING:
         ErgonPlatformChannelsConnector,
         ErgonPlatformChannelsConsumerConfig,
         ErgonPlatformChannelsProducerConfig,
+        ErgonPlatformChannelsService,
         SendMessageInput,
         SendMessagePayload,
     )
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
         ErgonPlatformConnector,
         ErgonPlatformConsumerConfig,
         ErgonPlatformProducerConfig,
+        ErgonPlatformWorkflowsService,
     )
 
 _SUBPACKAGES = ("channels", "workflows")
@@ -56,12 +58,14 @@ _LAZY_EXPORTS = {
     "ErgonPlatformConnector": "workflows",
     "ErgonPlatformConsumerConfig": "workflows",
     "ErgonPlatformProducerConfig": "workflows",
+    "ErgonPlatformWorkflowsService": "workflows",
     # Channels
     "AsyncErgonPlatformChannelsConnector": "channels",
     "ErgonPlatformChannelsConfig": "channels",
     "ErgonPlatformChannelsConnector": "channels",
     "ErgonPlatformChannelsConsumerConfig": "channels",
     "ErgonPlatformChannelsProducerConfig": "channels",
+    "ErgonPlatformChannelsService": "channels",
     "SendMessageInput": "channels",
     "SendMessagePayload": "channels",
 }
@@ -95,10 +99,12 @@ __all__ = [
     "ErgonPlatformChannelsConnector",
     "ErgonPlatformChannelsConsumerConfig",
     "ErgonPlatformChannelsProducerConfig",
+    "ErgonPlatformChannelsService",
     "ErgonPlatformClient",
     "ErgonPlatformConnector",
     "ErgonPlatformConsumerConfig",
     "ErgonPlatformProducerConfig",
+    "ErgonPlatformWorkflowsService",
     "SendMessageInput",
     "SendMessagePayload",
 ]

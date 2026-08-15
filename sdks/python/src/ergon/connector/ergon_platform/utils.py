@@ -1,0 +1,41 @@
+"""Deprecated compatibility exports for Workflows connector helpers."""
+
+from .workflows.utils import (
+    as_payload,
+    build_redispatch_transaction,
+    classify_status,
+    decode_jwt_claims,
+    extract_buckets_file_id,
+    extract_buckets_file_id_from_attachments,
+    extract_items,
+    extract_status_entries,
+    extract_status_file_id,
+    extract_total,
+    find_status_entry,
+    get_value,
+    item_to_transaction,
+    latest_status_entry,
+    normalize_create_payload,
+    requeue,
+    serialize_object,
+)
+
+__all__ = [
+    "as_payload",
+    "build_redispatch_transaction",
+    "classify_status",
+    "decode_jwt_claims",
+    "extract_buckets_file_id",
+    "extract_buckets_file_id_from_attachments",
+    "extract_items",
+    "extract_status_entries",
+    "extract_status_file_id",
+    "extract_total",
+    "find_status_entry",
+    "get_value",
+    "item_to_transaction",
+    "latest_status_entry",
+    "normalize_create_payload",
+    "requeue",
+    "serialize_object",
+]

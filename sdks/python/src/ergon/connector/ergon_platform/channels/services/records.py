@@ -14,7 +14,11 @@ class SdkRecord:
         return getattr(self.raw, key, default)
 
     @classmethod
-    def items(cls, response: Any, *, keys: Optional[List[str]] = None) -> List[Any]:
+    def items(
+        cls,
+        response: Any,
+        keys: Optional[List[str]] = None,
+    ) -> List[Any]:
         """Get items from a response."""
         candidate_keys = keys or ["items", "messages", "data", "results"]
         if isinstance(response, list):
@@ -44,10 +48,13 @@ class SdkRecord:
     @classmethod
     def serialize(cls, obj: Any) -> Any:
         """Serialize an object to a dictionary."""
-        if obj is None or isinstance(obj, (str, int, float, bool, bytes)):
+        if obj is None or isinstance(
+            obj,
+            (str, int, float, bool, bytes),
+        ):
             return obj
         if isinstance(obj, dict):
-            return {k: cls.serialize(v) for k, v in obj.items()}
+            return {key: cls.serialize(value) for key, value in obj.items()}
         if isinstance(obj, (list, tuple)):
             return [cls.serialize(item) for item in obj]
         if hasattr(obj, "model_dump"):
@@ -55,12 +62,12 @@ class SdkRecord:
         if hasattr(obj, "to_dict"):
             return obj.to_dict()
         if hasattr(obj, "__dict__"):
-            return {k: cls.serialize(v) for k, v in obj.__dict__.items() if not k.startswith("_")}
+            return {key: cls.serialize(value) for key, value in obj.__dict__.items() if not key.startswith("_")}
         return obj
 
     @classmethod
     def first_id(cls, mapping: dict, *keys: str) -> str:
-        """Get the first id from a dictionary."""
+        """Get the first id from a mapping."""
         for key in keys:
             value = mapping.get(key)
             if value:

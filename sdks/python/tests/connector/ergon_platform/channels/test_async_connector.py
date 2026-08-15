@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ergon.connector.ergon_platform.channels._activity import ActivityAdapter
+from ergon.connector.ergon_platform.channels.adapters import ActivityAdapter
 from ergon.connector.ergon_platform.channels.async_connector import (
     AsyncErgonPlatformChannelsConnector,
 )
@@ -25,6 +25,7 @@ INBOX = "jsl-xxx@inbox.ergondata.ai"
 class _Configs:
     def __init__(self):
         self.activity_calls = []
+        self.claim_calls = []
         self.event_calls = []
         self.ack_calls = []
         self.nack_calls = []
@@ -33,6 +34,25 @@ class _Configs:
     def activity(self, config_id, **params):
         self.activity_calls.append((config_id, params))
         return self.activity_response
+
+    def activity_claim(self, config_id, **params):
+        self.claim_calls.append((config_id, params))
+        return {
+            "items": [
+                {
+                    "event": {
+                        "event_type": "channels.email.received",
+                        **event,
+                    },
+                    "delivery": {
+                        "subscription_id": params["subscription_id"],
+                        "lease_token": f"lease-{event.get('id')}",
+                    },
+                }
+                for event in self.activity_response.get("items", [])
+            ],
+            "next_cursor": None,
+        }
 
     def activity_event(self, config_id, event_id, **params):
         self.event_calls.append((config_id, event_id, params))
@@ -132,6 +152,18 @@ def _seed_producer_address(sdk_client: _Client, *, address_id: str, direction: s
     ]
 
 
+def _claimed_transaction(event_id: str = "evt-1") -> Transaction:
+    return ActivityAdapter.claimed_transaction(
+        {
+            "event": {"id": event_id, "event_type": "channels.email.received"},
+            "delivery": {
+                "subscription_id": "11111111-1111-1111-1111-111111111111",
+                "lease_token": "22222222-2222-2222-2222-222222222222",
+            },
+        }
+    )
+
+
 class TestAsyncFetchTransactions:
     async def test_fetches_inbox_activity(self):
         config = ErgonPlatformChannelsConsumerConfig(address=INBOX, batch_size=25)
@@ -143,19 +175,9 @@ class TestAsyncFetchTransactions:
         txns = await connector.fetch_transactions_async()
 
         assert [tx.id for tx in txns] == ["evt-1"]
-        assert sdk_client.channels.configs.activity_calls == [
-            (
-                "cfg-jsl",
-                {
-                    "channel": "email",
-                    "event_type": "channels.email.received",
-                    "address_id": "addr-jsl",
-                    "pending_only": True,
-                    "limit": 25,
-                    "offset": 0,
-                },
-            ),
-        ]
+        assert sdk_client.channels.configs.claim_calls[0][0] == "cfg-jsl"
+        assert sdk_client.channels.configs.claim_calls[0][1]["limit"] == 25
+        assert txns[0].metadata["delivery"]["lease_token"] == "lease-evt-1"
 
     async def test_requires_consumer_config(self):
         connector = _make_connector()
@@ -206,9 +228,18 @@ class TestAsyncLifecycle:
         _seed_addresses(sdk_client)
         connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
 
-        await connector.ack_transaction(Transaction(id="evt-1", payload={}))
+        await connector.ack_transaction(_claimed_transaction())
 
-        assert sdk_client.channels.configs.ack_calls == [("cfg-jsl", "evt-1", {})]
+        assert sdk_client.channels.configs.ack_calls == [
+            (
+                "cfg-jsl",
+                "evt-1",
+                {
+                    "subscription_id": "11111111-1111-1111-1111-111111111111",
+                    "lease_token": "22222222-2222-2222-2222-222222222222",
+                },
+            )
+        ]
 
     async def test_nack_calls_platform_activity_nack(self):
         config = ErgonPlatformChannelsConsumerConfig(address=INBOX)
@@ -216,10 +247,19 @@ class TestAsyncLifecycle:
         _seed_addresses(sdk_client)
         connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
 
-        await connector.nack_transaction(Transaction(id="evt-1", payload={}), requeue=False)
+        await connector.nack_transaction(_claimed_transaction(), requeue=False)
 
         assert sdk_client.channels.configs.nack_calls == [
-            ("cfg-jsl", "evt-1", {"requeue": False, "delay_seconds": 0}),
+            (
+                "cfg-jsl",
+                "evt-1",
+                {
+                    "subscription_id": "11111111-1111-1111-1111-111111111111",
+                    "lease_token": "22222222-2222-2222-2222-222222222222",
+                    "requeue": False,
+                    "delay_seconds": 0,
+                },
+            ),
         ]
 
     async def test_download_attachments_uses_transaction_metadata(self):

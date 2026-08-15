@@ -1,12 +1,12 @@
 from typing import Any, Dict, List, Optional
 
 from ...transaction import Transaction
-from ._sdk import SdkRecord
 from .models import ErgonPlatformChannelsConsumerConfig
+from .services.records import SdkRecord
 
 
 class ActivityAdapter:
-    """Maps Channels activity events into the connector ``Transaction`` shape."""
+    """Map Channels activity events into the connector Transaction shape."""
 
     _META_KEYS = (
         "event_type",
@@ -25,10 +25,17 @@ class ActivityAdapter:
         "consumer_id",
         "attempt_count",
     )
+    _DELIVERY_KEYS = (
+        "subscription_id",
+        "lease_token",
+        "lease_expires_at",
+        "consumer_id",
+        "attempt_count",
+    )
 
     @classmethod
     def to_transaction(cls, event: Any, *, source: str) -> Transaction:
-        """Convert a platform activity event into a ``Transaction``."""
+        """To transaction."""
         payload = SdkRecord.serialize(event)
         payload = payload if isinstance(payload, dict) else {"value": payload}
         metadata: Dict[str, Any] = {"source": source}
@@ -44,14 +51,60 @@ class ActivityAdapter:
                 metadata["attachments"] = attachments
                 metadata["has_attachment"] = True
         return Transaction(
-            id=SdkRecord.first_id(payload, "id", "log_id", "message_id", "provider_message_id"),
+            id=SdkRecord.first_id(
+                payload,
+                "id",
+                "log_id",
+                "message_id",
+                "provider_message_id",
+            ),
             payload=payload,
             metadata=metadata,
         )
 
+    @classmethod
+    def claimed_transaction(cls, item: Any) -> Transaction:
+        """Claimed transaction."""
+        claimed = SdkRecord.serialize(item)
+        claimed = claimed if isinstance(claimed, dict) else {}
+        transaction = cls.to_transaction(
+            claimed.get("event"),
+            source="config_activity_claim",
+        )
+        metadata = dict(transaction.metadata or {})
+        delivery = claimed.get("delivery")
+        if isinstance(delivery, dict):
+            metadata["delivery"] = {key: delivery[key] for key in cls._DELIVERY_KEYS if delivery.get(key) is not None}
+        return transaction.model_copy(update={"metadata": metadata})
+
+    @staticmethod
+    def delivery(transaction: Transaction) -> Dict[str, Any]:
+        """Delivery."""
+        metadata = transaction.metadata or {}
+        delivery = metadata.get("delivery")
+        if not isinstance(delivery, dict):
+            raise ValueError("Transaction was not claimed and cannot be acknowledged or nacked")
+        if not delivery.get("subscription_id") or not delivery.get("lease_token"):
+            raise ValueError("Transaction claim is missing subscription_id or lease_token")
+        return delivery
+
+    @staticmethod
+    def belongs_to_address(
+        transaction: Transaction,
+        address_id: str,
+    ) -> bool:
+        """Belongs to address."""
+        metadata = transaction.metadata or {}
+        nested = metadata.get("message_payload")
+        if isinstance(nested, dict):
+            candidate = nested.get("address_id") or nested.get("channel_address_id")
+            if candidate is not None:
+                return str(candidate) == address_id
+        return True
+
     @staticmethod
     def attachment_id(attachment: Any) -> Optional[str]:
-        """Extract the attachment id from a platform activity event."""
+        """Attachment id."""
         if not isinstance(attachment, dict):
             return None
         for key in ("id", "resend_attachment_id", "attachment_id"):
@@ -61,17 +114,20 @@ class ActivityAdapter:
         return None
 
     @classmethod
-    def public_attachment(cls, item: Any) -> Optional[Dict[str, Any]]:
-        """Nylas-shaped dict: ``id``, ``filename``, ``content_type``, ``size``, ``content``."""
+    def public_attachment(
+        cls,
+        item: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """Public attachment."""
         if not isinstance(item, dict):
             return None
         filename = str(item.get("filename") or item.get("name") or "").strip()
         if not filename:
             return None
         attachment: Dict[str, Any] = {"filename": filename}
-        att_id = cls.attachment_id(item)
-        if att_id:
-            attachment["id"] = att_id
+        attachment_id = cls.attachment_id(item)
+        if attachment_id:
+            attachment["id"] = attachment_id
         content_type = item.get("content_type")
         if content_type:
             attachment["content_type"] = content_type
@@ -85,7 +141,7 @@ class ActivityAdapter:
 
     @classmethod
     def public_attachments(cls, items: Any) -> List[Dict[str, Any]]:
-        """Normalize a platform attachment list into the public fetch shape."""
+        """Public attachments."""
         if not isinstance(items, list):
             return []
         attachments: List[Dict[str, Any]] = []
@@ -95,49 +151,64 @@ class ActivityAdapter:
                 attachments.append(attachment)
         return attachments
 
-    @staticmethod
-    def attachments(transaction: Transaction) -> List[Dict[str, Any]]:
-        """Public attachments on the transaction, falling back to the raw event payload."""
+    @classmethod
+    def attachments(
+        cls,
+        transaction: Transaction,
+    ) -> List[Dict[str, Any]]:
+        """Attachments."""
         metadata = transaction.metadata or {}
         items = metadata.get("attachments")
         if isinstance(items, list):
             return [item for item in items if isinstance(item, dict)]
         nested = metadata.get("message_payload")
         if isinstance(nested, dict):
-            return ActivityAdapter.public_attachments(nested.get("attachments"))
+            return cls.public_attachments(nested.get("attachments"))
         payload = transaction.payload
         if isinstance(payload, dict):
             nested = payload.get("payload")
             if isinstance(nested, dict):
-                return ActivityAdapter.public_attachments(nested.get("attachments"))
+                return cls.public_attachments(nested.get("attachments"))
         return []
 
     @staticmethod
-    def with_attachments(transaction: Transaction, attachments: List[Dict[str, Any]]) -> Transaction:
-        """Add attachments to a platform activity event."""
+    def with_attachments(
+        transaction: Transaction,
+        attachments: List[Dict[str, Any]],
+    ) -> Transaction:
+        """With the attachments."""
         metadata = dict(transaction.metadata or {})
         metadata["attachments"] = attachments
         metadata["has_attachment"] = bool(attachments)
         nested = metadata.get("message_payload")
         if isinstance(nested, dict):
-            metadata["message_payload"] = {**nested, "attachments": attachments}
+            metadata["message_payload"] = {
+                **nested,
+                "attachments": attachments,
+            }
         payload = transaction.payload
         if isinstance(payload, dict):
             payload = dict(payload)
             inner = payload.get("payload")
             if isinstance(inner, dict):
-                payload["payload"] = {**inner, "attachments": attachments}
+                payload["payload"] = {
+                    **inner,
+                    "attachments": attachments,
+                }
         return transaction.model_copy(update={"payload": payload, "metadata": metadata})
 
     @staticmethod
-    def unseen(transactions: List[Transaction], seen_ids: set[str]) -> List[Transaction]:
-        """Filter out seen transactions."""
+    def unseen(
+        transactions: List[Transaction],
+        seen_ids: set[str],
+    ) -> List[Transaction]:
         fresh: List[Transaction] = []
-        for tx in transactions:
-            if not tx.id or tx.id in seen_ids:
+        """Unseen transactions."""
+        for transaction in transactions:
+            if not transaction.id or transaction.id in seen_ids:
                 continue
-            seen_ids.add(tx.id)
-            fresh.append(tx)
+            seen_ids.add(transaction.id)
+            fresh.append(transaction)
         return fresh
 
     @classmethod

@@ -32,6 +32,10 @@ python config.py
 | `CHANNELS_INSTRUCTIONS_ADDRESS` | sim | Inbox de programações / instruções |
 | `CHANNELS_AUTH_CODE_ADDRESS` | sim | Inbox de código de autenticação (mesmo channel) |
 | `CHANNELS_BATCH_SIZE` | não | Eventos por fetch (default `20`) |
+| `CHANNELS_CLAIM_PAGE_SIZE` | não | Eventos por página ao procurar matches (default `100`) |
+| `CHANNELS_VISIBILITY_TIMEOUT_SECONDS` | não | Duração da lease antes de retry (default `300`) |
+| `CHANNELS_NACK_DELAY_SECONDS` | não | Atraso do requeue após NACK (default `5`) |
+| `CHANNELS_ATTACHMENT_DOWNLOAD_TIMEOUT` | não | Timeout por anexo em segundos (default `20`) |
 | `CHANNELS_STREAMING` | não | `true` = polling contínuo; default = one-shot |
 
 ```env
@@ -46,7 +50,12 @@ O channel na plataforma precisa permitir recebimento (`receive` ou `both`). Para
 
 ## Streaming e ack
 
-Com `CHANNELS_STREAMING=true` a task faz polling contínuo (~5 min por batch / fila vazia, ver `policies.py`). O fetch usa `pending_only=true`: eventos já ackados não voltam. Em sucesso a task chama `ack_transaction`; em erro, `nack_transaction(requeue=True)`.
+Com `CHANNELS_STREAMING=true` a task faz polling contínuo (~5 min por batch / fila vazia, ver `policies.py`). O fetch cria leases atômicos para a subscription: eventos já ackados nela não voltam e réplicas não processam a mesma delivery. Em sucesso a task chama `ack_transaction`; em erro, `nack_transaction(requeue=True)`.
+
+O exemplo não define `subscription_id`: o connector deriva um UUID estável de
+`config_id + address_id + filtro`. Assim, as caixas `instructions` e
+`auth_code` têm subscriptions independentes. Defina um UUID explicitamente
+somente quando precisar preservar uma identidade já existente.
 
 A API key precisa de `channels:activity:view` + `channels:addresses:receive` (leitura e download de anexos) e `channels:activity:consume` (ack/nack) no channel.
 
@@ -54,10 +63,10 @@ A API key precisa de `channels:activity:view` + `channels:addresses:receive` (le
 
 `task.py` é o exemplo de consumo. Os métodos do connector, nesta ordem:
 
-1. `consume_transactions` → por baixo, `fetch_transactions` (lista pendente, sem corpo)
-2. `fetch_transaction_by_id_async(tx.id)` → detalhe: `message_payload` + `attachments`
-3. `ack_transaction` / `nack_transaction` → estado na plataforma
+1. `consume_transactions` → por baixo, `fetch_transactions` faz uma claim
+2. A própria `Transaction` já contém detalhe, `message_payload`, anexos e lease
+3. `ack_transaction` / `nack_transaction` → liquida o lease na plataforma
 
-Com `download_attachments=True` (`config.py`), o passo 2 já traz `content` em **bytes**. Cada arquivo tem timeout próprio (`attachment_download_timeout`, default 20s) num client HTTP separado — se o CDN da Resend travar, o anexo fica sem `content` e o ack/nack continua.
+Com `download_attachments=True` (`config.py`), o passo 2 já traz `content` em **bytes**. Cada arquivo tem timeout próprio (`attachment_download_timeout`, default 20s) num client HTTP separado. Falha propaga a exceção e requeue todas as claims do fetch; best-effort precisa ser configurado explicitamente e bloqueia ACK até override explícito.
 
 Para gravar em disco: `await connector.download_attachments(tx, dest="/tmp")`.
