@@ -869,7 +869,7 @@ class AsyncConsumerMixin(ABC):
                             trace_name=f"{self.__class__.__name__}.start_processing",
                             trace_attrs={"transaction_id": tr.id},
                         )
-                except TimeoutError as exc:
+                except asyncio.TimeoutError as exc:
                     timeout_error = exceptions.TransactionTimeoutException(
                         transaction_id=tr.id,
                         cause=exc,
