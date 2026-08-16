@@ -1,6 +1,6 @@
 [project]
 name = "ergon-framework-python"
-version = "0.2.1"
+version = "0.3.0"
 description = "Ergon internal task-oriented project bootstrapper"
 readme = "README.md"
 license = "MIT"
