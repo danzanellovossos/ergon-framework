@@ -1,4 +1,4 @@
-"""Tests for private Ergon Platform domain operations."""
+"""Tests for private Ergon Platform workflows domain operations."""
 
 import base64
 import json
@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from ergon.connector.ergon_platform._operations import _ErgonPlatformOperations
 from ergon.connector.ergon_platform.models import ErgonPlatformClient
+from ergon.connector.ergon_platform.workflows._operations import _ErgonPlatformOperations
 
 
 def _make_client_config() -> ErgonPlatformClient:
@@ -155,7 +155,7 @@ class TestFetchItemsAssignedToDefault:
         token = _make_jwt_with_claims({"sub": "11111111-1111-1111-1111-111111111111"})
 
         with patch(
-            "ergon.connector.ergon_platform._operations.httpx.post",
+            "ergon.connector.ergon_platform.workflows._operations.httpx.post",
             return_value=_TokenExchangeResponse(token),
         ):
             txs = operations.fetch_items("wf-1", "ph-1")
@@ -169,7 +169,7 @@ class TestFetchItemsAssignedToDefault:
     def test_fetch_items_keeps_explicit_assigned_to(self):
         operations = _make_operations()
 
-        with patch("ergon.connector.ergon_platform._operations.httpx.post") as mock_post:
+        with patch("ergon.connector.ergon_platform.workflows._operations.httpx.post") as mock_post:
             operations.fetch_items("wf-1", "ph-1", assigned_to="22222222-2222-2222-2222-222222222222")
 
         assert (
@@ -183,7 +183,7 @@ class TestFetchItemsAssignedToDefault:
         token = _make_jwt_with_claims({"sub": "33333333-3333-3333-3333-333333333333"})
 
         with patch(
-            "ergon.connector.ergon_platform._operations.httpx.post",
+            "ergon.connector.ergon_platform.workflows._operations.httpx.post",
             return_value=_TokenExchangeResponse(token),
         ) as mock_post:
             operations.fetch_items("wf-1", "ph-1")

@@ -1,0 +1,20 @@
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env")
+
+ERGON_CLIENT_ID = os.getenv("ERGON_CLIENT_ID", "")
+ERGON_CLIENT_SECRET = os.getenv("ERGON_CLIENT_SECRET", "")
+ERGON_BASE_URL = os.getenv("ERGON_BASE_URL") or "https://platform.ergondata.ai"
+
+CHANNELS_CONFIG_ID = os.getenv("CHANNELS_CONFIG_ID", "")
+CHANNELS_INSTRUCTIONS_ADDRESS = os.getenv("CHANNELS_INSTRUCTIONS_ADDRESS", "")
+
+CHANNELS_BATCH_SIZE = int(os.getenv("CHANNELS_BATCH_SIZE", "20"))
+CHANNELS_CLAIM_PAGE_SIZE = int(os.getenv("CHANNELS_CLAIM_PAGE_SIZE", "100"))
+CHANNELS_VISIBILITY_TIMEOUT_SECONDS = int(os.getenv("CHANNELS_VISIBILITY_TIMEOUT_SECONDS", "30"))
+CHANNELS_NACK_DELAY_SECONDS = int(os.getenv("CHANNELS_NACK_DELAY_SECONDS", "5"))
+CHANNELS_ATTACHMENT_DOWNLOAD_TIMEOUT = float(os.getenv("CHANNELS_ATTACHMENT_DOWNLOAD_TIMEOUT", "20"))
+CHANNELS_STREAMING = os.getenv("CHANNELS_STREAMING", "false").lower() == "true"

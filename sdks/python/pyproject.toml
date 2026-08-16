@@ -34,7 +34,7 @@ all = [
     "aiobotocore>=2.13.0",
     "asyncpg>=0.29.0",
     "boto3>=1.35.0",
-    "ergon-platform-sdk>=0.1.0",
+    "ergon-platform-sdk>=0.2.0",
     "httpx>=0.28.0",
     "nylas>=6.0.0",
     "openpyxl>=3.1.5",
@@ -42,7 +42,7 @@ all = [
     "requests>=2.32.5",
 ]
 "ergon-platform" = [
-    "ergon-platform-sdk>=0.1.0",
+    "ergon-platform-sdk>=0.2.0",
     "httpx>=0.28.0",
 ]
 excel = ["openpyxl>=3.1.5"]

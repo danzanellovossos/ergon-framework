@@ -5,8 +5,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from ..transaction import Transaction
-from .models import ErgonPlatformClient
+from ...transaction import Transaction
+from ..models import ErgonPlatformClient
 from .utils import (
     as_payload,
     classify_status,
@@ -22,7 +22,9 @@ from .utils import (
 )
 
 
-class _ErgonPlatformOperations:
+class ErgonPlatformWorkflowsService:
+    """Workflows HTTP, pagination, claim, and attachment service."""
+
     def __init__(self, config: ErgonPlatformClient, client: Any) -> None:
         self.config = config
         self.client = client
@@ -262,3 +264,6 @@ class _ErgonPlatformOperations:
                 seen_ids.add(field_id)
             merged.append(field)
         return merged
+
+
+_ErgonPlatformOperations = ErgonPlatformWorkflowsService

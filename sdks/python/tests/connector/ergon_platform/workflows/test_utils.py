@@ -1,9 +1,9 @@
-"""Tests for Ergon Platform connector utilities."""
+"""Tests for Ergon Platform workflows connector utilities."""
 
 import pytest
 
-from ergon.connector.ergon_platform.models import CreateItemInput
-from ergon.connector.ergon_platform.utils import (
+from ergon.connector.ergon_platform.workflows.models import CreateItemInput
+from ergon.connector.ergon_platform.workflows.utils import (
     classify_status,
     extract_buckets_file_id,
     extract_items,

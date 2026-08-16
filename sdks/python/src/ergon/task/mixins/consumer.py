@@ -136,7 +136,6 @@ class ConsumerMixin(ABC):
             # -----------------------
             # 3) SUCCESS HANDLER
             # -----------------------
-            logger.info(f"Invoking success handler for transaction {transaction.id} with outcome: '{process_result}'")
             success_ok, success_result = self._handle_success(transaction, process_result, policy.success.retry)
 
             if not success_ok:
@@ -679,7 +678,6 @@ class AsyncConsumerMixin(ABC):
             # -----------------------
             # 3) SUCCESS HANDLER
             # -----------------------
-            logger.info(f"Invoking success handler for transaction {transaction.id} with outcome: '{process_result}'")
             success_ok, success_result = await self._handle_success(transaction, process_result, policy.success.retry)
 
             if not success_ok:
