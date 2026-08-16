@@ -1,9 +1,11 @@
 """Tests for AsyncRabbitMQService — connection lifecycle, consume, publish, ack/nack."""
 
 import asyncio
+import gc
 import json
+import sys
 import time
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aio_pika.exceptions
@@ -64,6 +66,84 @@ def _mock_channel() -> AsyncMock:
     return channel
 
 
+class _HangingInitialRobustConnection:
+    """Model aio-pika's reconnect task before ``connect_robust`` returns."""
+
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        self.is_closed = False
+        self.close_calls = 0
+        self.reconnect_started = asyncio.Event()
+        self.reconnect_task: asyncio.Task[None] | None = None
+
+    async def _reconnect_forever(self) -> None:
+        self.reconnect_started.set()
+        await asyncio.Event().wait()
+
+    async def connect(self, timeout: float | None = None) -> None:
+        del timeout
+        self.reconnect_task = asyncio.create_task(
+            self._reconnect_forever(),
+            name="fake-aio-pika-reconnect",
+        )
+        await self.reconnect_started.wait()
+        await asyncio.Event().wait()
+
+    async def close(self) -> None:
+        self.close_calls += 1
+        self.is_closed = True
+        if self.reconnect_task is not None:
+            self.reconnect_task.cancel()
+            await asyncio.gather(self.reconnect_task, return_exceptions=True)
+
+
+class _FailingInitialRobustConnection(_HangingInitialRobustConnection):
+    async def connect(self, timeout: float | None = None) -> None:
+        del timeout
+        self.reconnect_task = asyncio.create_task(
+            self._reconnect_forever(),
+            name="fake-aio-pika-reconnect",
+        )
+        await self.reconnect_started.wait()
+        raise aiormq.exceptions.AuthenticationError("invalid credentials")
+
+
+class _SuccessfulInitialRobustConnection(_HangingInitialRobustConnection):
+    async def connect(self, timeout: float | None = None) -> None:
+        del timeout
+
+
+def _install_initial_connect_double(
+    monkeypatch: pytest.MonkeyPatch,
+    connection_type: Any,
+) -> list[_HangingInitialRobustConnection]:
+    """Install a faithful ``connect_robust`` ownership boundary test double."""
+
+    created: list[_HangingInitialRobustConnection] = []
+
+    async def connect_robust(
+        url: str,
+        *,
+        connection_class: Any = connection_type,
+        timeout: float | None = None,
+        loop: Any = None,
+        ssl_context: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        connection = connection_class(
+            url,
+            loop=loop,
+            ssl_context=ssl_context,
+            **kwargs,
+        )
+        created.append(connection)
+        await connection.connect(timeout=timeout)
+        return connection
+
+    monkeypatch.setattr(aio_pika, "RobustConnection", connection_type)
+    monkeypatch.setattr(aio_pika, "connect_robust", connect_robust)
+    return created
+
+
 def _mock_consumer_queue(
     *,
     name: str = "test-queue",
@@ -103,6 +183,196 @@ class TestClientUrl:
 
 
 class TestConnection:
+    async def test_initial_connect_timeout_closes_reconnect_task(self, monkeypatch):
+        created = _install_initial_connect_double(monkeypatch, _HangingInitialRobustConnection)
+        service = AsyncRabbitMQService(_make_client(connect_timeout=0.02))
+
+        try:
+            with pytest.raises(asyncio.TimeoutError):
+                await service._get_connection()
+
+            assert len(created) == 1
+            connection = created[0]
+            assert connection.close_calls == 1
+            assert connection.is_closed is True
+            assert connection.reconnect_task is not None
+            assert connection.reconnect_task.done()
+            assert service._connection is None
+            assert service.health()["state"] == "connect_stalled"
+        finally:
+            for connection in created:
+                await connection.close()
+
+    async def test_initial_connect_cancellation_closes_reconnect_task(self, monkeypatch):
+        created = _install_initial_connect_double(monkeypatch, _HangingInitialRobustConnection)
+        service = AsyncRabbitMQService(_make_client(connect_timeout=30))
+        connecting = asyncio.create_task(service._get_connection())
+
+        try:
+            while not created:
+                await asyncio.sleep(0)
+            await created[0].reconnect_started.wait()
+            connecting.cancel()
+
+            with pytest.raises(asyncio.CancelledError):
+                await connecting
+
+            connection = created[0]
+            assert connection.close_calls == 1
+            assert connection.is_closed is True
+            assert connection.reconnect_task is not None
+            assert connection.reconnect_task.done()
+            assert service._connection is None
+            assert service.health()["state"] == "disconnected"
+        finally:
+            if not connecting.done():
+                connecting.cancel()
+                await asyncio.gather(connecting, return_exceptions=True)
+            for connection in created:
+                await connection.close()
+
+    async def test_initial_connect_error_closes_reconnect_task(self, monkeypatch):
+        created = _install_initial_connect_double(monkeypatch, _FailingInitialRobustConnection)
+        service = AsyncRabbitMQService(_make_client(connect_timeout=1))
+
+        try:
+            with pytest.raises(aiormq.exceptions.AuthenticationError, match="invalid credentials"):
+                await service._get_connection()
+
+            assert len(created) == 1
+            connection = created[0]
+            assert connection.close_calls == 1
+            assert connection.is_closed is True
+            assert connection.reconnect_task is not None
+            assert connection.reconnect_task.done()
+            assert service._connection is None
+            assert service.health()["state"] == "disconnected"
+        finally:
+            for connection in created:
+                await connection.close()
+
+    async def test_successful_initial_connect_transfers_ownership_to_service(self, monkeypatch):
+        created = _install_initial_connect_double(monkeypatch, _SuccessfulInitialRobustConnection)
+        service = AsyncRabbitMQService(_make_client(connect_timeout=1))
+
+        connection = cast(
+            _SuccessfulInitialRobustConnection,
+            await service._get_connection(),
+        )
+
+        assert created == [connection]
+        assert connection.close_calls == 0
+        assert connection.is_closed is False
+        assert service._connection is connection
+        assert service.health()["state"] == "connected"
+
+        await service.close()
+
+        assert connection.close_calls == 1
+        assert connection.is_closed is True
+        assert service._connection is None
+
+    async def test_retry_after_initial_timeout_uses_fresh_owned_connection(self, monkeypatch):
+        connection_types = iter(
+            [
+                _HangingInitialRobustConnection,
+                _SuccessfulInitialRobustConnection,
+            ]
+        )
+
+        def connection_factory(*args: Any, **kwargs: Any) -> _HangingInitialRobustConnection:
+            return next(connection_types)(*args, **kwargs)
+
+        created = _install_initial_connect_double(monkeypatch, connection_factory)
+        service = AsyncRabbitMQService(_make_client(connect_timeout=0.02))
+
+        with pytest.raises(asyncio.TimeoutError):
+            await service._get_connection()
+
+        connection = cast(
+            _SuccessfulInitialRobustConnection,
+            await service._get_connection(),
+        )
+
+        assert len(created) == 2
+        assert created[0].close_calls == 1
+        assert created[0].reconnect_task is not None
+        assert created[0].reconnect_task.done()
+        assert connection is created[1]
+        assert connection.close_calls == 0
+        assert service._connection is connection
+
+        await service.close()
+        assert connection.close_calls == 1
+
+    async def test_real_aio_pika_handshake_timeout_releases_reconnect_task(self, monkeypatch):
+        created = []
+        accepted_connections: set[tuple[asyncio.StreamReader, asyncio.StreamWriter]] = set()
+        real_connection_class = aio_pika.RobustConnection
+
+        def record_connection(*args: Any, **kwargs: Any) -> Any:
+            connection = real_connection_class(*args, **kwargs)
+            created.append(connection)
+            return connection
+
+        def accept_without_amqp_handshake(
+            reader: asyncio.StreamReader,
+            writer: asyncio.StreamWriter,
+        ) -> None:
+            accepted_connections.add((reader, writer))
+
+        server = await asyncio.start_server(
+            accept_without_amqp_handshake,
+            host="127.0.0.1",
+            port=0,
+        )
+        port = server.sockets[0].getsockname()[1]
+        service = AsyncRabbitMQService(
+            _make_client(
+                url=f"amqp://guest:guest@127.0.0.1:{port}/",
+                connect_timeout=0.05,
+            )
+        )
+        monkeypatch.setattr(aio_pika, "RobustConnection", record_connection)
+
+        try:
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(service._get_connection(), timeout=1)
+
+            assert len(created) == 1
+            assert (
+                getattr(
+                    created[0],
+                    "_RobustConnection__reconnection_task",
+                )
+                is None
+            )
+            assert service._connection is None
+            assert service.health()["state"] == "connect_stalled"
+            assert accepted_connections
+
+            # On production Python (3.12+) and current runtimes, aiormq also
+            # closes the partial handshake socket when its task is cancelled.
+            # Python 3.10's asyncio transport defers that final socket cleanup
+            # to collection, but the reconnect task that can wedge
+            # asyncio.run() is already deterministically gone above.
+            if sys.version_info >= (3, 11):
+                for reader, _writer in accepted_connections:
+                    await asyncio.wait_for(reader.read(), timeout=1)
+        finally:
+            await service.close()
+            for _reader, writer in accepted_connections:
+                writer.close()
+            await asyncio.gather(
+                *(writer.wait_closed() for _reader, writer in accepted_connections),
+                return_exceptions=True,
+            )
+            server.close()
+            await server.wait_closed()
+            created.clear()
+            gc.collect()
+            await asyncio.sleep(0)
+
     @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
     async def test_connect_hang_is_bounded(self, mock_connect):
         async def never_connects(*args, **kwargs):
@@ -111,7 +381,7 @@ class TestConnection:
         mock_connect.side_effect = never_connects
         service = AsyncRabbitMQService(_make_client(connect_timeout=0.02))
 
-        with pytest.raises(TimeoutError):
+        with pytest.raises(asyncio.TimeoutError):
             await service._get_connection()
 
         assert service.health()["state"] == "connect_stalled"
@@ -126,7 +396,7 @@ class TestConnection:
         service = AsyncRabbitMQService(_make_client(connect_timeout=0.02))
         service._connection = mock_conn
 
-        with pytest.raises(TimeoutError):
+        with pytest.raises(asyncio.TimeoutError):
             await service._get_connection()
 
         mock_conn.close.assert_awaited_once()

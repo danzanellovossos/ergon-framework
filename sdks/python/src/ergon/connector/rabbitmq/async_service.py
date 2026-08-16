@@ -55,13 +55,14 @@ _DEAD_CHANNEL_EXCEPTIONS: tuple[type[BaseException], ...] = (
     aio_pika.exceptions.ChannelClosed,
 )
 
-# Same as above plus ``TimeoutError`` (raised by the async timeout context when an
-# ack/nack stalls on a half-open socket). A stalled ack is functionally a dead
-# channel: we tear down and let the broker redeliver instead of blocking until
-# the heartbeat eventually fires.
+# Same as above plus ``asyncio.TimeoutError`` (raised by the async timeout
+# context when an ack/nack stalls on a half-open socket). A stalled ack is
+# functionally a dead channel: we tear down and let the broker redeliver instead
+# of blocking until the heartbeat eventually fires. Use asyncio's name
+# explicitly because it is distinct from builtins.TimeoutError on Python 3.10.
 _DEAD_CHANNEL_TIMEOUT_EXCEPTIONS: tuple[type[BaseException], ...] = (
     *_DEAD_CHANNEL_EXCEPTIONS,
-    TimeoutError,
+    asyncio.TimeoutError,
 )
 
 
@@ -107,6 +108,54 @@ class AsyncRabbitMQService:
 
     # ---------- Connection / Channel ----------
 
+    async def _open_owned_robust_connection(
+        self,
+        url: str,
+        kwargs: Dict[str, Any],
+    ) -> AbstractRobustConnection:
+        """Open a robust connection without losing ownership on startup failure.
+
+        ``aio_pika.connect_robust`` constructs ``RobustConnection`` and starts
+        its background reconnection task before awaiting the initial broker
+        connection. If that await times out or is cancelled, the helper never
+        returns the connection object, so callers cannot close the reconnect
+        task and ``asyncio.run`` can hang while shutting it down.
+
+        aio-pika exposes ``connection_class`` as its connection factory. Capture
+        the object synchronously at that boundary, before its first await, and
+        close it on every unsuccessful exit from ``connect_robust``.
+        """
+        pending_connection: Optional[AbstractRobustConnection] = None
+
+        def capture_connection(*args: Any, **connection_kwargs: Any) -> AbstractRobustConnection:
+            nonlocal pending_connection
+            pending_connection = aio_pika.RobustConnection(*args, **connection_kwargs)
+            return pending_connection
+
+        connection_factory = cast(type[AbstractRobustConnection], capture_connection)
+        try:
+            async with timeout_after(self.client.connect_timeout):
+                return await aio_pika.connect_robust(  # type: ignore[call-overload]
+                    url,
+                    heartbeat=self.client.heartbeat,
+                    timeout=self.client.connect_timeout,
+                    connection_class=connection_factory,
+                    **kwargs,
+                )
+        except BaseException as exc:
+            connection_to_close = pending_connection
+            pending_connection = None
+            try:
+                await self._close_connection_safely(
+                    connection_to_close,
+                    f"initial connection attempt failed: {type(exc).__name__}",
+                )
+            finally:
+                # Do not retain the partial connection in this exception's
+                # traceback after its reconnect task has been stopped.
+                del connection_to_close
+            raise
+
     async def _get_connection(self) -> AbstractRobustConnection:
         async with self._connection_lock:
             if self._connection is not None and not self._connection.is_closed:
@@ -116,7 +165,7 @@ class AsyncRabbitMQService:
                     try:
                         async with timeout_after(self.client.connect_timeout):
                             await connected.wait()
-                    except TimeoutError:
+                    except asyncio.TimeoutError:
                         self._consumer_state = "connect_stalled"
                         await self._reset_connection("robust reconnect timed out")
                         raise
@@ -133,14 +182,8 @@ class AsyncRabbitMQService:
 
             self._consumer_state = "connecting"
             try:
-                async with timeout_after(self.client.connect_timeout):
-                    connection = await aio_pika.connect_robust(  # type: ignore[call-overload]
-                        url,
-                        heartbeat=self.client.heartbeat,
-                        timeout=self.client.connect_timeout,
-                        **kwargs,
-                    )
-            except TimeoutError:
+                connection = await self._open_owned_robust_connection(url, kwargs)
+            except asyncio.TimeoutError:
                 self._consumer_state = "connect_stalled"
                 raise
             except BaseException:
@@ -181,7 +224,7 @@ class AsyncRabbitMQService:
         try:
             async with timeout_after(close_timeout):
                 await connection.close()
-        except TimeoutError:
+        except asyncio.TimeoutError:
             logger.error(
                 "Timed out closing RabbitMQ connection after %.1fs (%s)",
                 close_timeout,
@@ -293,7 +336,7 @@ class AsyncRabbitMQService:
             try:
                 async with timeout_after(self.client.channel_timeout):
                     self._consume_channel = await connection.channel()
-            except TimeoutError:
+            except asyncio.TimeoutError:
                 self._consumer_state = "connect_stalled"
                 await self._reset_connection("consume channel creation timed out")
                 raise
@@ -328,7 +371,7 @@ class AsyncRabbitMQService:
             try:
                 async with timeout_after(self.client.channel_timeout):
                     self._publish_channel = await connection.channel()
-            except TimeoutError:
+            except asyncio.TimeoutError:
                 await self._reset_connection("publish channel creation timed out")
                 raise
 
@@ -455,7 +498,7 @@ class AsyncRabbitMQService:
                     break
                 if epoch == self._consumer_epoch and delivery is not None:
                     buffer.append(delivery)
-        except TimeoutError:
+        except asyncio.TimeoutError:
             poll_completed = True
         else:
             poll_completed = True
