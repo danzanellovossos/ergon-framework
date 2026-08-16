@@ -162,10 +162,7 @@ class ChannelsActivityService:
             None,
         )
         if not callable(claim):
-            raise RuntimeError(
-                "ergon-platform-sdk>=0.2.0 is required: "
-                "channels.configs.activity_claim is unavailable"
-            )
+            raise RuntimeError("ergon-platform-sdk>=0.2.0 is required: channels.configs.activity_claim is unavailable")
         return claim
 
     def get_activity_count(
