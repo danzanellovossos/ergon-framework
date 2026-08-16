@@ -224,9 +224,11 @@ class TestFetchTransactions:
         claim_config_id, claim = sdk_client.channels.configs.claim_calls[0]
         assert claim_config_id == "cfg-jsl"
         assert claim["limit"] == 25
+        assert claim["address_id"] == "addr-jsl"
         assert claim["consumer_id"] == "ergon-framework"
         assert claim["visibility_timeout_seconds"] == 300
         assert claim["cursor"] is None
+        assert claim["idempotency_key"]
         assert txns[0].metadata["delivery"]["lease_token"] == "lease-evt-1"
         assert len(sdk_client.channels.addresses_calls) == 1
 

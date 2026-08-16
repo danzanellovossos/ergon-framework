@@ -42,9 +42,11 @@ class ChannelEventAttachment:
 
     def __repr__(self) -> str:
         nbytes = self.size if self.size is not None else len(self.content)
+        id_repr = repr(self.id) if self.id is not None else "None"
+        content_type_repr = repr(self.content_type) if self.content_type is not None else "None"
         return (
-            f"ChannelEventAttachment(id={self.id!r}, filename={self.filename!r}, "
-            f"content_type={self.content_type!r}, size={nbytes})"
+            f"ChannelEventAttachment(id={id_repr}, filename={self.filename!r}, "
+            f"content_type={content_type_repr}, size={nbytes})"
         )
 
 
@@ -67,7 +69,6 @@ class ChannelsEventTask(AsyncConsumerTask):
 
     name = "channels-event-processor"
     consumer_connector: AsyncErgonPlatformChannelsConnector
-    auth_code_connector: AsyncErgonPlatformChannelsConnector
     consumer_policy: policies.ConsumerPolicy
 
     async def execute(self) -> Any:
@@ -75,24 +76,8 @@ class ChannelsEventTask(AsyncConsumerTask):
 
     async def process_transaction(self, transaction: Transaction) -> ProcessedChannelEvent:
         metadata = transaction.metadata or {}
-        delivery = metadata.get("delivery") or {}
         message = metadata.get("message_payload") or {}
         attachments = [ChannelEventAttachment.from_item(item) for item in metadata.get("attachments") or []]
-
-        logger.info(
-            "Evento %s | %s | de %s | %s anexo(s) | subscription=%s | tentativa=%s",
-            transaction.id,
-            metadata.get("subject"),
-            metadata.get("from_address"),
-            len(attachments),
-            delivery.get("subscription_id"),
-            delivery.get("attempt_count"),
-        )
-
-        inbox_events = await self.auth_code_connector.fetch_transactions_async()
-        logger.info("Caixa secundária: %s evento(s)", len(inbox_events))
-        for auth_event in inbox_events:
-            await self.auth_code_connector.ack_transaction(auth_event)
 
         return ProcessedChannelEvent(
             event_id=transaction.id or "",
@@ -112,7 +97,4 @@ class ChannelsEventTask(AsyncConsumerTask):
         await self.consumer_connector.nack_transaction(transaction, requeue=True)
 
     async def exit(self) -> None:
-        for connector in self.connectors.values():
-            close = getattr(connector, "close", None)
-            if close is not None:
-                await close()
+        await self.consumer_connector.close()

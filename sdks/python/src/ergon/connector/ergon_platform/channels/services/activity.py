@@ -1,4 +1,6 @@
-from typing import Any, Dict, List, Optional
+from contextlib import suppress
+from typing import Any, Callable, Dict, List, Optional
+from uuid import uuid4
 
 from ....transaction import Transaction
 from ..adapters import ActivityAdapter
@@ -108,17 +110,14 @@ class ChannelsActivityService:
         cursor: Optional[str] = None
         accepted: List[Transaction] = []
         activity_filter = config.effective_activity_filter()
-        claim = getattr(
-            self.client.channels.configs,
-            "activity_claim",
-            None,
-        )
-        if claim is None:
-            raise RuntimeError("ergon-platform-sdk>=0.2.0 is required: channels.configs.activity_claim is unavailable")
+
+        claim = self._activity_claim()
+
         while len(accepted) < limit:
             response = claim(
                 config_id,
                 subscription_id=subscription_id,
+                address_id=address_id,
                 consumer_id=config.consumer_id,
                 limit=min(
                     config.claim_page_size,
@@ -126,6 +125,7 @@ class ChannelsActivityService:
                 ),
                 visibility_timeout_seconds=config.visibility_timeout_seconds,
                 cursor=cursor,
+                idempotency_key=str(uuid4()),
             )
             items = SdkRecord.items(response, keys=["items"])
             if not items:
@@ -154,6 +154,20 @@ class ChannelsActivityService:
                 break
         return accepted
 
+    def _activity_claim(self) -> Callable[..., Any]:
+        """Return the SDK claim operation after validating its availability."""
+        claim = getattr(
+            self.client.channels.configs,
+            "activity_claim",
+            None,
+        )
+        if not callable(claim):
+            raise RuntimeError(
+                "ergon-platform-sdk>=0.2.0 is required: "
+                "channels.configs.activity_claim is unavailable"
+            )
+        return claim
+
     def get_activity_count(
         self,
         company_id: Optional[str] = None,
@@ -174,7 +188,7 @@ class ChannelsActivityService:
         **params: Any,
     ) -> int:
         """Get the inbox events count."""
-        query = {**params, "limit": 1, "page": 1}
+        query: Dict[str, Any] = {**params, "limit": 1, "page": 1}
         if address_id:
             query["address_id"] = address_id
         response = self.client.channels.configs.activity(config_id, **query)
@@ -211,8 +225,8 @@ class ChannelsActivityService:
             source="config_activity",
         )
 
+    @staticmethod
     def finalize_fetched_transactions(
-        self,
         transactions: List[Transaction],
         config: ErgonPlatformChannelsConsumerConfig,
         seen_ids: Optional[set[str]] = None,
@@ -264,15 +278,13 @@ class ChannelsActivityService:
     ) -> None:
         """Best-effort requeue of a batch that cannot be handed to the task."""
         for transaction in transactions:
-            try:
+            with suppress(Exception):
                 self.nack_inbox_event(
                     config_id,
                     transaction,
                     requeue=True,
                     delay_seconds=delay_seconds,
                 )
-            except Exception:
-                continue
 
     @staticmethod
     def _page_query(

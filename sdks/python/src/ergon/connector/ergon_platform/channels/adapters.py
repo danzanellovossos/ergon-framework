@@ -19,6 +19,7 @@ class ActivityAdapter:
         "subject",
         "from_address",
         "to_addresses",
+        "address_id",
         "consumption_status",
         "acked_at",
         "available_at",
@@ -100,6 +101,10 @@ class ActivityAdapter:
             candidate = nested.get("address_id") or nested.get("channel_address_id")
             if candidate is not None:
                 return str(candidate) == address_id
+        event = transaction.payload if isinstance(transaction.payload, dict) else {}
+        candidate = event.get("address_id") or event.get("channel_address_id")
+        if candidate is not None:
+            return str(candidate) == address_id
         return True
 
     @staticmethod

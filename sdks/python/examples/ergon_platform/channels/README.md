@@ -16,7 +16,7 @@ cd sdks/python
 pip install -e '.[ergon-platform]'
 cp examples/ergon_platform/channels/.env.example examples/ergon_platform/channels/.env
 # preencha ERGON_CLIENT_ID, ERGON_CLIENT_SECRET, CHANNELS_CONFIG_ID,
-# CHANNELS_INSTRUCTIONS_ADDRESS e CHANNELS_AUTH_CODE_ADDRESS
+# e CHANNELS_INSTRUCTIONS_ADDRESS
 cd examples/ergon_platform/channels
 python config.py
 ```
@@ -28,9 +28,8 @@ python config.py
 | `ERGON_CLIENT_ID` | sim | API key id (`ek_...`) |
 | `ERGON_CLIENT_SECRET` | sim | API key secret (`eks_...`) |
 | `ERGON_BASE_URL` | não | Base da API (default produção) |
-| `CHANNELS_CONFIG_ID` | sim | UUID do channel (compartilhado pelas duas caixas) |
+| `CHANNELS_CONFIG_ID` | sim | UUID do channel |
 | `CHANNELS_INSTRUCTIONS_ADDRESS` | sim | Inbox de programações / instruções |
-| `CHANNELS_AUTH_CODE_ADDRESS` | sim | Inbox de código de autenticação (mesmo channel) |
 | `CHANNELS_BATCH_SIZE` | não | Eventos por fetch (default `20`) |
 | `CHANNELS_CLAIM_PAGE_SIZE` | não | Eventos por página ao procurar matches (default `100`) |
 | `CHANNELS_VISIBILITY_TIMEOUT_SECONDS` | não | Duração da lease antes de retry (default `300`) |
@@ -41,10 +40,9 @@ python config.py
 ```env
 CHANNELS_CONFIG_ID=uuid-do-channel
 CHANNELS_INSTRUCTIONS_ADDRESS=programacao@inbox.ergondata.ai
-CHANNELS_AUTH_CODE_ADDRESS=otp@inbox.ergondata.ai
 ```
 
-Um channel, duas caixas, **uma** task. O consume loop só olha a caixa de instruções (`consumer`). A caixa de OTP (`auth_code`) fica injetada em `self.auth_code_connector` para ler no meio do fluxo — sem segundo consume.
+O consume loop processa a caixa de instruções pelo connector `consumer`.
 
 O channel na plataforma precisa permitir recebimento (`receive` ou `both`). Para envio, use `send_email_async` / `ErgonPlatformChannelsProducerConfig` em outra task — ver README do SDK em `src/ergon/connector/ergon_platform/channels/`.
 
@@ -53,9 +51,8 @@ O channel na plataforma precisa permitir recebimento (`receive` ou `both`). Para
 Com `CHANNELS_STREAMING=true` a task faz polling contínuo (~5 min por batch / fila vazia, ver `policies.py`). O fetch cria leases atômicos para a subscription: eventos já ackados nela não voltam e réplicas não processam a mesma delivery. Em sucesso a task chama `ack_transaction`; em erro, `nack_transaction(requeue=True)`.
 
 O exemplo não define `subscription_id`: o connector deriva um UUID estável de
-`config_id + address_id + filtro`. Assim, as caixas `instructions` e
-`auth_code` têm subscriptions independentes. Defina um UUID explicitamente
-somente quando precisar preservar uma identidade já existente.
+`config_id + address_id + filtro`. Defina um UUID explicitamente somente quando
+precisar preservar uma identidade já existente.
 
 A API key precisa de `channels:activity:view` + `channels:addresses:receive` (leitura e download de anexos) e `channels:activity:consume` (ack/nack) no channel.
 

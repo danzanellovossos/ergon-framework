@@ -177,6 +177,7 @@ class TestAsyncFetchTransactions:
         assert [tx.id for tx in txns] == ["evt-1"]
         assert sdk_client.channels.configs.claim_calls[0][0] == "cfg-jsl"
         assert sdk_client.channels.configs.claim_calls[0][1]["limit"] == 25
+        assert sdk_client.channels.configs.claim_calls[0][1]["address_id"] == "addr-jsl"
         assert txns[0].metadata["delivery"]["lease_token"] == "lease-evt-1"
 
     async def test_requires_consumer_config(self):
