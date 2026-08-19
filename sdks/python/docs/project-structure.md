@@ -71,7 +71,9 @@ The CLI does not scan the filesystem. It only has access to tasks that are expli
 
 ### When Do You Need a Custom Connector?
 
-Most of the time, you don't. Ergon ships with **Excel** and **RabbitMQ** connectors built-in—ready to use out of the box.
+Most of the time, you don't. Ergon ships with built-in connectors for systems
+such as **Excel**, **RabbitMQ**, **Outlook / Microsoft Graph**, and the
+**Ergon Platform**. Install only the optional extras your application uses.
 
 For other transports, you have two options:
 
