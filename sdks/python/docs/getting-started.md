@@ -15,11 +15,11 @@ pip install ergon-framework-python
 Connector client libraries are optional. Select only the integrations the application uses:
 
 ```bash
-pip install 'ergon-framework-python[rabbitmq,postgres]'
+pip install 'ergon-framework-python[rabbitmq,postgres,outlook]'
 ```
 
 Available connector extras are `rabbitmq`, `sqs`, `postgres`, `pipefy`, `excel`,
-`ergon-platform`, and `nylas`. Use `ergon-framework-python[all]` for every bundled
+`ergon-platform`, `nylas`, and `outlook`. Use `ergon-framework-python[all]` for every bundled
 connector.
 
 ### Local Development

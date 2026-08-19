@@ -20,11 +20,12 @@ pull in client libraries that your application does not use:
 ```bash
 pip install 'ergon-framework-python[rabbitmq]'
 pip install 'ergon-framework-python[sqs,postgres]'
+pip install 'ergon-framework-python[outlook]'
 pip install 'ergon-framework-python[all]'
 ```
 
 Available extras are `rabbitmq`, `sqs`, `postgres`, `pipefy`, `excel`,
-`ergon-platform`, and `nylas`.
+`ergon-platform`, `nylas`, and `outlook`.
 
 For local development, install in editable mode:
 
