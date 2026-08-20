@@ -15,6 +15,8 @@ A superfície do SDK cobre leitura, envio e mutações de mensagem com
 pip install 'ergon-framework-python[outlook]'
 ```
 
+Exemplo executável: [`examples/outlook/`](../../../../examples/outlook/)
+
 ## Permissões
 
 O aplicativo Entra precisa de permissões **Application** com admin consent:

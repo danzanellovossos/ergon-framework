@@ -1,5 +1,13 @@
 # Exemplo — Outlook / Microsoft Graph
 
+Instalação via PyPI:
+
+```bash
+pip install 'ergon-framework-python[outlook]'
+```
+
+No repositório do SDK:
+
 ```bash
 cd sdks/python
 uv sync --extra outlook
