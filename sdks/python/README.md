@@ -27,7 +27,46 @@ pip install 'ergon-framework-python[all]'
 Available extras are `rabbitmq`, `sqs`, `postgres`, `pipefy`, `excel`,
 `ergon-platform`, `nylas`, and `outlook`.
 
-For local development, install in editable mode:
+### Outlook / Microsoft Graph
+
+```bash
+pip install 'ergon-framework-python[outlook]'
+```
+
+The Outlook connector talks to Microsoft Graph with Entra **application**
+credentials. Consuming messages and attachments needs `Mail.Read`; marking,
+categorizing, moving, and deleting need `Mail.ReadWrite`; send, reply, and
+forward need `Mail.Send`. Graph `$filter` and `$search` cannot be combined.
+
+```python
+from ergon.connector.outlook import (
+    AsyncOutlookGraphConnector,
+    OutlookAckActionConfig,
+    OutlookConsumerConfig,
+    OutlookGraphClient,
+    OutlookMessageFilter,
+)
+
+client = OutlookGraphClient(
+    tenant_id="...",
+    client_id="...",
+    client_secret="...",
+    user_email="mailbox@example.com",
+)
+consumer = OutlookConsumerConfig(
+    folder_id="Inbox",
+    filter=OutlookMessageFilter(unread_only=True, has_attachments=True),
+    download_attachments=True,
+    ack_config=OutlookAckActionConfig(mark_as_read=True),
+)
+```
+
+Runnable example: [examples/outlook](https://github.com/danzanellovossos/ergon-framework/tree/main/sdks/python/examples/outlook).
+Module reference: [Outlook connector README](https://github.com/danzanellovossos/ergon-framework/blob/main/sdks/python/src/ergon/connector/outlook/README.md).
+
+### Local development
+
+Install in editable mode:
 
 ```bash
 pip install -e /path/to/ergon-framework/sdks/python

@@ -29,7 +29,7 @@ pip install ergon-framework-python
 Connector integrations are optional. Install only the ones your application uses:
 
 ```bash
-pip install 'ergon-framework-python[rabbitmq,postgres]'
+pip install 'ergon-framework-python[rabbitmq,postgres,outlook]'
 ```
 
 ### Running Tasks

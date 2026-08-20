@@ -4,4 +4,4 @@ import ergon
 
 
 def test_ergon_package_is_importable() -> None:
-    assert ergon.__version__ == "0.2.3"
+    assert ergon.__version__ == "0.2.4"
