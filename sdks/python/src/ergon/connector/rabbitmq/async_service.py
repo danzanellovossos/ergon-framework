@@ -340,6 +340,10 @@ class AsyncRabbitMQService:
                 self._consumer_state = "connect_stalled"
                 await self._reset_connection("consume channel creation timed out")
                 raise
+            # async_timeout types __aexit__ as Optional[bool], so type checkers
+            # assume the block may swallow an exception and skip the assignment.
+            if self._consume_channel is None:
+                raise RuntimeError("RabbitMQ consume channel was not created")
             # aio-pika exposes close_callbacks on current releases; retain the
             # legacy add_close_callback fallback for older supported versions.
             close_callbacks = getattr(self._consume_channel, "close_callbacks", None)
@@ -374,6 +378,8 @@ class AsyncRabbitMQService:
             except asyncio.TimeoutError:
                 await self._reset_connection("publish channel creation timed out")
                 raise
+            if self._publish_channel is None:
+                raise RuntimeError("RabbitMQ publish channel was not created")
 
         return self._publish_channel
 
