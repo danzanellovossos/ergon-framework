@@ -24,7 +24,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: sdks/python
-        run: uv sync --dev --all-extras
+        run: uv sync --locked --dev --all-extras
 
       - name: Ruff Lint (no autofix)
         working-directory: sdks/python
@@ -52,7 +52,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: sdks/python
-        run: uv sync --dev --all-extras
+        run: uv sync --locked --dev --all-extras
 
       - name: Pyright
         working-directory: sdks/python
@@ -76,7 +76,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: sdks/python
-        run: uv sync --dev --all-extras
+        run: uv sync --locked --dev --all-extras
 
       - name: Pytest
         working-directory: sdks/python
