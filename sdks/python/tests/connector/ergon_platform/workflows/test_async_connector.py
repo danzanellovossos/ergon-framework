@@ -22,6 +22,10 @@ class _Items:
         self.update_calls = []
         self.children_response = []
         self.items_by_id = {}
+        self.complete_calls = []
+        self.fail_calls = []
+        self.defer_calls = []
+        self.extend_calls = []
 
     def claim(self, item_id, payload):
         self.claim_calls.append((item_id, payload))
@@ -45,6 +49,22 @@ class _Items:
     def get(self, item_id, **params):
         return self.items_by_id[item_id]
 
+    def complete(self, item_id, payload):
+        self.complete_calls.append((item_id, payload))
+        return {"id": item_id, "processing": {"completed_at": "now"}}
+
+    def fail(self, item_id, payload):
+        self.fail_calls.append((item_id, payload))
+        return {"id": item_id}
+
+    def defer(self, item_id, payload):
+        self.defer_calls.append((item_id, payload))
+        return {"id": item_id}
+
+    def extend_claim(self, item_id, payload):
+        self.extend_calls.append((item_id, payload))
+        return {"id": item_id}
+
 
 class _Workflow:
     def __init__(self):
@@ -54,10 +74,16 @@ class _Workflow:
         self.last_items_kwargs = None
         self.last_query_payload = None
         self.last_create_kwargs = None
+        self.phases_calls = 0
+        self.phases_response = [{"id": "ph-1", "kind": "standard"}]
 
     def items(self, **params):
         self.last_items_kwargs = params
         return self.items_response
+
+    def phases(self, **params):
+        self.phases_calls += 1
+        return self.phases_response
 
     def query_items(self, payload):
         self.last_query_payload = payload
@@ -68,9 +94,20 @@ class _Workflow:
         return self.create_response
 
 
+class _Phases:
+    def __init__(self):
+        self.pull_calls = []
+        self.pull_response = {"items": [], "total": 0, "claim_expires_at": None, "consumer_id": None}
+
+    def pull_items(self, phase_id, payload):
+        self.pull_calls.append((phase_id, payload))
+        return self.pull_response
+
+
 class _Workflows:
     def __init__(self):
         self.items = _Items()
+        self.phases = _Phases()
         self.workflow_obj = _Workflow()
         self.workflow_calls = []
 
@@ -80,9 +117,10 @@ class _Workflows:
 
 
 class _Client:
-    def __init__(self):
+    def __init__(self, consumer_id=None):
         self.workflows = _Workflows()
         self.closed = False
+        self.consumer_id = consumer_id
 
     def close(self):
         self.closed = True

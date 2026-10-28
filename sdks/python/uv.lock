@@ -904,7 +904,7 @@ wheels = [
 
 [[package]]
 name = "ergon-framework-python"
-version = "0.2.5"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "async-timeout" },
@@ -985,8 +985,8 @@ requires-dist = [
     { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.29.0" },
     { name = "boto3", marker = "extra == 'all'", specifier = ">=1.35.0" },
     { name = "boto3", marker = "extra == 'sqs'", specifier = ">=1.35.0" },
-    { name = "ergon-platform-sdk", marker = "extra == 'all'", specifier = ">=0.2.0,<0.5" },
-    { name = "ergon-platform-sdk", marker = "extra == 'ergon-platform'", specifier = ">=0.2.0,<0.5" },
+    { name = "ergon-platform-sdk", marker = "extra == 'all'", specifier = ">=0.5.1,<0.6" },
+    { name = "ergon-platform-sdk", marker = "extra == 'ergon-platform'", specifier = ">=0.5.1,<0.6" },
     { name = "httpx", marker = "extra == 'all'", specifier = ">=0.28.0" },
     { name = "httpx", marker = "extra == 'ergon-platform'", specifier = ">=0.28.0" },
     { name = "httpx", marker = "extra == 'pipefy'", specifier = ">=0.28.0" },
@@ -1022,15 +1022,15 @@ dev = [
 
 [[package]]
 name = "ergon-platform-sdk"
-version = "0.4.0"
+version = "0.5.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic", extra = ["email"] },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/63/79/7f127f43a371cb67a82f9ca308f199d32733ceb0d1e01525a4ff94457d3f/ergon_platform_sdk-0.4.0.tar.gz", hash = "sha256:a78ab56465898adfebaebb6ae2c2c796f20f8107296122ab24b854da684976d3", size = 213770, upload-time = "2026-10-26T20:00:38.059Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e2/bc/374419040fb1cd86d3a307cbe443b4b86fe1125b48299564c519243a8f13/ergon_platform_sdk-0.5.1.tar.gz", hash = "sha256:b6867b0c8e1184a7a82e14c363a99c6c3cdd80d10398b3962a66d30eefe43ec0", size = 218230, upload-time = "2026-10-28T00:34:38.176Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f7/e9/9aace8066aa33977d8980798fb10c4f30160c9bd692712f0e5eb3c9c76e8/ergon_platform_sdk-0.4.0-py3-none-any.whl", hash = "sha256:5da148931cad9c4ba7e58fc09facbbef96455eb888ddab061f2d52a00edc8f0c", size = 302136, upload-time = "2026-10-26T20:00:36.593Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/a5/c567867503c0faa8c38fa653f91ce0ae675c9cac65c39a24e901bf72bafd/ergon_platform_sdk-0.5.1-py3-none-any.whl", hash = "sha256:df08629884863fe7b4dce6ed08659ad15b6cb6196905f90f700b2e45efe7897b", size = 305059, upload-time = "2026-10-28T00:34:36.756Z" },
 ]
 
 [[package]]

@@ -5,6 +5,7 @@ from ...connector import Connector
 from ...transaction import Transaction
 from .._client import create_ergon_client
 from ..models import ErgonPlatformClient
+from ._mode import DEFAULT_NACK_REASON, DEFAULT_NACK_RELEASE_DELAY_SECONDS, ConsumerModeState
 from ._operations import ErgonPlatformWorkflowsService
 from .models import (
     CreateItemPayload,
@@ -28,6 +29,20 @@ class ErgonPlatformConnector(Connector):
         self._operations = self.service
         self._consumer_config = consumer_config
         self._producer_config = producer_config or ErgonPlatformProducerConfig()
+        self._mode = ConsumerModeState(client, consumer_config, self.service, self._set_client)
+
+    def _set_client(self, client: Any) -> None:
+        self.client = client
+
+    @property
+    def is_pull(self) -> bool:
+        """True when the consumed phase is Pull only (resolved once, on first use)."""
+        return self._mode.is_pull()
+
+    @property
+    def consumer_id(self) -> Optional[str]:
+        """The ``X-Ergon-Consumer-Id`` this connector claims under; None on standard phases."""
+        return self._mode.consumer_id
 
     def fetch_transactions(
         self,
@@ -40,6 +55,17 @@ class ErgonPlatformConnector(Connector):
 
         config = self._consumer_config
         limit = batch_size or config.batch_size
+        if self.is_pull:
+            if kwargs:
+                logger.debug("Ignoring list params %s on Pull only phase %s", sorted(kwargs), config.phase_id)
+            return self._operations.pull_items(
+                config.workflow_id,
+                config.phase_id,
+                limit=limit,
+                filters=config.pull_filters,
+                wait_seconds=config.pull_wait_seconds,
+            )
+
         params: Dict[str, Any] = {**config.list_params, **kwargs}
         if config.unassigned:
             params.pop("assigned_to", None)
@@ -105,12 +131,15 @@ class ErgonPlatformConnector(Connector):
         )
 
     def ack_transaction(self, transaction: Transaction, phase_id: Optional[str] = None) -> None:
+        """Route to ``phase_id`` / ``ack_phase_id``; on a Pull only phase with no target, complete the stay."""
         target_phase = phase_id
         if target_phase is None and self._consumer_config is not None:
             target_phase = self._consumer_config.ack_phase_id
-        if not target_phase:
+        if target_phase:
+            self.client.workflows.items.route(transaction.id, to_phase_id=target_phase)
             return
-        self.client.workflows.items.route(transaction.id, to_phase_id=target_phase)
+        if self.is_pull:
+            self._operations.complete_item(transaction.id)
 
     def release_item(
         self,
@@ -120,6 +149,9 @@ class ErgonPlatformConnector(Connector):
         delay_seconds: Optional[int] = None,
         **fields: Any,
     ) -> Any:
+        """Give the item back. ``delay_seconds`` > 0 is a defer on Pull only phases."""
+        if self.is_pull and delay_seconds:
+            return self._operations.defer_item(item_id, delay_seconds=delay_seconds)
         return self._operations.release_item(
             item_id,
             data,
@@ -127,8 +159,33 @@ class ErgonPlatformConnector(Connector):
             **fields,
         )
 
-    def nack_transaction(self, transaction: Transaction, requeue: bool = True, delay_seconds: int = 10) -> None:
+    def nack_transaction(
+        self,
+        transaction: Transaction,
+        requeue: bool = True,
+        delay_seconds: Optional[int] = None,
+        *,
+        reason: Optional[str] = None,
+        details: Optional[str] = None,
+    ) -> None:
+        """Hand the item back after a failure.
+
+        Pull only phase: ``fail`` (counts an attempt; the platform moves the item
+        to Exceptions at ``max_attempts``), retried after ``delay_seconds`` or the
+        phase retry policy. Standard phase: release with a ``delay_seconds``
+        cooldown (default 10 s). ``requeue=False`` routes to ``nack_phase_id`` on both.
+        """
         if requeue:
+            if self.is_pull:
+                self._operations.fail_item(
+                    transaction.id,
+                    reason=reason or DEFAULT_NACK_REASON,
+                    delay_seconds=delay_seconds,
+                    details=details,
+                )
+                return
+            if delay_seconds is None:
+                delay_seconds = DEFAULT_NACK_RELEASE_DELAY_SECONDS
             self._operations.release_item(transaction.id, delay_seconds=delay_seconds)
             return
 
@@ -138,6 +195,35 @@ class ErgonPlatformConnector(Connector):
 
         self.client.workflows.items.route(transaction.id, to_phase_id=target_phase)
         logger.debug("Item %s moved to nack phase %s", transaction.id, target_phase)
+
+    # -- Pull only outcomes ----------------------------------------------------
+
+    def complete_transaction(self, transaction: Transaction, *, reason: Optional[str] = None) -> Any:
+        """Mark the current stay done; the item stays in the phase and pull skips it."""
+        self.is_pull  # resolve the mode so the call carries the consumer id
+        return self._operations.complete_item(transaction.id, reason=reason)
+
+    def fail_transaction(
+        self,
+        transaction: Transaction,
+        *,
+        reason: str,
+        delay_seconds: Optional[int] = None,
+        details: Optional[str] = None,
+    ) -> Any:
+        """Record a failed attempt; visible again after ``delay_seconds`` (or the phase retry policy)."""
+        self.is_pull
+        return self._operations.fail_item(transaction.id, reason=reason, delay_seconds=delay_seconds, details=details)
+
+    def defer_transaction(self, transaction: Transaction, *, delay_seconds: int, reason: Optional[str] = None) -> Any:
+        """Put the item back without counting an attempt; hidden for ``delay_seconds``."""
+        self.is_pull
+        return self._operations.defer_item(transaction.id, delay_seconds=delay_seconds, reason=reason)
+
+    def extend_claim(self, transaction: Transaction, *, seconds: Optional[int] = None) -> Any:
+        """Push the claim expiry out; call from long steps so the claim does not lapse."""
+        self.is_pull
+        return self._operations.extend_claim(transaction.id, seconds=seconds)
 
     def close(self) -> None:
         self.client.close()

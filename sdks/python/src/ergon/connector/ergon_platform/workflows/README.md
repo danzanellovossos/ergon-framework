@@ -33,7 +33,7 @@ O **connector** implementa o contrato do framework (`fetch`/`dispatch`/`ack`/`cl
 | Modelo | Propósito |
 |--------|-----------|
 | `ErgonPlatformClient` | Credenciais e conexão (`client_id`, `client_secret`, `base_url` (default `https://platform.ergondata.ai`), `company_id?`, `timeout`, `max_retries`) — **compartilhado com channels** |
-| `ErgonPlatformConsumerConfig` | Origem do fetch (`workflow_id`, `phase_id`, `batch_size`, `offset`, `ack_phase_id?`, `nack_phase_id?`, `unassigned`, `list_params`) |
+| `ErgonPlatformConsumerConfig` | Origem do fetch (`workflow_id`, `phase_id`, `batch_size`, `offset`, `ack_phase_id?`, `nack_phase_id?`, `unassigned`, `list_params`) e, para fases **Pull only**, `mode`, `pull_filters?`, `pull_wait_seconds?`, `consumer_id?` |
 | `ErgonPlatformProducerConfig` | Defaults de criação (`workflow_id?`, `phase_id?`, `attachment_field_id?`, `default_content_type?`, `parent_item_id?`) |
 | `CreateItemInput` | Payload de criação de item, com upload opcional de anexo e suporte a `parent_item_id` |
 
@@ -49,8 +49,9 @@ A autenticação usa a API key (M2M): na primeira requisição o SDK troca `clie
 | `dispatch_transactions` / `dispatch_transactions_async` | Cria item (e faz upload do anexo quando presente) |
 | `fetch_transaction_by_id` / `fetch_transaction_by_id_async` | Busca um item por ID -> `Transaction` |
 | `get_transactions_count` / `get_transactions_count_async` | Total de itens na fase de consumo (profundidade de fila) |
-| `ack_transaction` | Move o item para `ack_phase_id` (no-op se não configurado) |
-| `nack_transaction` | `requeue=True` faz `release_item` (com delay opcional); `requeue=False` move para `nack_phase_id` |
+| `ack_transaction` | Move o item para `ack_phase_id`; sem `ack_phase_id`, é no-op em fase padrão e `complete` em fase Pull only |
+| `nack_transaction` | `requeue=True`: `release_item` com cooldown (fase padrão) ou `fail` (Pull only); `requeue=False` move para `nack_phase_id` |
+| `complete_transaction` / `fail_transaction` / `defer_transaction` / `extend_claim` | Desfechos explícitos de fase Pull only (ver seção abaixo) |
 
 ### API Direta Do SDK
 
@@ -247,16 +248,49 @@ result = connector.get_pipeline_result("wf-1", "item-1", "field-1")
 
 ## Ack
 
-Ao contrário dos brokers, o ack tem **semântica de domínio**: move o item para `ack_phase_id`. Sem `ack_phase_id` configurado, o ack é no-op. Em uma `AsyncConsumerTask`, chame `ack_transaction` em `handle_process_success`.
+Ao contrário dos brokers, o ack tem **semântica de domínio**: move o item para `ack_phase_id`. Sem `ack_phase_id` configurado, o ack é no-op em fase padrão e um `complete` em fase Pull only (o item fica na fase com a passagem concluída e some do pull). Em uma `AsyncConsumerTask`, chame `ack_transaction` em `handle_process_success`.
 
 ## Nack
 
 `nack_transaction` também usa semântica de domínio:
 
-- `requeue=True`: faz `release_item`, mantendo o mesmo card. Quando `delay_seconds > 0`, o connector converte o valor para minutos com arredondamento para cima, atualiza o item com `visibility_timeout_on_release_minutes` e só então chama `release`. A plataforma usa esse valor para preencher `visible_after`.
+- `requeue=True` em fase **padrão**: faz `release_item`, mantendo o mesmo card. Quando `delay_seconds > 0` (default 10), o connector converte o valor para minutos com arredondamento para cima, atualiza o item com `visibility_timeout_on_release_minutes` e só então chama `release`. A plataforma usa esse valor para preencher `visible_after`. **Depreciado**: esse override é removido da plataforma em 2026-11-27 (ergon-platform #664); o connector emite um `DeprecationWarning`. Migre a fase para Pull only.
+- `requeue=True` em fase **Pull only**: faz `fail` (`reason` default `nack_transaction`; aceita `reason=`, `details=` e `delay_seconds=`). A tentativa é contada; ao atingir `max_attempts` a plataforma move o item para Exceptions.
 - `requeue=False`: move o item para `nack_phase_id` (fase de erro), que deve estar configurada no `ErgonPlatformConsumerConfig`.
 
-O delay efetivo da plataforma é em minutos. Por isso, `delay_seconds=1` até `60` vira `visibility_timeout_on_release_minutes=1`; `delay_seconds=61` até `120` vira `2`, e assim por diante. Se o update do timeout falhar, o release não deve prosseguir, para evitar reentrada imediata na fila.
+## Fases Pull only
+
+Uma fase com `kind: "pull"` entrega itens por `POST /phases/{id}/items/pull`: claim atômico com expiração, sob um **consumer id** (`X-Ergon-Consumer-Id`), com `max_attempts`, retry policy e timeout configurados na própria fase. O connector detecta o tipo da fase **uma vez**, no primeiro fetch (`mode="auto"`, default), e passa a se comportar assim pelo resto da vida do processo:
+
+| Chamada | Fase padrão | Fase Pull only |
+|---------|-------------|----------------|
+| `fetch_transactions` | lista `assigned=no` + `claim` item a item | `pull_items(max=batch_size, filter=pull_filters)` |
+| `ack_transaction` | `route` para `ack_phase_id` (no-op sem ela) | `route` para `ack_phase_id`, ou `complete` sem ela |
+| `nack_transaction(requeue=True)` | `release` com cooldown | `fail` |
+| `release_item(delay_seconds>0)` | PATCH override + `release` (depreciado) | `defer` |
+| `release_item()` | `release` | `release` |
+
+Nada muda no código da task: a migração é criar a fase como Pull only na plataforma e apontar `phase_id` para ela. Os parâmetros extras são opcionais:
+
+```python
+cfg = ErgonPlatformConsumerConfig(
+    workflow_id="...",
+    phase_id="...",            # fase Pull only
+    batch_size=10,
+    pull_filters=[{"field_id": "<campo Cliente>", "op": "eq", "value": "suzano"}],  # só itens deste cliente
+    consumer_id="faturamento-suzano:1",  # default "<hostname>:<pid>"
+    # mode="pull" pula a leitura da fase (ex.: API key sem permissão de listar fases)
+)
+```
+
+Desfechos explícitos, para quando a task quer dizer mais do que ack/nack:
+
+- `complete_transaction(tx, reason=None)`: passagem concluída, item fica na fase.
+- `fail_transaction(tx, reason=..., delay_seconds=None, details=None)`: tentativa falhou; volta após `delay_seconds` ou a retry policy da fase.
+- `defer_transaction(tx, delay_seconds=...)`: devolve sem contar tentativa (aguardando terceiro, janela, etc.).
+- `extend_claim(tx, seconds=None)`: estende a expiração do claim em passos longos (RPA).
+
+Enquanto a fase for Pull only, `connector.client` passa a ser o cliente com `consumer_id`; chamadas diretas ao SDK (`connector.client.workflows.items.route(...)`) carregam o header automaticamente. Um processo = um consumer id; para escalar, rode mais instâncias do mesmo worker.
 
 ## Recomendações de uso
 

@@ -1,6 +1,6 @@
 [project]
 name = "ergon-framework-python"
-version = "0.2.5"
+version = "0.3.0"
 description = "Ergon internal task-oriented project bootstrapper"
 readme = "README.md"
 license = "MIT"
@@ -34,7 +34,7 @@ all = [
     "aiobotocore>=2.13.0",
     "asyncpg>=0.29.0",
     "boto3>=1.35.0",
-    "ergon-platform-sdk>=0.2.0,<0.5",
+    "ergon-platform-sdk>=0.5.1,<0.6",
     "httpx>=0.28.0",
     "msal>=1.37.0",
     "nylas>=6.0.0",
@@ -43,7 +43,7 @@ all = [
     "requests>=2.32.5",
 ]
 "ergon-platform" = [
-    "ergon-platform-sdk>=0.2.0,<0.5",
+    "ergon-platform-sdk>=0.5.1,<0.6",
     "httpx>=0.28.0",
 ]
 excel = ["openpyxl>=3.1.5"]
