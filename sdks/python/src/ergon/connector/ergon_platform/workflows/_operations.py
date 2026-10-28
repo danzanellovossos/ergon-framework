@@ -1,5 +1,7 @@
+import logging
 import math
 import mimetypes
+import warnings
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -19,6 +21,15 @@ from .utils import (
     get_value,
     item_to_transaction,
     latest_status_entry,
+)
+
+logger = logging.getLogger(__name__)
+
+RELEASE_DELAY_DEPRECATION = (
+    "release_item(delay_seconds=...) relies on the item override "
+    "visibility_timeout_on_release_minutes, which the platform removes on 2026-11-27 "
+    "(ergon-platform #664). Make the phase 'Pull only' and the same call becomes a defer, "
+    "or call defer_transaction / fail_transaction directly."
 )
 
 
@@ -142,16 +153,90 @@ class ErgonPlatformWorkflowsService:
         delay_seconds: Optional[int] = None,
         **fields: Any,
     ) -> Any:
+        """Release a claim on a standard phase; ``delay_seconds`` hides the item once.
+
+        The delay uses the deprecated item override; see :data:`RELEASE_DELAY_DEPRECATION`.
+        """
         if delay_seconds is not None:
             if delay_seconds < 0:
                 raise ValueError("delay_seconds must be a non-negative integer")
             if delay_seconds > 0:
+                warnings.warn(RELEASE_DELAY_DEPRECATION, DeprecationWarning, stacklevel=3)
+                logger.warning(RELEASE_DELAY_DEPRECATION)
                 release_minutes = math.ceil(delay_seconds / 60)
                 self.client.workflows.items.update(
                     item_id,
                     visibility_timeout_on_release_minutes=release_minutes,
                 )
         return self.client.workflows.items.release(item_id, {**(data or {}), **fields})
+
+    # -- Pull only phases ---------------------------------------------------
+
+    def get_phase(self, workflow_id: str, phase_id: str) -> Any:
+        """The phase row from ``GET /workflows/{id}/phases`` (there is no single-phase GET)."""
+        phases = extract_items(self.client.workflows.workflow(workflow_id).phases())
+        for phase in phases:
+            if str(get_value(phase, "id", "")) == str(phase_id):
+                return phase
+        raise LookupError(f"Phase {phase_id} not found in workflow {workflow_id}")
+
+    def is_pull_phase(self, workflow_id: str, phase_id: str) -> bool:
+        return str(get_value(self.get_phase(workflow_id, phase_id), "kind", "")) == "pull"
+
+    def pull_items(
+        self,
+        workflow_id: str,
+        phase_id: str,
+        *,
+        limit: int,
+        filters: Optional[List[Dict[str, Any]]] = None,
+        wait_seconds: Optional[int] = None,
+    ) -> List[Transaction]:
+        """``POST /phases/{id}/items/pull``: atomically claim up to ``limit`` visible items."""
+        body: Dict[str, Any] = {"max": max(1, min(int(limit), 100))}
+        if filters:
+            body["filter"] = {"filters": list(filters)}
+        if wait_seconds:
+            body["wait_seconds"] = int(wait_seconds)
+        response = self.client.workflows.phases.pull_items(phase_id, body)
+        return [item_to_transaction(item, workflow_id) for item in extract_items(response)]
+
+    def complete_item(self, item_id: str, *, reason: Optional[str] = None) -> Any:
+        body: Dict[str, Any] = {}
+        if reason:
+            body["reason"] = reason
+        return self.client.workflows.items.complete(item_id, body)
+
+    def fail_item(
+        self,
+        item_id: str,
+        *,
+        reason: str,
+        delay_seconds: Optional[int] = None,
+        details: Optional[str] = None,
+    ) -> Any:
+        body: Dict[str, Any] = {"reason": reason}
+        if delay_seconds is not None:
+            if delay_seconds < 0:
+                raise ValueError("delay_seconds must be a non-negative integer")
+            body["delay_seconds"] = int(delay_seconds)
+        if details:
+            body["details"] = details
+        return self.client.workflows.items.fail(item_id, body)
+
+    def defer_item(self, item_id: str, *, delay_seconds: int, reason: Optional[str] = None) -> Any:
+        if delay_seconds < 1:
+            raise ValueError("defer requires delay_seconds >= 1")
+        body: Dict[str, Any] = {"delay_seconds": int(delay_seconds)}
+        if reason:
+            body["reason"] = reason
+        return self.client.workflows.items.defer(item_id, body)
+
+    def extend_claim(self, item_id: str, *, seconds: Optional[int] = None) -> Any:
+        body: Dict[str, Any] = {}
+        if seconds is not None:
+            body["seconds"] = int(seconds)
+        return self.client.workflows.items.extend_claim(item_id, body)
 
     def get_pipeline_result(
         self,

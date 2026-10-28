@@ -6,6 +6,7 @@ from ...connector import AsyncConnector
 from ...transaction import Transaction
 from .._client import create_ergon_client
 from ..models import ErgonPlatformClient
+from ._mode import DEFAULT_NACK_REASON, DEFAULT_NACK_RELEASE_DELAY_SECONDS, ConsumerModeState
 from ._operations import ErgonPlatformWorkflowsService
 from .models import (
     CreateItemPayload,
@@ -29,6 +30,21 @@ class AsyncErgonPlatformConnector(AsyncConnector):
         self._operations = self.service
         self._consumer_config = consumer_config
         self._producer_config = producer_config or ErgonPlatformProducerConfig()
+        self._mode = ConsumerModeState(client, consumer_config, self.service, self._set_client)
+
+    def _set_client(self, client: Any) -> None:
+        self.client = client
+
+    async def is_pull_async(self) -> bool:
+        """True when the consumed phase is Pull only (resolved once, on first use)."""
+        if self._mode.resolved is not None:
+            return self._mode.resolved
+        return await asyncio.to_thread(self._mode.is_pull)
+
+    @property
+    def consumer_id(self) -> Optional[str]:
+        """The ``X-Ergon-Consumer-Id`` this connector claims under; None on standard phases."""
+        return self._mode.consumer_id
 
     async def fetch_transactions_async(
         self,
@@ -41,6 +57,19 @@ class AsyncErgonPlatformConnector(AsyncConnector):
 
         config = self._consumer_config
         limit = batch_size or config.batch_size
+        if await self.is_pull_async():
+            if kwargs:
+                logger.debug("Ignoring list params %s on Pull only phase %s", sorted(kwargs), config.phase_id)
+            return await asyncio.to_thread(
+                lambda: self._operations.pull_items(
+                    config.workflow_id,
+                    config.phase_id,
+                    limit=limit,
+                    filters=config.pull_filters,
+                    wait_seconds=config.pull_wait_seconds,
+                )
+            )
+
         params: Dict[str, Any] = {**config.list_params, **kwargs}
         if config.unassigned:
             params.pop("assigned_to", None)
@@ -117,12 +146,15 @@ class AsyncErgonPlatformConnector(AsyncConnector):
         )
 
     async def ack_transaction(self, transaction: Transaction, phase_id: Optional[str] = None) -> None:
+        """Route to ``phase_id`` / ``ack_phase_id``; on a Pull only phase with no target, complete the stay."""
         target_phase = phase_id
         if target_phase is None and self._consumer_config is not None:
             target_phase = self._consumer_config.ack_phase_id
-        if not target_phase:
+        if target_phase:
+            await asyncio.to_thread(lambda: self.client.workflows.items.route(transaction.id, to_phase_id=target_phase))
             return
-        await asyncio.to_thread(lambda: self.client.workflows.items.route(transaction.id, to_phase_id=target_phase))
+        if await self.is_pull_async():
+            await asyncio.to_thread(lambda: self._operations.complete_item(transaction.id))
 
     async def release_item(
         self,
@@ -132,6 +164,9 @@ class AsyncErgonPlatformConnector(AsyncConnector):
         delay_seconds: Optional[int] = None,
         **fields: Any,
     ) -> Any:
+        """Give the item back. ``delay_seconds`` > 0 is a defer on Pull only phases."""
+        if delay_seconds and await self.is_pull_async():
+            return await asyncio.to_thread(lambda: self._operations.defer_item(item_id, delay_seconds=delay_seconds))
         return await asyncio.to_thread(
             lambda: self._operations.release_item(
                 item_id,
@@ -141,9 +176,29 @@ class AsyncErgonPlatformConnector(AsyncConnector):
             )
         )
 
-    async def nack_transaction(self, transaction: Transaction, requeue: bool = True, delay_seconds: int = 10) -> None:
+    async def nack_transaction(
+        self,
+        transaction: Transaction,
+        requeue: bool = True,
+        delay_seconds: Optional[int] = None,
+        *,
+        reason: Optional[str] = None,
+        details: Optional[str] = None,
+    ) -> None:
+        """Hand the item back after a failure; see :meth:`ErgonPlatformConnector.nack_transaction`."""
         if requeue:
-            await asyncio.to_thread(lambda: self._operations.release_item(transaction.id, delay_seconds=delay_seconds))
+            if await self.is_pull_async():
+                await asyncio.to_thread(
+                    lambda: self._operations.fail_item(
+                        transaction.id,
+                        reason=reason or DEFAULT_NACK_REASON,
+                        delay_seconds=delay_seconds,
+                        details=details,
+                    )
+                )
+                return
+            resolved_delay = DEFAULT_NACK_RELEASE_DELAY_SECONDS if delay_seconds is None else delay_seconds
+            await asyncio.to_thread(lambda: self._operations.release_item(transaction.id, delay_seconds=resolved_delay))
             return
 
         target_phase = self._consumer_config.nack_phase_id if self._consumer_config is not None else None
@@ -151,6 +206,39 @@ class AsyncErgonPlatformConnector(AsyncConnector):
             raise ValueError("nack_phase_id is required when nack_transaction is called with requeue=False")
 
         await asyncio.to_thread(lambda: self.client.workflows.items.route(transaction.id, to_phase_id=target_phase))
+
+    # -- Pull only outcomes ----------------------------------------------------
+
+    async def complete_transaction(self, transaction: Transaction, *, reason: Optional[str] = None) -> Any:
+        await self.is_pull_async()
+        return await asyncio.to_thread(lambda: self._operations.complete_item(transaction.id, reason=reason))
+
+    async def fail_transaction(
+        self,
+        transaction: Transaction,
+        *,
+        reason: str,
+        delay_seconds: Optional[int] = None,
+        details: Optional[str] = None,
+    ) -> Any:
+        await self.is_pull_async()
+        return await asyncio.to_thread(
+            lambda: self._operations.fail_item(
+                transaction.id, reason=reason, delay_seconds=delay_seconds, details=details
+            )
+        )
+
+    async def defer_transaction(
+        self, transaction: Transaction, *, delay_seconds: int, reason: Optional[str] = None
+    ) -> Any:
+        await self.is_pull_async()
+        return await asyncio.to_thread(
+            lambda: self._operations.defer_item(transaction.id, delay_seconds=delay_seconds, reason=reason)
+        )
+
+    async def extend_claim(self, transaction: Transaction, *, seconds: Optional[int] = None) -> Any:
+        await self.is_pull_async()
+        return await asyncio.to_thread(lambda: self._operations.extend_claim(transaction.id, seconds=seconds))
 
     async def close(self) -> None:
         await asyncio.to_thread(self.client.close)

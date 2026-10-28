@@ -9,9 +9,9 @@ pip install 'ergon-framework-python[ergon-platform]'
 ```
 
 O extra `ergon-platform` cobre workflows **e** channels e exige
-`ergon-platform-sdk>=0.2.0,<0.5`: 0.2.0 é a primeira versão com claim/lease e
-attachment file; cada minor do SDK pode remover operações, então o teto só sobe
-depois de validar o framework contra a nova versão.
+`ergon-platform-sdk>=0.5.1,<0.6`: 0.5.1 é a primeira versão com `consumer_id`
+(fases Pull only do módulo workflows); cada minor do SDK pode remover operações,
+então o teto só sobe depois de validar o framework contra a nova versão.
 
 ## Arquitetura
 

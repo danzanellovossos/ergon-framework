@@ -1,6 +1,8 @@
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
+
+ConsumerMode = Literal["auto", "list_claim", "pull"]
 
 # Status buckets returned by the Ergon Platform attachment pipeline.
 SUCCESS_STATUSES = {"completed", "complete", "succeeded", "success", "processed", "ready"}
@@ -40,6 +42,37 @@ class ErgonPlatformConsumerConfig(BaseModel):
     list_params: Dict[str, Any] = Field(
         default_factory=dict,
         description="Extra query params forwarded to the items listing endpoint",
+    )
+    mode: ConsumerMode = Field(
+        default="auto",
+        description=(
+            "How items are taken from the phase. 'list_claim' lists and claims one by one "
+            "(standard phases). 'pull' uses POST /phases/{id}/items/pull with a consumer id "
+            "(Pull only phases): atomic claim with expiry, fail/defer/complete outcomes, "
+            "attempt limit handled by the platform. 'auto' (default) reads the phase kind "
+            "once, on the first fetch, and picks the matching behaviour."
+        ),
+    )
+    pull_filters: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "Pull mode only. Field filters a pulled item must match, same shape as the "
+            "'filters' list of POST /items/query (e.g. [{'field_id': ..., 'op': 'eq', 'value': ...}])."
+        ),
+    )
+    pull_wait_seconds: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=30,
+        description="Pull mode only. Long-poll up to this many seconds when the phase has no visible item.",
+    )
+    consumer_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Pull mode only. Worker identity sent as X-Ergon-Consumer-Id; claims taken under it "
+            "expire and are fenced against other consumers. Defaults to '<hostname>:<pid>'. "
+            "Allowed: [A-Za-z0-9._:@-]{1,128}."
+        ),
     )
 
 
