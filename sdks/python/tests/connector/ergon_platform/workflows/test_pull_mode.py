@@ -234,6 +234,16 @@ class TestPullOutcomes:
             connector.release_item("item-1")
         assert factory.fenced[0].workflows.items.release_calls == [("item-1", {})]
 
+    def test_release_transaction_hands_back_without_a_verdict(self):
+        with _patched_factory(PULL_PHASES) as factory:
+            connector = ErgonPlatformConnector(client=_client_config(), consumer_config=_config())
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                connector.release_transaction(_tx())
+        items = factory.fenced[0].workflows.items
+        assert items.release_calls == [("item-1", {})]
+        assert items.fail_calls == [] and items.defer_calls == [] and items.update_calls == []
+
     def test_explicit_outcomes(self):
         with _patched_factory(PULL_PHASES) as factory:
             connector = ErgonPlatformConnector(client=_client_config(), consumer_config=_config())
@@ -265,6 +275,16 @@ class TestStandardPhaseIsUnchanged:
         assert items.update_calls == [("item-1", {"visibility_timeout_on_release_minutes": 1})]
         assert items.release_calls == [("item-1", {})]
         assert items.fail_calls == []
+
+    def test_release_transaction_is_a_release_without_cooldown(self):
+        with _patched_factory(STANDARD_PHASES) as factory:
+            connector = ErgonPlatformConnector(client=_client_config(), consumer_config=_config())
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                connector.release_transaction(_tx())
+        items = factory.plain.workflows.items
+        assert items.release_calls == [("item-1", {})]
+        assert items.update_calls == [] and items.fail_calls == []
 
     def test_ack_without_target_is_still_a_noop(self):
         with _patched_factory(STANDARD_PHASES) as factory:

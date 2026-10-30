@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from ..connector import Transaction
 from ..telemetry import logging, metrics, tracing
+from . import shutdown
 from .base import (
     BaseAsyncTask,
     BaseTask,
@@ -38,63 +39,24 @@ class ExitCode(IntEnum):
 
 
 # =============================================================
-# SHUTDOWN STATE (PROCESS-LOCAL)
+# SHUTDOWN STATE (PROCESS-LOCAL, see ``shutdown``)
 # =============================================================
 
-_shutdown_event = threading.Event()
-_shutdown_signal: int | None = None
-_shutdown_callbacks: set[Callable[[], None]] = set()
-_shutdown_callbacks_lock = threading.Lock()
 _supervisor_logger = stdlib_logging.getLogger(__name__)
 
-
-def _signal_handler(signum, frame):
-    global _shutdown_signal
-    _shutdown_signal = signum
-    _shutdown_event.set()
-    with _shutdown_callbacks_lock:
-        callbacks = tuple(_shutdown_callbacks)
-    for callback in callbacks:
-        try:
-            callback()
-        except Exception:
-            _supervisor_logger.exception("Async shutdown callback failed")
-
-
-def _install_signal_handlers():
-    signal.signal(signal.SIGINT, _signal_handler)
-    signal.signal(signal.SIGTERM, _signal_handler)
-
-
-def _reset_shutdown_state() -> None:
-    global _shutdown_signal
-    _shutdown_event.clear()
-    _shutdown_signal = None
-    with _shutdown_callbacks_lock:
-        _shutdown_callbacks.clear()
-
-
-def _register_shutdown_callback(callback: Callable[[], None]) -> None:
-    with _shutdown_callbacks_lock:
-        _shutdown_callbacks.add(callback)
-        shutdown_requested = _shutdown_event.is_set()
-    if shutdown_requested:
-        callback()
-
-
-def _unregister_shutdown_callback(callback: Callable[[], None]) -> None:
-    with _shutdown_callbacks_lock:
-        _shutdown_callbacks.discard(callback)
-
-
-def is_shutdown_requested() -> bool:
-    return _shutdown_event.is_set()
+_signal_handler = shutdown._handle_signal
+_install_signal_handlers = shutdown.install_handlers
+_reset_shutdown_state = shutdown.reset
+_register_shutdown_callback = shutdown.register_callback
+_unregister_shutdown_callback = shutdown.unregister_callback
+is_shutdown_requested = shutdown.is_requested
 
 
 def get_shutdown_exit_code() -> ExitCode:
-    if _shutdown_signal == signal.SIGINT:
+    requested = shutdown.requested_signal()
+    if requested == signal.SIGINT:
         return ExitCode.SIGINT
-    if _shutdown_signal == signal.SIGTERM:
+    if requested == signal.SIGTERM:
         return ExitCode.SIGTERM
     return ExitCode.ERROR
 
@@ -497,6 +459,37 @@ def __run_task_sync(
                     instance.exit()
 
 
+def _run_worker_sync(config: TaskConfig, mode: Literal["task", "transaction"] = "task", *args, **kwargs):
+    """Worker-process entrypoint: own shutdown state, cooperative handlers, no escalation."""
+    shutdown.reset()
+    shutdown.install_handlers(escalate=False)
+    return __run_task_sync(config, mode, *args, **kwargs)
+
+
+def _worker_signal_relays(executor: ProcessPoolExecutor) -> tuple[Callable[[], None], Callable[[], None]]:
+    """(forward the parent's signal to the workers, SIGKILL the workers) for ``executor``.
+
+    Reads the executor's live worker table, so workers started after registration count.
+    """
+
+    def _send(signum: int) -> None:
+        for pid in list(getattr(executor, "_processes", None) or {}):
+            try:
+                os.kill(pid, signum)
+            except ProcessLookupError:
+                continue
+            except OSError:
+                _supervisor_logger.exception("Could not signal worker process %s", pid)
+
+    def forward_shutdown() -> None:
+        _send(shutdown.requested_signal() or signal.SIGTERM)
+
+    def kill_workers() -> None:
+        _send(signal.SIGKILL)
+
+    return forward_shutdown, kill_workers
+
+
 # =============================================================
 # PUBLIC API — RUNNER
 # =============================================================
@@ -555,21 +548,28 @@ def run_task(
     has_error = False
 
     with ProcessPoolExecutor(max_workers=config.max_workers) as executor:
-        futures = []
-        for worker_id in range(config.max_workers):
-            worker_kwargs = {
-                **kwargs,
-                "worker_id": worker_id,
-                "total_workers": config.max_workers,
-            }
-            futures.append(executor.submit(__run_task_sync, config, mode, *args, **worker_kwargs))
+        forward_shutdown, kill_workers = _worker_signal_relays(executor)
+        shutdown.register_callback(forward_shutdown)
+        shutdown.register_escalation_callback(kill_workers)
+        try:
+            futures = []
+            for worker_id in range(config.max_workers):
+                worker_kwargs = {
+                    **kwargs,
+                    "worker_id": worker_id,
+                    "total_workers": config.max_workers,
+                }
+                futures.append(executor.submit(_run_worker_sync, config, mode, *args, **worker_kwargs))
 
-        for f in futures:
-            try:
-                f.result()
-            except Exception:
-                traceback.print_exc()
-                has_error = True
+            for f in futures:
+                try:
+                    f.result()
+                except Exception:
+                    traceback.print_exc()
+                    has_error = True
+        finally:
+            shutdown.unregister_callback(forward_shutdown)
+            shutdown.unregister_escalation_callback(kill_workers)
 
     if is_shutdown_requested():
         return int(get_shutdown_exit_code())

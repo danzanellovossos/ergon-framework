@@ -10,7 +10,7 @@ from async_timeout import timeout as timeout_after
 from opentelemetry import context as otel_context
 
 from ... import connector, telemetry
-from .. import base, exceptions, helpers, liveness, policies, utils
+from .. import base, exceptions, helpers, liveness, policies, shutdown, utils
 from . import metrics as mixin_metrics
 from . import producer
 
@@ -305,6 +305,38 @@ class ConsumerMixin(ABC):
         raise ValueError("Multiple connectors configured; specify one in policy")
 
     # =====================================================================
+    # SHUTDOWN HAND-BACK
+    # =====================================================================
+    def _hand_back_unstarted(self, conn, transactions: List[connector.Transaction]) -> None:
+        """Give back fetched transactions that were never started because the process is stopping.
+
+        ``release_transaction`` (no verdict) when the connector has it, else
+        ``nack_transaction(requeue=True)``. Never raises: the stop must go on, and a
+        transaction that cannot be handed back returns when its claim or lease expires.
+        """
+        release = getattr(conn, "release_transaction", None)
+        nack = getattr(conn, "nack_transaction", None)
+        for tr in transactions:
+            try:
+                if callable(release):
+                    release(tr)
+                elif callable(nack):
+                    nack(tr, requeue=True)
+                else:
+                    logger.warning(
+                        "Connector %s cannot hand back transaction %s; it returns when its claim or lease expires",
+                        conn.__class__.__name__,
+                        tr.id,
+                    )
+                    continue
+                logger.info("Handed back unstarted transaction %s", tr.id)
+            except Exception:
+                logger.exception(
+                    "Could not hand back transaction %s; it returns when its claim or lease expires",
+                    tr.id,
+                )
+
+    # =====================================================================
     # PUBLIC CONSUME LOOP
     # =====================================================================
     def consume_transactions(self, policy: policies.ConsumerPolicy | None = None):
@@ -338,6 +370,10 @@ class ConsumerMixin(ABC):
                 )
 
             while True:
+                if shutdown.is_requested():
+                    logger.info("Shutdown requested; consume loop stops before the next fetch")
+                    break
+
                 batch_number += 1
 
                 # -------------------------
@@ -353,6 +389,14 @@ class ConsumerMixin(ABC):
                     raise exceptions.FetchException(str(result))
 
                 transactions = result
+
+                if transactions and shutdown.is_requested():
+                    logger.info(
+                        "Shutdown requested during fetch; handing back %d unstarted transaction(s)",
+                        len(transactions),
+                    )
+                    self._hand_back_unstarted(conn, list(transactions))
+                    break
 
                 # -------------------------
                 # EMPTY QUEUE HANDLING
@@ -375,6 +419,7 @@ class ConsumerMixin(ABC):
                         policy.fetch.empty.backoff_multiplier,
                         policy.fetch.empty.backoff_cap,
                         empty_count,
+                        interruptible=True,
                     )
                     empty_count += 1
                     continue
@@ -417,9 +462,18 @@ class ConsumerMixin(ABC):
                         "streaming": policy.loop.streaming,
                     },
                 ):
+                    not_started = list(transactions)
 
                     def submissions():
-                        for tr in transactions:
+                        while not_started:
+                            if shutdown.is_requested():
+                                logger.info(
+                                    "Shutdown requested; not starting %d remaining transaction(s) of this "
+                                    "batch, in-flight ones will finish",
+                                    len(not_started),
+                                )
+                                return
+                            tr = not_started.pop(0)
                             yield lambda tr=tr: submit_start_processing(tr, policy)
 
                     logger.debug(
@@ -436,6 +490,12 @@ class ConsumerMixin(ABC):
 
                 processed += count
 
+                if shutdown.is_requested():
+                    if not_started:
+                        self._hand_back_unstarted(conn, not_started)
+                    logger.info("Shutdown requested; consume loop stops after the in-flight transactions")
+                    break
+
                 if policy.loop.limit and processed >= policy.loop.limit:
                     break
 
@@ -446,6 +506,7 @@ class ConsumerMixin(ABC):
                         multiplier=policy.fetch.batch.interval.backoff_multiplier,
                         cap=policy.fetch.batch.interval.backoff_cap,
                         attempt=0,
+                        interruptible=True,
                     )
 
             executor.shutdown()
