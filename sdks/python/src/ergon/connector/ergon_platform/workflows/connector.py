@@ -159,6 +159,13 @@ class ErgonPlatformConnector(Connector):
             **fields,
         )
 
+    def release_transaction(self, transaction: Transaction) -> None:
+        """Give back a transaction that was fetched but never started (worker shutdown).
+
+        A plain release: no failure reason, no cooldown, so it is picked up again right away.
+        """
+        self.release_item(transaction.id)
+
     def nack_transaction(
         self,
         transaction: Transaction,

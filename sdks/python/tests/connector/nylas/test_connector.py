@@ -155,6 +155,20 @@ class TestAckTransaction:
         mock_delete.assert_not_called()
 
 
+class TestReleaseTransaction:
+    def test_release_leaves_the_message_untouched_and_refetchable(self):
+        connector = _make_connector(consumer_config=NylasConsumerConfig())
+
+        with (
+            patch.object(connector.service, "update_message") as update,
+            patch.object(connector.service, "reset_pagination") as reset,
+        ):
+            connector.release_transaction(Transaction(id="msg-1", payload={}))
+
+        update.assert_not_called()
+        reset.assert_called_once_with()
+
+
 class TestFetchById:
     def test_fetch_transaction_by_id(self):
         config = NylasConsumerConfig()

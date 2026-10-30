@@ -1,6 +1,8 @@
 import asyncio
 import inspect
 import logging as stdlib_logging
+import multiprocessing
+import multiprocessing.connection
 import os
 import signal
 import threading
@@ -8,13 +10,13 @@ import time
 import traceback
 import uuid
 from collections.abc import Callable
-from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from enum import IntEnum
 from typing import Any, Literal
 
 from ..connector import Transaction
 from ..telemetry import logging, metrics, tracing
+from . import shutdown
 from .base import (
     BaseAsyncTask,
     BaseTask,
@@ -38,63 +40,24 @@ class ExitCode(IntEnum):
 
 
 # =============================================================
-# SHUTDOWN STATE (PROCESS-LOCAL)
+# SHUTDOWN STATE (PROCESS-LOCAL, see ``shutdown``)
 # =============================================================
 
-_shutdown_event = threading.Event()
-_shutdown_signal: int | None = None
-_shutdown_callbacks: set[Callable[[], None]] = set()
-_shutdown_callbacks_lock = threading.Lock()
 _supervisor_logger = stdlib_logging.getLogger(__name__)
 
-
-def _signal_handler(signum, frame):
-    global _shutdown_signal
-    _shutdown_signal = signum
-    _shutdown_event.set()
-    with _shutdown_callbacks_lock:
-        callbacks = tuple(_shutdown_callbacks)
-    for callback in callbacks:
-        try:
-            callback()
-        except Exception:
-            _supervisor_logger.exception("Async shutdown callback failed")
-
-
-def _install_signal_handlers():
-    signal.signal(signal.SIGINT, _signal_handler)
-    signal.signal(signal.SIGTERM, _signal_handler)
-
-
-def _reset_shutdown_state() -> None:
-    global _shutdown_signal
-    _shutdown_event.clear()
-    _shutdown_signal = None
-    with _shutdown_callbacks_lock:
-        _shutdown_callbacks.clear()
-
-
-def _register_shutdown_callback(callback: Callable[[], None]) -> None:
-    with _shutdown_callbacks_lock:
-        _shutdown_callbacks.add(callback)
-        shutdown_requested = _shutdown_event.is_set()
-    if shutdown_requested:
-        callback()
-
-
-def _unregister_shutdown_callback(callback: Callable[[], None]) -> None:
-    with _shutdown_callbacks_lock:
-        _shutdown_callbacks.discard(callback)
-
-
-def is_shutdown_requested() -> bool:
-    return _shutdown_event.is_set()
+_signal_handler = shutdown._handle_signal
+_install_signal_handlers = shutdown.install_handlers
+_reset_shutdown_state = shutdown.reset
+_register_shutdown_callback = shutdown.register_callback
+_unregister_shutdown_callback = shutdown.unregister_callback
+is_shutdown_requested = shutdown.is_requested
 
 
 def get_shutdown_exit_code() -> ExitCode:
-    if _shutdown_signal == signal.SIGINT:
+    requested = shutdown.requested_signal()
+    if requested == signal.SIGINT:
         return ExitCode.SIGINT
-    if _shutdown_signal == signal.SIGTERM:
+    if requested == signal.SIGTERM:
         return ExitCode.SIGTERM
     return ExitCode.ERROR
 
@@ -497,6 +460,103 @@ def __run_task_sync(
                     instance.exit()
 
 
+def _run_worker_sync(config: TaskConfig, mode: Literal["task", "transaction"] = "task", *args, **kwargs):
+    """Worker-process entrypoint: cooperative handlers, no escalation, keeps an early stop request."""
+    shutdown.prepare_worker()
+    if shutdown.is_requested():
+        _supervisor_logger.warning("Stop requested before worker %s started; not running it", kwargs.get("worker_id"))
+        return None
+    return __run_task_sync(config, mode, *args, **kwargs)
+
+
+def _worker_signal_relays(worker_pids: Callable[[], list[int]]) -> tuple[Callable[[], None], Callable[[], None]]:
+    """(forward the parent's signal to the workers, SIGKILL the workers).
+
+    ``worker_pids`` is read on every call, so workers started after registration count.
+    ``kill_workers`` runs right before the process exits, so it does not log.
+    """
+
+    def _send(signum: int) -> list[tuple[int, OSError]]:
+        failures = []
+        for pid in worker_pids():
+            try:
+                os.kill(pid, signum)
+            except ProcessLookupError:
+                continue
+            except OSError as exc:
+                failures.append((pid, exc))
+        return failures
+
+    def forward_shutdown() -> None:
+        for pid, exc in _send(shutdown.requested_signal() or signal.SIGTERM):
+            _supervisor_logger.error("Could not signal worker process %s: %s", pid, exc)
+
+    def kill_workers() -> None:
+        _send(signal.SIGKILL)
+
+    return forward_shutdown, kill_workers
+
+
+def _start_worker(config: TaskConfig, mode: Literal["task", "transaction"], args: tuple, worker_kwargs: dict):
+    process = multiprocessing.Process(
+        target=_run_worker_sync,
+        args=(config, mode, *args),
+        kwargs=worker_kwargs,
+        name=f"{config.name}-worker-{worker_kwargs['worker_id']}",
+    )
+    process.start()
+    return process
+
+
+def _run_workers(config: TaskConfig, mode: Literal["task", "transaction"], args: tuple, kwargs: dict) -> bool:
+    """Run ``max_workers`` worker processes to completion; True when one of them failed.
+
+    Plain processes, not a pool: a worker whose task returns simply exits. A worker that
+    fails or dies stops its siblings cooperatively, as a broken pool used to.
+    """
+    processes: list[multiprocessing.Process] = []
+    has_error = False
+
+    def alive_pids() -> list[int]:
+        return [p.pid for p in processes if p.pid is not None and p.exitcode is None]
+
+    forward_shutdown, kill_workers = _worker_signal_relays(alive_pids)
+    shutdown.register_callback(forward_shutdown)
+    shutdown.register_escalation_callback(kill_workers)
+    try:
+        # Workers inherit the blocked mask, so a signal that arrives while they start
+        # stays pending until ``prepare_worker`` installed their handlers.
+        with shutdown.blocked_signals():
+            for worker_id in range(config.max_workers):
+                if is_shutdown_requested():
+                    break
+                worker_kwargs = {**kwargs, "worker_id": worker_id, "total_workers": config.max_workers}
+                processes.append(_start_worker(config, mode, args, worker_kwargs))
+        if is_shutdown_requested():
+            forward_shutdown()
+
+        running = list(processes)
+        while running:
+            multiprocessing.connection.wait([p.sentinel for p in running], timeout=1.0)
+            for p in [p for p in running if p.exitcode is not None]:
+                running.remove(p)
+                p.join()
+                if p.exitcode == 0:
+                    continue
+                has_error = True
+                _supervisor_logger.error("Worker process %s (pid %s) exited with %s", p.name, p.pid, p.exitcode)
+                for sibling in running:
+                    if sibling.pid is not None:
+                        try:
+                            os.kill(sibling.pid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+    finally:
+        shutdown.unregister_callback(forward_shutdown)
+        shutdown.unregister_escalation_callback(kill_workers)
+    return has_error
+
+
 # =============================================================
 # PUBLIC API — RUNNER
 # =============================================================
@@ -515,9 +575,10 @@ def run_task(
     Returns POSIX-compatible exit code.
     """
 
-    _reset_shutdown_state()
-    _install_signal_handlers()
     is_async = issubclass(config.task, BaseAsyncTask)  # type: ignore[arg-type]
+    _reset_shutdown_state()
+    # Async: every signal re-cancels and the liveness supervisor owns the hard deadline.
+    _install_signal_handlers(escalate=not is_async)
 
     # ---------------------------------------------------------
     # SINGLE PROCESS
@@ -552,24 +613,7 @@ def run_task(
     if is_async:
         raise RuntimeError("Async tasks cannot be executed with multiple processes. Use debug=True or max_workers=1.")
 
-    has_error = False
-
-    with ProcessPoolExecutor(max_workers=config.max_workers) as executor:
-        futures = []
-        for worker_id in range(config.max_workers):
-            worker_kwargs = {
-                **kwargs,
-                "worker_id": worker_id,
-                "total_workers": config.max_workers,
-            }
-            futures.append(executor.submit(__run_task_sync, config, mode, *args, **worker_kwargs))
-
-        for f in futures:
-            try:
-                f.result()
-            except Exception:
-                traceback.print_exc()
-                has_error = True
+    has_error = _run_workers(config, mode, args, kwargs)
 
     if is_shutdown_requested():
         return int(get_shutdown_exit_code())

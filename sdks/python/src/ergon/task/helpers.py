@@ -309,12 +309,17 @@ def run_fn(
     return run()
 
 
+_STOP_POLL_SECONDS = 0.25
+
+
 def multithread_execute(
     submissions: Iterable[Callable[[], futures.Future]],
     *,
     concurrency: int,
     limit: Optional[int] = None,
     timeout: Optional[float] = None,
+    stop: Optional[Callable[[], bool]] = None,
+    on_stop: Optional[Callable[[], None]] = None,
 ) -> int:
     """
     Execute submitted callables with bounded concurrency and refill.
@@ -322,6 +327,8 @@ def multithread_execute(
     - submissions yields callables that RETURN a Future when called
     - this function manages in-flight futures only
     - no domain semantics, no retries, no tracing
+    - ``stop`` is polled while futures are in flight; once it returns True nothing more is
+      submitted, ``on_stop`` runs once right away, and the in-flight futures are still awaited
 
     Returns:
         Number of completed submissions
@@ -329,6 +336,10 @@ def multithread_execute(
 
     in_flight: dict[futures.Future, float] = {}
     completed = 0
+    stopping = False
+    wait_timeout = timeout
+    if stop is not None:
+        wait_timeout = _STOP_POLL_SECONDS if timeout is None else min(timeout, _STOP_POLL_SECONDS)
 
     submit_iter = iter(submissions)
 
@@ -363,7 +374,7 @@ def multithread_execute(
         done, _ = futures.wait(
             in_flight.keys(),
             return_when=futures.FIRST_COMPLETED,
-            timeout=timeout,
+            timeout=wait_timeout,
         )
 
         # ----------------------------
@@ -390,6 +401,14 @@ def multithread_execute(
                     logger.error("Execution timeout (scheduler eviction)")
                     in_flight.pop(fut)
                     completed += 1
+
+        if not stopping and stop is not None and stop():
+            stopping = True
+            logger.info("Stop requested; waiting for %d in-flight submission(s), submitting no more", len(in_flight))
+            if on_stop is not None:
+                on_stop()
+        if stopping:
+            continue
 
         # ============================================================
         # REFILL

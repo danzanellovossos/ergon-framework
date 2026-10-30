@@ -6,6 +6,7 @@ import time
 from datetime import datetime
 
 from .. import telemetry
+from . import shutdown
 
 logger = logging.getLogger(__name__)
 tracer = telemetry.tracing.get_tracer(__name__)
@@ -42,14 +43,24 @@ def compute_backoff(backoff: float, multiplier: float, cap: float, attempt: int)
         return computed_delay
 
 
-def backoff(backoff: float, multiplier: float, cap: float, attempt: int):
-    """Blocking sleep with computed backoff."""
+def backoff(backoff: float, multiplier: float, cap: float, attempt: int, *, interruptible: bool = False):
+    """Blocking sleep with computed backoff.
+
+    ``interruptible=True`` returns as soon as a shutdown is requested. Only idle waits use
+    it (empty queue, batch interval): a retry sleep inside a transaction must not turn
+    into an immediate retry just because the process is stopping.
+    """
     delay = compute_backoff(backoff, multiplier, cap, attempt)
     if delay > 0:
         with tracer.start_as_current_span("sleep", attributes={"delay": delay}):
             estimated_wake_time_iso = _get_wake_time_iso(delay)
             logger.info(f"Sleeping for {delay} seconds until {estimated_wake_time_iso}")
-            time.sleep(delay)
+            if interruptible:
+                if shutdown.wait(delay):
+                    logger.info("Woke up early: shutdown requested")
+                    return
+            else:
+                time.sleep(delay)
             logger.info(f"Woke up from {delay} second{'' if delay == 1 else 's'} sleep")
 
 

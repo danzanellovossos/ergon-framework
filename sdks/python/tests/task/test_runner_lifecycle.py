@@ -32,7 +32,7 @@ def test_run_task_returns_signal_exit_code(monkeypatch):
             runner._signal_handler(signal.SIGTERM, None)
             await asyncio.sleep(0)
 
-    monkeypatch.setattr(runner, "_install_signal_handlers", lambda: None)
+    monkeypatch.setattr(runner, "_install_signal_handlers", lambda **_: None)
 
     config = TaskConfig(
         name="signal-exit-code",
