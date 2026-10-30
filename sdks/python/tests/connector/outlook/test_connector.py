@@ -140,6 +140,22 @@ def test_nack_without_requeue_applies_failure_actions() -> None:
     reset.assert_not_called()
 
 
+def test_release_transaction_leaves_the_message_untouched_and_refetchable() -> None:
+    config = OutlookConsumerConfig(nack_config=OutlookNackActionConfig(categories=["Processing failed"]))
+    connector = OutlookGraphConnector(_client(), consumer_config=config)
+
+    with (
+        patch.object(connector.service, "update_message") as update,
+        patch.object(connector.service, "move_message") as move,
+        patch.object(connector.service, "reset_pagination") as reset,
+    ):
+        connector.release_transaction(Transaction(id="m1", payload={}))
+
+    update.assert_not_called()
+    move.assert_not_called()
+    reset.assert_called_once_with()
+
+
 def test_nack_without_requeue_requires_failure_action() -> None:
     connector = OutlookGraphConnector(_client())
 

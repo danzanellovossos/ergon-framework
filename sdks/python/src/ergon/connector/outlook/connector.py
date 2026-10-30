@@ -194,5 +194,10 @@ class OutlookGraphConnector(Connector):
             self.service.reset_pagination()
             logger.debug("Outlook message %s was made available for refetch", transaction.id)
 
+    def release_transaction(self, transaction: Transaction) -> None:
+        """Give back a fetched but unstarted message (worker shutdown): unchanged, refetchable."""
+        self.service.reset_pagination()
+        logger.debug("Outlook message %s released unchanged", transaction.id)
+
     def close(self) -> None:
         self.service.close()

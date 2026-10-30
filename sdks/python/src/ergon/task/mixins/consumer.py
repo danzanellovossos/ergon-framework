@@ -381,6 +381,9 @@ class ConsumerMixin(ABC):
                 # -------------------------
                 logger.debug(f"Fetching transactions batch with fetch policy: {policy.fetch.model_dump_json(indent=2)}")
                 success, result = self._handle_fetch(conn, policy.fetch)
+                if not success and shutdown.is_requested():
+                    logger.warning(f"Fetch failed while stopping; nothing was fetched, stopping → {result}")
+                    break
                 if not success:
                     logger.error(f"Fetch failed → {result}")
                     executor.shutdown(wait=False)
@@ -465,16 +468,20 @@ class ConsumerMixin(ABC):
                     not_started = list(transactions)
 
                     def submissions():
-                        while not_started:
-                            if shutdown.is_requested():
-                                logger.info(
-                                    "Shutdown requested; not starting %d remaining transaction(s) of this "
-                                    "batch, in-flight ones will finish",
-                                    len(not_started),
-                                )
-                                return
+                        while not_started and not shutdown.is_requested():
                             tr = not_started.pop(0)
                             yield lambda tr=tr: submit_start_processing(tr, policy)
+
+                    def hand_back_not_started():
+                        remaining = list(not_started)
+                        not_started.clear()
+                        if remaining:
+                            logger.info(
+                                "Shutdown requested; handing back %d unstarted transaction(s) of this batch, "
+                                "in-flight ones will finish",
+                                len(remaining),
+                            )
+                            self._hand_back_unstarted(conn, remaining)
 
                     logger.debug(
                         f"Submitting {len(transactions)} transactions for processing "
@@ -486,13 +493,14 @@ class ConsumerMixin(ABC):
                         concurrency=policy.loop.concurrency.value,
                         limit=policy.loop.limit,
                         timeout=policy.transaction_runtime.timeout,
+                        stop=shutdown.is_requested,
+                        on_stop=hand_back_not_started,
                     )
 
                 processed += count
 
                 if shutdown.is_requested():
-                    if not_started:
-                        self._hand_back_unstarted(conn, not_started)
+                    hand_back_not_started()
                     logger.info("Shutdown requested; consume loop stops after the in-flight transactions")
                     break
 

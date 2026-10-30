@@ -891,6 +891,27 @@ class TestLifecycle:
             ),
         ]
 
+    def test_release_transaction_requeues_without_the_nack_delay(self):
+        config = ErgonPlatformChannelsConsumerConfig(address=INBOX, nack_delay_seconds=30)
+        sdk_client = _Client()
+        _seed_addresses(sdk_client)
+        connector = _make_connector(consumer_config=config, sdk_client=sdk_client)
+
+        connector.release_transaction(_claimed_transaction())
+
+        assert sdk_client.channels.configs.nack_calls == [
+            (
+                "cfg-jsl",
+                "evt-1",
+                {
+                    "subscription_id": "11111111-1111-1111-1111-111111111111",
+                    "lease_token": "22222222-2222-2222-2222-222222222222",
+                    "requeue": True,
+                    "delay_seconds": 0,
+                },
+            ),
+        ]
+
     def test_download_attachments_uses_transaction_metadata(self, tmp_path):
         config = ErgonPlatformChannelsConsumerConfig(address=INBOX)
         sdk_client = _Client()

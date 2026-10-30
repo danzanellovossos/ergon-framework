@@ -4,14 +4,17 @@ Every lifecycle step is appended as one JSON line to ``$SHUTDOWN_APP_EVENTS`` so
 test can check, per worker pid, what was fetched, started, finished and released.
 """
 
+import faulthandler
 import json
+import logging
 import multiprocessing
 import os
+import signal
 import sys
 import time
 
 from ergon.connector import Connector, ConnectorConfig, Transaction
-from ergon.task import policies, runner
+from ergon.task import policies, runner, shutdown
 from ergon.task.base import TaskConfig
 from ergon.task.mixins import ConsumerTask
 
@@ -44,6 +47,11 @@ class QueueConnector(Connector):
 
 
 class SlowConsumer(ConsumerTask):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+        record("worker", ppid=os.getppid())
+
     def process_transaction(self, transaction):
         record("started", id=transaction.id)
         time.sleep(PROCESS_SECONDS)
@@ -62,10 +70,28 @@ class SlowConsumer(ConsumerTask):
         )
 
 
+_original_start_worker = runner._start_worker
+_signalled_self = False
+
+
+def _start_worker_then_signal_self(*args, **kwargs):
+    """SIGTERM to the parent right after the first worker process started (workers still starting)."""
+    global _signalled_self
+    process = _original_start_worker(*args, **kwargs)
+    if not _signalled_self:
+        _signalled_self = True
+        os.kill(os.getpid(), signal.SIGTERM)
+    return process
+
+
 def main() -> None:
+    # The test sends SIGUSR1 to every process on a timeout to get their stacks.
+    faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
     start_method = os.environ.get("SHUTDOWN_APP_START_METHOD")
     if start_method:
         multiprocessing.set_start_method(start_method, force=True)
+    if os.environ.get("SHUTDOWN_APP_SIGTERM_AFTER_FIRST_SUBMIT"):
+        runner._start_worker = _start_worker_then_signal_self
     config = TaskConfig(
         name="shutdown-e2e",
         task=SlowConsumer,
@@ -73,3 +99,19 @@ def main() -> None:
         max_workers=WORKERS,
     )
     sys.exit(runner.run_task(config))
+
+
+def storm_main() -> None:
+    """Main thread spins in ``shutdown.wait`` and logs while the test floods it with SIGTERM."""
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+    log = logging.getLogger("storm")
+    shutdown.install_handlers(escalate=False)
+    record("ready")
+    ticks = 0
+    end = time.monotonic() + float(os.environ.get("SHUTDOWN_APP_STORM_SECONDS", "2"))
+    while time.monotonic() < end:
+        shutdown.wait(0.0005)
+        log.info("tick %d", ticks)
+        ticks += 1
+    record("done", ticks=ticks)
+    sys.exit(0)

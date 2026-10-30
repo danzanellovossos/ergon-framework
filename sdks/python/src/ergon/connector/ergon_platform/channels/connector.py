@@ -208,6 +208,10 @@ class ErgonPlatformChannelsConnector(Connector):
         if requeue and transaction.id:
             self._seen_event_ids.discard(transaction.id)
 
+    def release_transaction(self, transaction: Transaction) -> None:
+        """Give back a fetched but unstarted inbox event (worker shutdown): requeued with no delay."""
+        self.nack_transaction(transaction, requeue=True, delay_seconds=0)
+
     def download_attachments(
         self,
         transaction: Transaction,
