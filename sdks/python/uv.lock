@@ -904,7 +904,7 @@ wheels = [
 
 [[package]]
 name = "ergon-framework-python"
-version = "0.3.1"
+version = "0.3.2"
 source = { editable = "." }
 dependencies = [
     { name = "async-timeout" },
@@ -985,8 +985,8 @@ requires-dist = [
     { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.29.0" },
     { name = "boto3", marker = "extra == 'all'", specifier = ">=1.35.0" },
     { name = "boto3", marker = "extra == 'sqs'", specifier = ">=1.35.0" },
-    { name = "ergon-platform-sdk", marker = "extra == 'all'", specifier = ">=0.5.1,<0.6" },
-    { name = "ergon-platform-sdk", marker = "extra == 'ergon-platform'", specifier = ">=0.5.1,<0.6" },
+    { name = "ergon-platform-sdk", marker = "extra == 'all'", specifier = ">=0.5.1,<1" },
+    { name = "ergon-platform-sdk", marker = "extra == 'ergon-platform'", specifier = ">=0.5.1,<1" },
     { name = "httpx", marker = "extra == 'all'", specifier = ">=0.28.0" },
     { name = "httpx", marker = "extra == 'ergon-platform'", specifier = ">=0.28.0" },
     { name = "httpx", marker = "extra == 'pipefy'", specifier = ">=0.28.0" },
