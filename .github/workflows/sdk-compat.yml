@@ -1,0 +1,46 @@
+name: SDK compat
+
+# ergon-platform-sdk is allowed up to <1, and its 0.x minors may change the API. The CI
+# workflow tests the locked SDK; this one tests the newest release on PyPI, so a minor
+# that breaks the framework fails here (and on the daily run) before a project upgrades.
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+jobs:
+  latest-sdk:
+    name: Tests against the latest ergon-platform-sdk
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies with the newest SDK
+        working-directory: sdks/python
+        run: uv sync --dev --all-extras --upgrade-package ergon-platform-sdk
+
+      - name: Show the SDK version under test
+        working-directory: sdks/python
+        run: uv run python -c "import importlib.metadata as m; print('ergon-platform-sdk', m.version('ergon-platform-sdk'))"
+
+      - name: Pyright
+        working-directory: sdks/python
+        run: uv run pyright
+
+      - name: Pytest
+        working-directory: sdks/python
+        run: uv run pytest -q

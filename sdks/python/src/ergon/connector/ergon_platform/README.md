@@ -8,7 +8,7 @@ Grupo de connectors que integram o framework Ergon com a **Ergon Platform**, atr
 pip install 'ergon-framework-python[ergon-platform]'
 ```
 
-O extra `ergon-platform` traz `ergon-platform-sdk>=0.5.1,<0.6` + `httpx` e cobre **todos** os sub-connectors.
+O extra `ergon-platform` traz `ergon-platform-sdk>=0.5.1,<1` + `httpx` e cobre **todos** os sub-connectors.
 
 ## Organização
 
