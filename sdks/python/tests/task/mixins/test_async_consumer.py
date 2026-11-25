@@ -184,6 +184,68 @@ class TestConsumerLiveness:
         assert snapshot.healthy is False
         assert snapshot.state == "fetch_stalled"
 
+    async def test_a_transaction_that_never_ends_is_unhealthy_while_fetches_keep_returning(self):
+        consumer = MockAsyncConsumer(connectors={"default": MockAsyncConnector([])})
+        consumer._consumer_in_flight = {1}
+        consumer._consumer_active_stale_after = 60
+        consumer._consumer_last_transaction_progress_monotonic = time.monotonic() - 180
+        # The continuous loop fetched a moment ago, beside the transaction.
+        consumer._consumer_liveness_state = "polling"
+        consumer._consumer_last_progress_monotonic = time.monotonic()
+
+        snapshot = consumer.liveness_snapshot()
+
+        assert snapshot.healthy is False
+        assert snapshot.state == "processing_stalled"
+
+    async def test_a_fetch_that_never_returns_is_unhealthy_while_transactions_start_and_end(self):
+        consumer = MockAsyncConsumer(connectors={"default": MockAsyncConnector([])})
+        consumer._consumer_fetch_stale_after = 60
+        consumer._consumer_fetch_started_monotonic = time.monotonic() - 180
+        # A transaction ended a moment ago, which moved the loop's state on.
+        consumer._consumer_liveness_state = "processing"
+        consumer._consumer_last_progress_monotonic = time.monotonic()
+
+        snapshot = consumer.liveness_snapshot()
+
+        assert snapshot.healthy is False
+        assert snapshot.state == "fetch_stalled"
+
+    async def test_a_running_fetch_and_a_running_transaction_within_their_limits_are_healthy(self):
+        release = asyncio.Event()
+
+        class Waiting(MockAsyncConnector):
+            async def fetch_transactions_async(self, batch_size=1, **kwargs):
+                batch = await super().fetch_transactions_async(batch_size, **kwargs)
+                if not batch:
+                    await asyncio.sleep(0.02)
+                return batch
+
+        async def process(tx):
+            await release.wait()
+            return tx.payload
+
+        consumer = MockAsyncConsumer(connectors={"default": Waiting(make_transactions(1))}, process_fn=process)
+        policy = policies.ConsumerPolicy(
+            loop=policies.ConsumerLoopPolicy(
+                mode="continuous",
+                streaming=True,
+                limit=1,
+                concurrency=policies.ConcurrencyPolicy(value=2),
+            ),
+            transaction_runtime=policies.TransactionRuntimePolicy(timeout=30),
+        )
+        consuming = asyncio.create_task(consumer.consume_transactions(policy=policy))
+        await asyncio.sleep(0.2)
+
+        snapshot = consumer.liveness_snapshot()
+        release.set()
+        await asyncio.wait_for(consuming, timeout=5)
+
+        assert snapshot.healthy is True
+        assert snapshot.details["in_flight_count"] == 1
+        assert consumer._consumer_fetch_started_monotonic is None
+
 
 # =====================================================================
 #   Consume loop — non-streaming
@@ -594,6 +656,271 @@ class TestConsumeContinuous:
         assert result == 5
         assert len(consumer.processed) == 5
         assert len(conn._queue) == 15
+
+    async def test_a_delivery_that_arrives_while_a_transaction_runs_starts_before_it_ends(self):
+        """A free slot takes new work while another slot is still busy.
+
+        The loop used to stop fetching after one empty fetch with a
+        transaction in flight, until that transaction ended. A delivery that
+        arrived in between waited for as long as the running one took.
+        """
+        first_running = asyncio.Event()
+        release_first = asyncio.Event()
+        empty_fetches_while_running = 0
+
+        class LateDelivery(MockAsyncConnector):
+            async def fetch_transactions_async(self, batch_size=1, **kwargs):
+                nonlocal empty_fetches_while_running
+                batch = await super().fetch_transactions_async(batch_size, **kwargs)
+                if not batch and first_running.is_set():
+                    empty_fetches_while_running += 1
+                    if empty_fetches_while_running == 2:
+                        # Arrives after the loop has already seen the source empty.
+                        self._queue.append(Transaction(id="late", payload={}))
+                    await asyncio.sleep(0.01)
+                return batch
+
+        async def process(tx):
+            if tx.id == "0":
+                first_running.set()
+                await release_first.wait()
+            else:
+                # Only reachable while the first transaction is still running.
+                release_first.set()
+            return tx.payload
+
+        conn = LateDelivery(make_transactions(1))
+        consumer = MockAsyncConsumer(connectors={"default": conn}, process_fn=process)
+        policy = policies.ConsumerPolicy(
+            loop=policies.ConsumerLoopPolicy(
+                mode="continuous",
+                streaming=True,
+                limit=2,
+                concurrency=policies.ConcurrencyPolicy(value=2),
+            ),
+        )
+
+        result = await asyncio.wait_for(consumer.consume_transactions(policy=policy), timeout=5)
+
+        assert result == 2
+        assert [tx.id for tx in consumer.processed] == ["0", "late"]
+
+    async def test_a_drain_fetches_again_when_a_transaction_ended_while_the_fetch_was_out(self):
+        """The empty answer of a fetch can be older than the work a transaction left behind."""
+        first_done = asyncio.Event()
+
+        class SlowToAnswer(MockAsyncConnector):
+            async def fetch_transactions_async(self, batch_size=1, **kwargs):
+                batch = await super().fetch_transactions_async(batch_size, **kwargs)
+                if not batch and not first_done.is_set():
+                    # Saw the source empty, and answers after the transaction ended.
+                    await first_done.wait()
+                    await asyncio.sleep(0.02)
+                return batch
+
+        async def process(tx):
+            if tx.id == "0":
+                await asyncio.sleep(0.02)
+                conn._queue.append(Transaction(id="chained", payload={}))
+                first_done.set()
+            return tx.payload
+
+        conn = SlowToAnswer(make_transactions(1))
+        consumer = MockAsyncConsumer(connectors={"default": conn}, process_fn=process)
+        policy = policies.ConsumerPolicy(
+            loop=policies.ConsumerLoopPolicy(
+                mode="continuous",
+                concurrency=policies.ConcurrencyPolicy(value=2),
+            ),
+        )
+
+        result = await asyncio.wait_for(consumer.consume_transactions(policy=policy), timeout=5)
+
+        assert result == 2
+        assert [tx.id for tx in consumer.processed] == ["0", "chained"]
+
+    async def test_a_full_consumer_does_not_fetch(self):
+        release = asyncio.Event()
+        fetch_sizes: list[int] = []
+
+        class Counting(MockAsyncConnector):
+            async def fetch_transactions_async(self, batch_size=1, **kwargs):
+                fetch_sizes.append(batch_size)
+                return await super().fetch_transactions_async(batch_size, **kwargs)
+
+        async def process(tx):
+            await release.wait()
+            return tx.payload
+
+        conn = Counting(make_transactions(5))
+        consumer = MockAsyncConsumer(connectors={"default": conn}, process_fn=process)
+        policy = policies.ConsumerPolicy(
+            loop=policies.ConsumerLoopPolicy(
+                mode="continuous",
+                streaming=True,
+                limit=5,
+                concurrency=policies.ConcurrencyPolicy(value=2),
+            ),
+        )
+
+        consuming = asyncio.create_task(consumer.consume_transactions(policy=policy))
+        await asyncio.sleep(0.3)
+
+        # Both slots are busy: one fetch filled them and no other was made.
+        assert fetch_sizes == [2]
+        assert len(conn._queue) == 3
+
+        release.set()
+        assert await asyncio.wait_for(consuming, timeout=5) == 5
+        assert max(fetch_sizes) == 2
+
+    async def test_empty_fetches_do_not_spin_while_a_transaction_runs(self):
+        fetches = 0
+
+        class AlwaysEmptyAfterFirst(MockAsyncConnector):
+            async def fetch_transactions_async(self, batch_size=1, **kwargs):
+                nonlocal fetches
+                fetches += 1
+                return await super().fetch_transactions_async(batch_size, **kwargs)
+
+        async def process(tx):
+            await asyncio.sleep(0.45)
+            return tx.payload
+
+        conn = AlwaysEmptyAfterFirst(make_transactions(1))
+        consumer = MockAsyncConsumer(connectors={"default": conn}, process_fn=process)
+        policy = policies.ConsumerPolicy(
+            loop=policies.ConsumerLoopPolicy(
+                mode="continuous",
+                streaming=True,
+                concurrency=policies.ConcurrencyPolicy(value=2),
+            ),
+        )
+        consuming = asyncio.create_task(consumer.consume_transactions(policy=policy))
+        await asyncio.sleep(0.4)
+        seen = fetches
+        consuming.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await consuming
+
+        # One fetch that returned the transaction, then at most one every 0.1s.
+        assert 2 <= seen <= 6
+
+    async def test_empty_fetch_backoff_sets_the_pause_while_a_transaction_runs(self):
+        fetches = 0
+
+        class Counting(MockAsyncConnector):
+            async def fetch_transactions_async(self, batch_size=1, **kwargs):
+                nonlocal fetches
+                fetches += 1
+                return await super().fetch_transactions_async(batch_size, **kwargs)
+
+        async def process(tx):
+            await asyncio.Event().wait()
+
+        conn = Counting(make_transactions(1))
+        consumer = MockAsyncConsumer(connectors={"default": conn}, process_fn=process)
+        policy = policies.ConsumerPolicy(
+            fetch=policies.FetchPolicy(empty=policies.EmptyFetchPolicy(backoff=10)),
+            loop=policies.ConsumerLoopPolicy(
+                mode="continuous",
+                streaming=True,
+                concurrency=policies.ConcurrencyPolicy(value=2),
+            ),
+        )
+        consuming = asyncio.create_task(consumer.consume_transactions(policy=policy))
+        await asyncio.sleep(0.4)
+        seen = fetches
+        consuming.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await consuming
+
+        # The fetch that returned the transaction and one empty fetch; the
+        # next one is ten seconds away.
+        assert seen == 2
+
+    async def test_a_finished_transaction_ends_the_pause(self):
+        fetched_after_first_ended = asyncio.Event()
+        first_ended = asyncio.Event()
+
+        class Refilled(MockAsyncConnector):
+            async def fetch_transactions_async(self, batch_size=1, **kwargs):
+                if first_ended.is_set():
+                    fetched_after_first_ended.set()
+                return await super().fetch_transactions_async(batch_size, **kwargs)
+
+        async def process(tx):
+            if tx.id == "0":
+                await asyncio.sleep(0.05)
+                first_ended.set()
+                return tx.payload
+            await asyncio.Event().wait()
+
+        conn = Refilled(make_transactions(2))
+        consumer = MockAsyncConsumer(connectors={"default": conn}, process_fn=process)
+        policy = policies.ConsumerPolicy(
+            fetch=policies.FetchPolicy(empty=policies.EmptyFetchPolicy(backoff=30)),
+            loop=policies.ConsumerLoopPolicy(
+                mode="continuous",
+                streaming=True,
+                concurrency=policies.ConcurrencyPolicy(value=3),
+            ),
+        )
+        consuming = asyncio.create_task(consumer.consume_transactions(policy=policy))
+
+        # The empty fetch started a 30-second pause; the slot that frees up
+        # is offered to the source at once.
+        await asyncio.wait_for(fetched_after_first_ended.wait(), timeout=5)
+
+        consuming.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await consuming
+
+    async def test_cancelling_the_loop_cancels_its_fetch_and_its_transactions(self):
+        fetch_waiting = asyncio.Event()
+        fetch_cancelled = False
+        transaction_cancelled = False
+
+        class Waiting(MockAsyncConnector):
+            async def fetch_transactions_async(self, batch_size=1, **kwargs):
+                nonlocal fetch_cancelled
+                batch = await super().fetch_transactions_async(batch_size, **kwargs)
+                if batch:
+                    return batch
+                fetch_waiting.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    fetch_cancelled = True
+                    raise
+                return []
+
+        async def process(tx):
+            nonlocal transaction_cancelled
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                transaction_cancelled = True
+                raise
+
+        conn = Waiting(make_transactions(1))
+        consumer = MockAsyncConsumer(connectors={"default": conn}, process_fn=process)
+        policy = policies.ConsumerPolicy(
+            loop=policies.ConsumerLoopPolicy(
+                mode="continuous",
+                streaming=True,
+                concurrency=policies.ConcurrencyPolicy(value=2),
+            ),
+        )
+        consuming = asyncio.create_task(consumer.consume_transactions(policy=policy))
+        await asyncio.wait_for(fetch_waiting.wait(), timeout=5)
+
+        consuming.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await consuming
+
+        assert fetch_cancelled is True
+        assert transaction_cancelled is True
 
 
 # =====================================================================
