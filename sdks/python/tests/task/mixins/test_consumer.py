@@ -11,7 +11,6 @@ from ergon.connector import Transaction
 from ergon.task import exceptions, policies
 from tests.task.mocks import MockConnector, MockConsumer, make_transactions
 
-
 # =====================================================================
 #   Transaction lifecycle (_start_processing)
 # =====================================================================

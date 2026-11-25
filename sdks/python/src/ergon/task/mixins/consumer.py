@@ -17,6 +17,12 @@ from . import producer
 logger = logging.getLogger(__name__)
 tracer = telemetry.tracing.get_tracer(__name__)
 
+# The shortest time between two fetches of a continuous loop while its
+# transactions run and the source has nothing. It only bounds a source that
+# answers an empty fetch at once; a fetch that already waited this long for a
+# delivery is followed by the next one with no pause.
+_BUSY_EMPTY_FETCH_INTERVAL = 0.1
+
 
 def _wrap_handler_failure(result: Any) -> exceptions.TransactionException:
     """Normalise a handler failure value into a TransactionException.
@@ -574,6 +580,12 @@ class AsyncConsumerMixin(ABC):
     _consumer_in_flight: set[int]
     _consumer_active_stale_after: float | None
     _consumer_fetch_stale_after: float
+    # The continuous loop fetches while transactions run, so a fetch and a
+    # transaction each keep their own clock: a fetch that keeps returning must
+    # not hide a transaction that never ends, and a transaction that starts or
+    # ends must not hide a fetch that never returns.
+    _consumer_last_transaction_progress_monotonic: float
+    _consumer_fetch_started_monotonic: float | None
 
     def _mark_consumer_progress(self, state: str) -> None:
         self._consumer_liveness_state = state
@@ -589,12 +601,15 @@ class AsyncConsumerMixin(ABC):
         else:
             in_flight.discard(id(transaction))
         self._mark_consumer_progress("processing" if in_flight else "polling")
+        self._consumer_last_transaction_progress_monotonic = self._consumer_last_progress_monotonic
 
     def liveness_snapshot(self) -> liveness.TaskLivenessSnapshot:
         """Evaluate consumer-loop progress without treating an idle queue as dead."""
         now = time.monotonic()
         state = getattr(self, "_consumer_liveness_state", "starting")
         last_progress = getattr(self, "_consumer_last_progress_monotonic", now)
+        last_transaction_progress = getattr(self, "_consumer_last_transaction_progress_monotonic", last_progress)
+        fetch_started = getattr(self, "_consumer_fetch_started_monotonic", None)
         in_flight = len(getattr(self, "_consumer_in_flight", set()))
         active_stale_after = getattr(self, "_consumer_active_stale_after", None)
         fetch_stale_after = getattr(self, "_consumer_fetch_stale_after", 120.0)
@@ -604,11 +619,11 @@ class AsyncConsumerMixin(ABC):
             "connectors": {},
         }
 
-        if in_flight and active_stale_after is not None and now - last_progress > active_stale_after:
+        if in_flight and active_stale_after is not None and now - last_transaction_progress > active_stale_after:
             return liveness.TaskLivenessSnapshot(
                 healthy=False,
                 state="processing_stalled",
-                reason=f"No transaction progress for {now - last_progress:.1f}s",
+                reason=f"No transaction progress for {now - last_transaction_progress:.1f}s",
                 details=details,
             )
 
@@ -617,6 +632,14 @@ class AsyncConsumerMixin(ABC):
                 healthy=False,
                 state="fetch_stalled",
                 reason=f"Fetch has not completed for {now - last_progress:.1f}s",
+                details=details,
+            )
+
+        if fetch_started is not None and now - fetch_started > fetch_stale_after:
+            return liveness.TaskLivenessSnapshot(
+                healthy=False,
+                state="fetch_stalled",
+                reason=f"Fetch has not completed for {now - fetch_started:.1f}s",
                 details=details,
             )
 
@@ -683,14 +706,18 @@ class AsyncConsumerMixin(ABC):
     ) -> tuple[bool, List[connector.Transaction]]:
         fetch_size = policy.batch.size if batch_size is None else batch_size
         self._mark_consumer_progress("fetching")
+        self._consumer_fetch_started_monotonic = self._consumer_last_progress_monotonic
         logger.info(f"Fetch handler started for batch size {fetch_size}", extra=policy.extra)
         fetch_start = time.perf_counter()
-        success, result = await helpers.run_fn_async(
-            fn=lambda: conn.fetch_transactions_async(fetch_size, **policy.extra),
-            retry=policy.retry,
-            trace_name=f"{self.__class__.__name__}.fetch_transactions",
-            trace_attrs={"batch_size": fetch_size},
-        )
+        try:
+            success, result = await helpers.run_fn_async(
+                fn=lambda: conn.fetch_transactions_async(fetch_size, **policy.extra),
+                retry=policy.retry,
+                trace_name=f"{self.__class__.__name__}.fetch_transactions",
+                trace_attrs={"batch_size": fetch_size},
+            )
+        finally:
+            self._consumer_fetch_started_monotonic = None
         # Record fetch metrics
         fetched_count = len(result) if success and result else 0
         mixin_metrics.record_consumer_fetch(
@@ -914,6 +941,8 @@ class AsyncConsumerMixin(ABC):
             conn = self._resolve_connector(policy.fetch.connector_name)
             self._consumer_in_flight = set()
             self._mark_consumer_progress("starting")
+            self._consumer_last_transaction_progress_monotonic = self._consumer_last_progress_monotonic
+            self._consumer_fetch_started_monotonic = None
             supervision = getattr(getattr(self, "task_config", None), "supervision", None)
             transaction_timeout = policy.transaction_runtime.timeout
             processing_override = getattr(supervision, "processing_stale_after", None)
@@ -966,8 +995,24 @@ class AsyncConsumerMixin(ABC):
                 nonlocal batch_number, empty_count, processed
 
                 concurrency = policy.loop.concurrency.value
+                limit = policy.loop.limit
                 submitted = 0
                 in_flight: set[asyncio.Task] = set()
+                # The fetch runs beside the transactions, not between them. A
+                # loop that waited for a transaction to end before it fetched
+                # again left every delivery that arrived in the meantime
+                # unstarted for as long as that transaction ran, and did not
+                # see the broker close its channel until then.
+                fetch_task: asyncio.Task | None = None
+                fetch_started = 0.0
+                fetch_is_stale = False
+                # After an empty fetch with transactions in flight, the next
+                # fetch waits for this pause or for a transaction to end,
+                # whichever comes first.
+                pause_task: asyncio.Task | None = None
+                # A non-streaming loop drains its source: after an empty fetch
+                # it fetches again only once a transaction has ended.
+                fetch_after_completion = False
 
                 async def reap(done: set[asyncio.Task]) -> None:
                     nonlocal processed
@@ -979,41 +1024,54 @@ class AsyncConsumerMixin(ABC):
                         finally:
                             processed += 1
 
-                async def wait_for_completion() -> None:
-                    done, _ = await asyncio.wait(
-                        in_flight,
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    in_flight.difference_update(done)
-                    await reap(done)
-                    self._mark_consumer_progress("polling")
-
                 try:
                     while True:
-                        if policy.loop.limit is not None and submitted >= policy.loop.limit:
-                            if in_flight:
-                                await wait_for_completion()
-                                continue
+                        free_slots = concurrency - len(in_flight)
+                        if limit is not None:
+                            free_slots = min(free_slots, limit - submitted)
+
+                        if fetch_task is None and pause_task is None and not fetch_after_completion and free_slots > 0:
+                            logger.debug(
+                                "Fetching transactions for %d free continuous-consumer slot(s) with fetch policy: %s",
+                                free_slots,
+                                policy.fetch.model_dump_json(indent=2),
+                            )
+                            fetch_started = time.monotonic()
+                            fetch_is_stale = False
+                            fetch_task = asyncio.create_task(
+                                self._handle_fetch(conn, policy.fetch, batch_size=free_slots),
+                            )
+
+                        waiting: set[asyncio.Task] = set(in_flight)
+                        if fetch_task is not None:
+                            waiting.add(fetch_task)
+                        if pause_task is not None:
+                            waiting.add(pause_task)
+                        if not waiting:
+                            # The limit is reached and nothing is in flight.
                             break
 
-                        free_slots = concurrency - len(in_flight)
-                        if free_slots == 0:
-                            await wait_for_completion()
+                        done, _ = await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+
+                        finished = done & in_flight
+                        if finished:
+                            in_flight.difference_update(finished)
+                            await reap(finished)
+                            fetch_after_completion = False
+                            if fetch_task is not None:
+                                fetch_is_stale = True
+                            if pause_task is not None:
+                                pause_task.cancel()
+                                pause_task = None
+
+                        if pause_task is not None and pause_task in done:
+                            pause_task = None
+
+                        if fetch_task is None or fetch_task not in done:
                             continue
 
-                        if policy.loop.limit is not None:
-                            free_slots = min(free_slots, policy.loop.limit - submitted)
-
-                        logger.debug(
-                            "Fetching transactions for %d free continuous-consumer slot(s) with fetch policy: %s",
-                            free_slots,
-                            policy.fetch.model_dump_json(indent=2),
-                        )
-                        success, result = await self._handle_fetch(
-                            conn,
-                            policy.fetch,
-                            batch_size=free_slots,
-                        )
+                        success, result = fetch_task.result()
+                        fetch_task = None
 
                         if not success:
                             logger.error("Fetch failed → %s", result)
@@ -1056,8 +1114,28 @@ class AsyncConsumerMixin(ABC):
                                 submitted += 1
                             continue
 
+                        if fetch_is_stale:
+                            # A transaction ended while this fetch was out, so
+                            # its empty answer may be older than what that
+                            # transaction left in the source: ask again before
+                            # waiting or stopping.
+                            continue
+
                         if in_flight:
-                            await wait_for_completion()
+                            if not policy.loop.streaming:
+                                fetch_after_completion = True
+                                continue
+                            # Keep fetching while the transactions run. A
+                            # source that waits for a delivery (RabbitMQ) has
+                            # already spent its poll timeout in the fetch; one
+                            # that answers at once is asked again after the
+                            # empty-fetch backoff, and never in a tight loop.
+                            pause = max(
+                                policy.fetch.empty.backoff,
+                                _BUSY_EMPTY_FETCH_INTERVAL - (time.monotonic() - fetch_started),
+                            )
+                            if pause > 0:
+                                pause_task = asyncio.create_task(asyncio.sleep(pause))
                             continue
 
                         self._mark_consumer_progress("idle")
@@ -1078,10 +1156,15 @@ class AsyncConsumerMixin(ABC):
                         )
                         empty_count += 1
                 except BaseException:
-                    for task in in_flight:
+                    pending = set(in_flight)
+                    if fetch_task is not None:
+                        pending.add(fetch_task)
+                    if pause_task is not None:
+                        pending.add(pause_task)
+                    for task in pending:
                         task.cancel()
-                    if in_flight:
-                        await asyncio.gather(*in_flight, return_exceptions=True)
+                    if pending:
+                        await asyncio.gather(*pending, return_exceptions=True)
                     raise
 
                 elapsed_time = time.perf_counter() - start_time

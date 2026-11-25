@@ -12,6 +12,7 @@ import aio_pika.exceptions
 import aiormq.exceptions
 import pytest
 
+from ergon.connector.rabbitmq.async_connector import AsyncRabbitMQConnector
 from ergon.connector.rabbitmq.async_service import (
     AsyncRabbitMQService,
     _is_recoverable_broker_interruption,
@@ -23,11 +24,13 @@ from ergon.connector.rabbitmq.models import (
     AsyncRabbitmqProducerConfig,
     AsyncRabbitmqQueueSubscription,
 )
+from ergon.task import policies
 from ergon.task.exceptions import (
     AckOnDeadChannelError,
     DeadChannelError,
     NackOnDeadChannelError,
 )
+from tests.task.mocks import MockAsyncConsumer
 
 
 def _make_client(**overrides: Any) -> AsyncRabbitmqClient:
@@ -1306,6 +1309,242 @@ class TestDeadChannelAckNack:
         # so the broker drops its consumers and the channel does not leak.
         await asyncio.sleep(0)
         consume_ch.close.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Settling early, and settling a delivery whose channel is gone
+# ---------------------------------------------------------------------------
+
+
+class TestSettledAndRetiredDeliveries:
+    async def test_ack_of_an_already_acknowledged_message_does_nothing(self):
+        """A task may acknowledge at pickup; the ack at the end is then a no-op."""
+        msg = _mock_message()
+        msg.processed = True
+        service = AsyncRabbitMQService(_make_client())
+        channel = _mock_channel()
+        service._consume_channel = channel
+
+        await service.ack(msg)
+
+        msg.ack.assert_not_awaited()
+        assert service._consume_channel is channel
+
+    async def test_nack_of_an_already_acknowledged_message_does_nothing(self):
+        msg = _mock_message()
+        msg.processed = True
+        service = AsyncRabbitMQService(_make_client())
+        channel = _mock_channel()
+        service._consume_channel = channel
+
+        await service.nack(msg, requeue=False)
+
+        msg.nack.assert_not_awaited()
+        assert service._consume_channel is channel
+
+    async def test_a_real_message_acknowledged_twice_keeps_the_channel(self):
+        """aio-pika refuses a second ack with the error a dead channel raises."""
+        from aio_pika.message import IncomingMessage
+        from aiormq.abc import DeliveredMessage
+        from pamqp import commands as spec
+        from pamqp.header import ContentHeader
+
+        broker_channel = AsyncMock()
+        broker_channel.is_closed = False
+        message = IncomingMessage(
+            DeliveredMessage(
+                delivery=spec.Basic.Deliver(delivery_tag=5, exchange="ex", routing_key="rk"),
+                header=ContentHeader(properties=spec.Basic.Properties()),
+                body=b"{}",
+                channel=broker_channel,
+            ),
+            no_ack=False,
+        )
+        service = AsyncRabbitMQService(_make_client())
+        channel = _mock_channel()
+        service._consume_channel = channel
+
+        await service.ack(message)
+        await service.ack(message)
+        await service.nack(message, requeue=False)
+
+        broker_channel.basic_ack.assert_awaited_once()
+        broker_channel.basic_nack.assert_not_awaited()
+        assert service._consume_channel is channel
+
+    @pytest.mark.parametrize("settle", ["ack", "nack"])
+    async def test_settling_a_delivery_from_a_closed_channel_leaves_the_new_channel_up(self, settle):
+        """The broker requeued it with the old channel; the new channel is not at fault."""
+        msg = _mock_message(delivery_tag=3)
+        service = AsyncRabbitMQService(_make_client())
+        old_channel = _mock_channel()
+        service._consume_channel = old_channel
+        service._in_flight_message_ids.add(id(msg))
+
+        service._on_consume_channel_close(old_channel, ConnectionError("consumer timeout"))
+        new_channel = _mock_channel()
+        service._consume_channel = new_channel
+        service._queues["q"] = MagicMock()
+        epoch = service._consumer_epoch
+
+        expected = AckOnDeadChannelError if settle == "ack" else NackOnDeadChannelError
+        with pytest.raises(expected) as info:
+            await getattr(service, settle)(msg)
+
+        assert info.value.delivery_tag == 3
+        getattr(msg, settle).assert_not_awaited()
+        assert service._consume_channel is new_channel
+        assert service._consumer_epoch == epoch
+        assert "q" in service._queues
+        new_channel.close.assert_not_awaited()
+        # Settled once: it is forgotten, and a second try goes to the broker.
+        assert service._retired_message_ids == set()
+
+    async def test_a_failed_ack_does_not_leave_its_message_retired(self):
+        msg = _mock_message()
+        msg.ack = AsyncMock(side_effect=aiormq.exceptions.ChannelInvalidStateError("dead"))
+        other = _mock_message(delivery_tag=2)
+        service = AsyncRabbitMQService(_make_client())
+        service._consume_channel = _mock_channel()
+        service._in_flight_message_ids.update({id(msg), id(other)})
+
+        with pytest.raises(AckOnDeadChannelError):
+            await service.ack(msg)
+
+        # The one still held by the caller is retired; the one that failed is not.
+        assert service._retired_message_ids == {id(other)}
+
+    @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
+    async def test_a_buffered_delivery_is_not_retired(self, mock_connect):
+        """Nobody holds a delivery that never left the buffer, so nobody settles it."""
+        mock_queue, callbacks = _mock_consumer_queue()
+        mock_channel = _mock_channel()
+        mock_channel.declare_queue = AsyncMock(return_value=mock_queue)
+        mock_conn = AsyncMock()
+        mock_conn.is_closed = False
+        mock_conn.channel = AsyncMock(return_value=mock_channel)
+        mock_connect.return_value = mock_conn
+
+        service = AsyncRabbitMQService(_make_client())
+        config = AsyncRabbitmqConsumerConfig(queue_name="test-queue", consume_timeout=0.01)
+        await service.consume(config)
+        fetched = _mock_message(delivery_tag=1)
+        await callbacks[0](fetched)
+        assert [m["delivery_tag"] for m in await service.consume(config)] == [1]
+        await callbacks[0](_mock_message(delivery_tag=2))
+
+        await service._teardown_consume_channel("test")
+
+        assert service._retired_message_ids == {id(fetched)}
+        assert service.health()["in_flight_count"] == 0
+
+
+class TestBrokerClosesTheChannelWhileATransactionRuns:
+    """RabbitMQ closes a channel that holds a delivery unacknowledged for too long.
+
+    The default ``consumer_timeout`` is 30 minutes. A transaction that runs
+    longer keeps working, but its consumer is gone from the queue.
+    """
+
+    @staticmethod
+    async def _until(condition, timeout: float = 5.0) -> None:
+        deadline = time.monotonic() + timeout
+        while not condition():
+            if time.monotonic() > deadline:
+                raise AssertionError("condition not met in time")
+            await asyncio.sleep(0.01)
+
+    @patch("ergon.connector.rabbitmq.async_service.aio_pika.connect_robust", new_callable=AsyncMock)
+    async def test_the_consumer_subscribes_again_and_takes_work_before_that_transaction_ends(self, mock_connect):
+        first_queue, first_callbacks = _mock_consumer_queue(consumer_tag="ctag-old")
+        second_queue, second_callbacks = _mock_consumer_queue(consumer_tag="ctag-new")
+        first_channel = _mock_channel()
+        first_channel.declare_queue = AsyncMock(return_value=first_queue)
+        second_channel = _mock_channel()
+        second_channel.declare_queue = AsyncMock(return_value=second_queue)
+        mock_conn = AsyncMock()
+        mock_conn.is_closed = False
+        mock_conn.channel = AsyncMock(side_effect=[first_channel, second_channel])
+        mock_connect.return_value = mock_conn
+
+        connector = AsyncRabbitMQConnector(
+            client=_make_client(),
+            consumer_config=AsyncRabbitmqConsumerConfig(
+                queue_name="test-queue",
+                consume_timeout=0.05,
+                prefetch_count=2,
+            ),
+        )
+        long_running = asyncio.Event()
+        release_long = asyncio.Event()
+        started: list[str] = []
+        settled: list[tuple[str, str]] = []
+
+        async def process(tx):
+            started.append(tx.payload["name"])
+            if tx.payload["name"] == "long":
+                long_running.set()
+                await release_long.wait()
+            return None
+
+        async def acknowledge(tx, _result):
+            try:
+                await connector.ack_transaction(tx)
+            except DeadChannelError:
+                settled.append((tx.payload["name"], "channel gone"))
+                raise
+            settled.append((tx.payload["name"], "acknowledged"))
+
+        consumer = MockAsyncConsumer(
+            connectors={"rabbitmq": connector},
+            process_fn=process,
+            success_fn=acknowledge,
+        )
+        policy = policies.ConsumerPolicy(
+            loop=policies.ConsumerLoopPolicy(
+                mode="continuous",
+                streaming=True,
+                limit=2,
+                concurrency=policies.ConcurrencyPolicy(value=2),
+            ),
+        )
+        consuming = asyncio.create_task(consumer.consume_transactions(policy=policy))
+        try:
+            await self._until(lambda: bool(first_callbacks))
+            long_message = _mock_message(body=b'{"name":"long"}', delivery_tag=1)
+            await first_callbacks[0](long_message)
+            await asyncio.wait_for(long_running.wait(), timeout=5)
+
+            # The broker closes the channel under the running transaction.
+            first_channel.is_closed = True
+            connector.service._on_consume_channel_close(
+                first_channel,
+                aiormq.exceptions.ChannelPreconditionFailed("delivery acknowledgement on channel 1 timed out"),
+            )
+
+            # A new consumer is registered while the long transaction runs...
+            await self._until(lambda: bool(second_callbacks))
+            assert not release_long.is_set()
+            # ...and it starts the next delivery.
+            next_message = _mock_message(body=b'{"name":"next"}', delivery_tag=1)
+            await second_callbacks[0](next_message)
+            await self._until(lambda: ("next", "acknowledged") in settled)
+            assert not release_long.is_set()
+
+            release_long.set()
+            assert await asyncio.wait_for(consuming, timeout=5) == 2
+        finally:
+            consuming.cancel()
+            await asyncio.gather(consuming, return_exceptions=True)
+
+        assert started == ["long", "next"]
+        assert settled == [("next", "acknowledged"), ("long", "channel gone")]
+        # The long transaction's ack belongs to the closed channel: it is not
+        # sent, and it does not take the new channel down with it.
+        long_message.ack.assert_not_awaited()
+        next_message.ack.assert_awaited_once()
+        second_channel.close.assert_not_awaited()
+        assert connector.service.health()["active_consumer_tags"] == {"test-queue": "ctag-new"}
 
 
 # ---------------------------------------------------------------------------

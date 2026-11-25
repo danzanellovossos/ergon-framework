@@ -97,6 +97,10 @@ class AsyncRabbitMQService:
         self._consumer_state = "disconnected"
         self._consumer_epoch = 0
         self._in_flight_message_ids: set[int] = set()
+        # Deliveries handed to the caller on a consume channel that has since
+        # been torn down. The broker has requeued them, so a later ack/nack can
+        # no longer reach it and says nothing about the channel in use now.
+        self._retired_message_ids: set[int] = set()
         # AMQP is push-based: one long-lived basic.consume registration per
         # queue feeds this local buffer. Broker QoS bounds the number of
         # unacknowledged deliveries, so fetches only drain memory.
@@ -259,9 +263,17 @@ class AsyncRabbitMQService:
         self._consumer_config_signature = None
         while not self._delivery_buffer.empty():
             try:
-                self._delivery_buffer.get_nowait()
+                _, delivery = self._delivery_buffer.get_nowait()
             except asyncio.QueueEmpty:
                 break
+            if delivery is not None:
+                # Never handed to the caller, so nobody will settle it.
+                self._in_flight_message_ids.discard(id(delivery.get("_message")))
+
+    def _retire_in_flight_deliveries(self) -> None:
+        """Remember the deliveries the caller still holds from the torn-down channel."""
+        self._retired_message_ids.update(self._in_flight_message_ids)
+        self._in_flight_message_ids.clear()
 
     async def _teardown_consume_channel(self, reason: str = "explicit teardown") -> None:
         """Deterministically tear down the consume channel.
@@ -279,7 +291,7 @@ class AsyncRabbitMQService:
         self._invalidate_consume_channel(reason)
         self._consumer_epoch += 1
         self._consumer_state = "channel_dead"
-        self._in_flight_message_ids.clear()
+        self._retire_in_flight_deliveries()
         self._wake_pending_fetches()
         await self._close_channel_safely(channel, reason)
 
@@ -310,7 +322,7 @@ class AsyncRabbitMQService:
         self._invalidate_consume_channel(reason)
         self._consumer_epoch += 1
         self._consumer_state = "channel_dead"
-        self._in_flight_message_ids.clear()
+        self._retire_in_flight_deliveries()
         self._wake_pending_fetches()
         if channel.is_closed:
             return
@@ -568,6 +580,9 @@ class AsyncRabbitMQService:
                     ) -> None:
                         if delivery_epoch != self._consumer_epoch:
                             return
+                        # A new object can reuse the id of a retired delivery
+                        # that was dropped without being settled.
+                        self._retired_message_ids.discard(id(message))
                         self._in_flight_message_ids.add(id(message))
                         self._last_fetch_ts = time.time()
                         self._consumer_state = "delivering"
@@ -702,10 +717,36 @@ class AsyncRabbitMQService:
 
     # ---------- Ack / Nack ----------
 
+    @staticmethod
+    def _already_settled(message: AbstractIncomingMessage) -> bool:
+        """True once the message has been acked, nacked or rejected.
+
+        A task may settle a delivery before its work ends, for example to
+        acknowledge it at pickup when the work outlasts the broker's
+        acknowledgement timeout and the task keeps its own record of it. The
+        settlement that follows at the end of the transaction then has nothing
+        left to do. aio-pika raises ``MessageProcessError`` for it, which is
+        indistinguishable from a dead channel, so it is answered here.
+        """
+        return getattr(message, "processed", False) is True
+
     async def ack(self, message: AbstractIncomingMessage) -> None:
         # Imported lazily to avoid a circular import between
         # ergon.connector and ergon.task at package init time.
         from ...task import exceptions as task_exceptions
+
+        if self._already_settled(message):
+            self._retired_message_ids.discard(id(message))
+            logger.debug("Ack skipped: delivery_tag=%s is already settled", getattr(message, "delivery_tag", None))
+            return
+        if id(message) in self._retired_message_ids:
+            # Delivered on a channel that is gone. The channel in use now is
+            # not the one that failed, so it stays up.
+            self._retired_message_ids.discard(id(message))
+            raise task_exceptions.AckOnDeadChannelError(
+                delivery_tag=getattr(message, "delivery_tag", None),
+                queue=getattr(message, "routing_key", None),
+            )
 
         self._consumer_state = "acking"
         try:
@@ -719,6 +760,7 @@ class AsyncRabbitMQService:
             self._consumer_state = "polling"
         except _DEAD_CHANNEL_TIMEOUT_EXCEPTIONS as exc:
             await self._teardown_consume_channel(f"ack failed: {exc!r}")
+            self._retired_message_ids.discard(id(message))
             raise task_exceptions.AckOnDeadChannelError(
                 delivery_tag=getattr(message, "delivery_tag", None),
                 queue=getattr(message, "routing_key", None),
@@ -727,6 +769,17 @@ class AsyncRabbitMQService:
 
     async def nack(self, message: AbstractIncomingMessage, requeue: bool = True) -> None:
         from ...task import exceptions as task_exceptions
+
+        if self._already_settled(message):
+            self._retired_message_ids.discard(id(message))
+            logger.debug("Nack skipped: delivery_tag=%s is already settled", getattr(message, "delivery_tag", None))
+            return
+        if id(message) in self._retired_message_ids:
+            self._retired_message_ids.discard(id(message))
+            raise task_exceptions.NackOnDeadChannelError(
+                delivery_tag=getattr(message, "delivery_tag", None),
+                queue=getattr(message, "routing_key", None),
+            )
 
         self._consumer_state = "acking"
         try:
@@ -737,6 +790,7 @@ class AsyncRabbitMQService:
             self._consumer_state = "polling"
         except _DEAD_CHANNEL_TIMEOUT_EXCEPTIONS as exc:
             await self._teardown_consume_channel(f"nack failed: {exc!r}")
+            self._retired_message_ids.discard(id(message))
             raise task_exceptions.NackOnDeadChannelError(
                 delivery_tag=getattr(message, "delivery_tag", None),
                 queue=getattr(message, "routing_key", None),
@@ -799,5 +853,6 @@ class AsyncRabbitMQService:
         await self._close_connection_safely(connection, "service close")
 
         self._in_flight_message_ids.clear()
+        self._retired_message_ids.clear()
         self._consumer_state = "closed"
         logger.info("RabbitMQ connection closed")

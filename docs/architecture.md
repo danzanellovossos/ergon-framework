@@ -318,6 +318,8 @@ ConsumerPolicy {
 
 Async consumers use `mode: "batch"` by default: each fetched batch completes before the next fetch. With `mode: "continuous"`, the engine fetches up to the number of free concurrency slots and replaces completed transactions immediately. Continuous mode is intended for broker-backed, I/O-bound workloads whose transaction durations vary significantly; `fetch.batch.size` applies only to batch mode.
 
+In continuous mode the fetch runs beside the transactions, not between them. A streaming consumer with a free slot keeps fetching while its other slots are busy, so a delivery that arrives during a long transaction starts at once instead of when that transaction ends. After an empty fetch with transactions in flight, the next fetch follows after `fetch.empty.backoff` (at least 0.1 seconds after the previous fetch started, so a source that answers at once is not polled in a tight loop) or as soon as a transaction ends. A consumer whose slots are all busy does not fetch. A non-streaming consumer drains its source: after an empty fetch it fetches again only when a transaction has ended, and stops when the source is empty and nothing is in flight.
+
 Each phase (fetch, process, success, exception) has independent retry configuration. This allows you to, for example, retry business logic 3 times but only retry the exception handler once.
 
 #### ProducerPolicy
